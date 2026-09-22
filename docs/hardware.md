@@ -1,16 +1,16 @@
-# Hardvaruanteckningar
+# Hardware Notes
 
-## Bas-maskin
-Popcornmaskin (samma familj som i https://www.youtube.com/watch?v=U9_8eVlJ1SI)
+## Base machine
+Popcorn popper (same family as https://www.youtube.com/watch?v=U9_8eVlJ1SI)
 
-## Flaktmotor
-- 24V DC (bekraftat matt av Fredrik)
-- Original-kretsen anvander varmeelementet som resistiv spanningsdelare + 4-diodsbrygga + 2 drosslar for att generera lagspanning till motorn.
-- VIKTIGT: original-kretsen ar INTE galvaniskt isolerad fran natspanning trots lag uppmatt spanning. Motorn ska matas fran en egen isolerad DC-PSU i den har ombyggnaden, inte fran original-kretsen.
+## Fan motor
+- 24V DC (confirmed by measurement)
+- The original circuit uses the heating element as a resistive voltage divider plus a 4-diode bridge and 2 chokes to generate low voltage for the motor.
+- IMPORTANT: the original circuit is NOT galvanically isolated from mains despite the low measured voltage. The motor must be powered from its own isolated DC PSU in this build, not from the original circuit.
 
-## Temperatursensorer
-- 2x MAX6675 + K-type termoelement inkopta (levereras separat)
-- Inget inbyggt felkodsstod i MAX6675 - bygg sanity-check i firmware (se docs/notes.md)
+## Temperature sensors
+- 2x MAX6675 + K-type thermocouples purchased (arriving separately)
+- No built-in fault reporting on MAX6675 - build a sanity check in firmware (see docs/notes.md)
 
 ## SSR
-- Time-proportioning-styrning, ej snabb PWM (skonsammare mot zero-cross SSR)
+- Time-proportioning control, not fast PWM (gentler on a zero-cross SSR)
