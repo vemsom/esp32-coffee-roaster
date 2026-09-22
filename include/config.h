@@ -1,9 +1,17 @@
 #pragma once
 
 // ---- WiFi ----
-// TODO: fyll i ditt eget WiFi innan flashning
+// Uppgifterna ligger i include/secrets.h (okommiterad). Fyll i där,
+// eller låt dessa TBD-varden styra om secrets.h saknas.
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+#ifndef WIFI_SSID
 #define WIFI_SSID "TBD"
+#endif
+#ifndef WIFI_PASSWORD
 #define WIFI_PASSWORD "TBD"
+#endif
 
 // ---- Sensor-pinnar (SPI, MAX6675 x2) ----
 // Delade CLK/MISO, separata CS. Verifiera/andra nar layouten ar klar.
