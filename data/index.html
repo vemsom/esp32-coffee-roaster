@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+  <html lang="en">
+  <head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coffee Roaster</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+  .card { background:#1c1c1c; border:1px solid #333; border-radius:8px; padding:12px; flex:1; min-width:140px; }
+  .card .label { font-size:11px; color:#999; text-transform:uppercase; }
+  .card .value { font-size:24px; font-weight:600; margin-top:4px; }
+  canvas { width:100%; background:#1c1c1c; border:1px solid #333; border-radius:8px; }
+  .controls { display:flex; gap:12px; flex-wrap:wrap; margin-top:16px; }
+  .controls > div { background:#1c1c1c; border:1px solid #333; border-radius:8px; padding:12px; flex:1; min-width:200px; }
+  input[type=range] { width:100%; }
+  textarea { width:100%; background:#111; color:#eee; border:1px solid #444; border-radius:6px; box-sizing:border-box; }
+  button { background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:6px; padding:8px 14px; cursor:pointer; }
+  button.primary { background:#3a7d44; border-color:#3a7d44; }
+  button.danger { background:#7d3a3a; border-color:#7d3a3a; }
+  select { background:#1c1c1c; color:#eee; border:1px solid #444; border-radius:6px; padding:6px; width:100%; }
+  .small-label { font-size:11px; color:#999; margin-bottom:4px; }
+</style>
+  </head>
+  <body>
+    <h1>Coffee Roaster</h1>
+
+    <div class="row">
+      <div class="card"><div class="label">BT (bean)</div><div class="value" id="valBT">--</div></div>
+      <div class="card"><div class="label">ET (air)</div><div class="value" id="valET">--</div></div>
+      <div class="card"><div class="label">Heater</div><div class="value" id="valHeater">--</div></div>
+      <div class="card"><div class="label">Fan</div><div class="value" id="valFan">--</div></div>
+      <div class="card"><div class="label">Time</div><div class="value" id="valTime">--</div></div>
+    </div>
+
+    <canvas id="chart" height="220"></canvas>
+
+    <div class="controls">
+      <div>
+        <div class="small-label">Fan speed</div>
+        <input type="range" id="fanSlider" min="0" max="100" value="0">
+      </div>
+      <div>
+        <div class="small-label">Manual heater (only without an active roast)</div>
+        <input type="range" id="heaterSlider" min="0" max="100" value="0">
+      </div>
+      <div>
+        <div class="small-label">Profile</div>
+        <select id="profileSelect"></select>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button class="primary" id="startBtn">Start roast</button>
+          <button class="danger" id="stopBtn">Stop</button>
+        </div>
+      </div>
+      <div>
+        <div class="small-label">New profile (JSON, paste in)</div>
+        <textarea id="profileJson" rows="4" placeholder='{"name":"test","points":[{"t":0,"temp":20},{"t":600,"temp":200}]}'></textarea>
+        <button id="saveProfileBtn" style="margin-top:6px;">Save profile</button>
+      </div>
+    </div>
+
+  <script>
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  let history = [];
+
+  function resizeCanvas() {
+    canvas.width = canvas.clientWidth;
+    canvas.height = canvas.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+function drawChart() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (history.length < 2) return;
+
+    const maxT = history[history.length - 1].t;
+    const minT = Math.max(0, maxT - 600);
+    const visible = history.filter(p => p.t >= minT);
+    if (visible.length < 2) return;
+
+    const temps = visible.flatMap(p => [p.bt, p.et]).filter(v => !isNaN(v));
+    const maxTemp = Math.max(250, ...temps);
+    const minTemp = Math.min(0, ...temps);
+
+    function x(t) { return ((t - minT) / (maxT - minT || 1)) * w; }
+    function y(temp) { return h - ((temp - minTemp) / (maxTemp - minTemp || 1)) * h; }
+
+    function drawLine(key, color) {
+          ctx.beginPath();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          let started = false;
+          for (const p of visible) {
+                  if (isNaN(p[key])) continue;
+                  const px = x(p.t), py = y(p[key]);
+                  if (!started) { ctx.moveTo(px, py); started = true; }
+                  else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+    }
+
+    drawLine('bt', '#ff8a4d');
+    drawLine('et', '#5fb0ff');
+}
+
+async function pollStatus() {
+    try {
+          const res = await fetch('/api/status');
+          const data = await res.json();
+
+          document.getElementById('valBT').textContent = isFinite(data.bt) ? data.bt.toFixed(1) + '°C' : '--';
+          document.getElementById('valET').textContent = isFinite(data.et) ? data.et.toFixed(1) + '°C' : '--';
+          document.getElementById('valHeater').textContent = data.heaterDuty.toFixed(0) + '%';
+          document.getElementById('valFan').textContent = data.fanSpeed + '%';
+          const mins = Math.floor(data.elapsedSeconds / 60);
+          const secs = data.elapsedSeconds % 60;
+          document.getElementById('valTime').textContent = mins + ':' + String(secs).padStart(2, '0');
+
+          history.push({ t: data.elapsedSeconds, bt: data.bt, et: data.et });
+          if (history.length > 2000) history.shift();
+          drawChart();
+    } catch (e) {
+          console.error('status poll failed', e);
+    }
+}
+
+async function loadProfiles() {
+    try {
+          const res = await fetch('/api/profiles');
+          const names = await res.json();
+          const select = document.getElementById('profileSelect');
+          select.innerHTML = '';
+          for (const name of names) {
+                  const opt = document.createElement('option');
+                  opt.value = name.replace('.json', '').replace('/profiles/', '');
+                  opt.textContent = opt.value;
+                  select.appendChild(opt);
+          }
+    } catch (e) {
+          console.error('could not load profiles', e);
+    }
+}
+
+document.getElementById('fanSlider').addEventListener('change', async (e) => {
+    await fetch('/api/fan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ speed: parseInt(e.target.value) })
+    });
+});
+
+document.getElementById('heaterSlider').addEventListener('change', async (e) => {
+    await fetch('/api/heater/manual', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ duty: parseInt(e.target.value) })
+    });
+});
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+    const profile = document.getElementById('profileSelect').value;
+    history = [];
+    await fetch('/api/roast/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ profile })
+    });
+});
+
+document.getElementById('stopBtn').addEventListener('click', async () => {
+    await fetch('/api/roast/stop', { method: 'POST' });
+});
+
+document.getElementById('saveProfileBtn').addEventListener('click', async () => {
+    try {
+          const body = document.getElementById('profileJson').value;
+                JSON.parse(body);
+          await fetch('/api/profiles', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                          body
+                    });
+          await loadProfiles();
+    } catch (e) {
+          alert('Invalid JSON: ' + e.message);
+    }
+});
+
+loadProfiles();
+setInterval(pollStatus, 1000);
+pollStatus();
+</script>
+  </body>
+  </html>
+  
