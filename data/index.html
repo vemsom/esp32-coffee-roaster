@@ -1,199 +1,805 @@
 <!DOCTYPE html>
-  <html lang="en">
-  <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Coffee Roaster</title>
-  <style>
-    body { font-family: -apple-system, sans-serif; background:#111; color:#eee; margin:0; padding:16px; }
-  h1 { font-size:18px; margin:0 0 12px; }
-  .row { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
-  .card { background:#1c1c1c; border:1px solid #333; border-radius:8px; padding:12px; flex:1; min-width:140px; }
-  .card .label { font-size:11px; color:#999; text-transform:uppercase; }
-  .card .value { font-size:24px; font-weight:600; margin-top:4px; }
-  canvas { width:100%; background:#1c1c1c; border:1px solid #333; border-radius:8px; }
-  .controls { display:flex; gap:12px; flex-wrap:wrap; margin-top:16px; }
-  .controls > div { background:#1c1c1c; border:1px solid #333; border-radius:8px; padding:12px; flex:1; min-width:200px; }
-  input[type=range] { width:100%; }
-  textarea { width:100%; background:#111; color:#eee; border:1px solid #444; border-radius:6px; box-sizing:border-box; }
-  button { background:#2a2a2a; color:#eee; border:1px solid #444; border-radius:6px; padding:8px 14px; cursor:pointer; }
-  button.primary { background:#3a7d44; border-color:#3a7d44; }
-  button.danger { background:#7d3a3a; border-color:#7d3a3a; }
-  select { background:#1c1c1c; color:#eee; border:1px solid #444; border-radius:6px; padding:6px; width:100%; }
-  .small-label { font-size:11px; color:#999; margin-bottom:4px; }
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafferostaren</title>
+<style>
+  :root {
+    --bg: #111; --panel: #1c1c1c; --border: #333; --text: #eee;
+    --muted: #999; --green: #3a7d44; --red: #7d3a3a; --blue: #5fb0ff; --orange: #ff8a4d;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab { background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px 16px; cursor: pointer; color: var(--muted); }
+  .tab.active { background: var(--green); border-color: var(--green); color: #fff; }
+  .view { display: none; }
+  .view.active { display: block; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; flex: 1; min-width: 120px; }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  canvas { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; display: block; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 600px) { .grid2 { grid-template-columns: 1fr; } }
+  .panel-heading { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .editor-row { display: flex; gap: 12px; align-items: stretch; margin-bottom: 16px; }
+  .editor-graph { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+  .editor-steps { flex: 0 0 25%; min-width: 220px; min-height: 0; display: flex; flex-direction: column; margin-bottom: 0; }
+  .editor-steps-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+  .editor-steps table { font-size: 12px; }
+  .editor-steps th, .editor-steps td { padding: 4px 4px; }
+  .editor-steps input[type=number] { padding: 4px 6px; }
+  label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  input[type=number], input[type=text], select {
+    background: #111; color: var(--text); border: 1px solid #444; border-radius: 6px;
+    padding: 8px; width: 100%; font-size: 14px;
+  }
+  input[type=range] { width: 100%; }
+  button { background: #2a2a2a; color: var(--text); border: 1px solid #444; border-radius: 6px; padding: 8px 14px; cursor: pointer; font-size: 14px; }
+  button:hover { background: #333; }
+  button.primary { background: var(--green); border-color: var(--green); }
+  button.danger { background: var(--red); border-color: var(--red); }
+  button.small { padding: 4px 8px; font-size: 12px; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .status-line { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; background: #333; }
+  .pill.on { background: var(--green); }
+  .pill.manual { background: #8a6d1f; }
+  .pill.paused { background: #a06a00; }
+  .pill.cool { background: #1f5f8a; }
+  .pill.fault { background: var(--red); }
+  .big { font-size: 32px; font-weight: 700; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  #profileList { display: flex; flex-direction: column; gap: 6px; }
+  .profile-item { display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    background: #111; border: 1px solid #333; border-radius: 6px; padding: 8px 10px; cursor: pointer; }
+  .profile-item:hover { border-color: #555; }
+  .profile-item.selected { border-color: var(--green); }
 </style>
-  </head>
-  <body>
-    <h1>Coffee Roaster</h1>
+</head>
+<body>
+  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span></h1>
 
+  <div class="tabs">
+    <div class="tab active" data-view="roast">Rostning</div>
+    <div class="tab" data-view="manual">Manuell</div>
+    <div class="tab" data-view="profiles">Profiler</div>
+    <div class="tab" data-view="log">Logg</div>
+  </div>
+
+  <!-- ============================ ROAST ============================ -->
+  <div class="view active" id="view-roast">
     <div class="row">
-      <div class="card"><div class="label">BT (bean)</div><div class="value" id="valBT">--</div></div>
-      <div class="card"><div class="label">ET (air)</div><div class="value" id="valET">--</div></div>
-      <div class="card"><div class="label">Heater</div><div class="value" id="valHeater">--</div></div>
-      <div class="card"><div class="label">Fan</div><div class="value" id="valFan">--</div></div>
-      <div class="card"><div class="label">Time</div><div class="value" id="valTime">--</div></div>
+      <div class="card"><div class="label">Böntemp (BT)</div><div class="value" id="valBT">--</div></div>
+      <div class="card"><div class="label">Lufttemp (ET)</div><div class="value" id="valET">--</div></div>
+      <div class="card"><div class="label">Värme</div><div class="value" id="valHeater">--</div></div>
+      <div class="card"><div class="label">Fläkt</div><div class="value" id="valFan">--</div></div>
+      <div class="card"><div class="label">Tid</div><div class="value" id="valTime">--</div></div>
     </div>
 
-    <canvas id="chart" height="220"></canvas>
+    <div class="panel">
+      <div class="controls">
+        <div style="flex:2; min-width:180px;">
+          <label>Profil</label>
+          <select id="profileSelect"></select>
+        </div>
+        <button class="primary" id="startBtn">Starta rostning</button>
+        <button id="pauseBtn" style="display:none;">Pausa</button>
+        <button class="danger" id="stopBtn">Stopp</button>
+      </div>
+    </div>
 
-    <div class="controls">
-      <div>
-        <div class="small-label">Fan speed</div>
-        <input type="range" id="fanSlider" min="0" max="100" value="0">
+    <canvas id="chart" height="600"></canvas>
+  </div>
+
+  <!-- ============================ MANUAL ============================ -->
+  <div class="view" id="view-manual">
+    <div class="panel">
+      <div class="controls">
+        <div style="min-width:120px;">
+          <label>Måltemperatur (°C)</label>
+          <input type="number" id="manualTemp" value="200" min="1" max="300" step="1">
+        </div>
+        <div style="min-width:120px;">
+          <label>Tid (minuter)</label>
+          <input type="number" id="manualMinutes" value="10" min="0.5" max="120" step="0.5">
+        </div>
+        <button class="primary" id="manualStartBtn">Starta</button>
+        <button class="danger" id="manualStopBtn">Stopp</button>
       </div>
-      <div>
-        <div class="small-label">Manual heater (only without an active roast)</div>
-        <input type="range" id="heaterSlider" min="0" max="100" value="0">
+      <div class="hint">PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Fläkten påverkas inte om inte auto-kylning är aktiverad nedan.</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading">Återstår</div>
+      <div class="big" id="manualRemaining">--:--</div>
+      <div class="status-line" id="manualStatus">Inaktiv</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-heading">Kylning (endast fläkt)</div>
+      <div class="controls">
+        <div style="min-width:120px;">
+          <label>Fläkt (%)</label>
+          <input type="number" id="coolSpeed" value="100" min="1" max="100" step="5">
+        </div>
+        <div style="min-width:120px;">
+          <label>Tid (minuter)</label>
+          <input type="number" id="coolMinutes" value="5" min="0.5" max="120" step="0.5">
+        </div>
+        <button class="primary" id="coolStartBtn">Starta kylning</button>
+        <button class="danger" id="coolStopBtn">Stopp</button>
       </div>
-      <div>
-        <div class="small-label">Profile</div>
-        <select id="profileSelect"></select>
-        <div style="margin-top:8px; display:flex; gap:8px;">
-          <button class="primary" id="startBtn">Start roast</button>
-          <button class="danger" id="stopBtn">Stop</button>
+      <div class="hint">Kör fläkten på valt varvtal i vald tid, oberoende av värme och manuellt läge.</div>
+      <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:var(--text);">
+        <input type="checkbox" id="autoCool" style="width:auto;">
+        Starta kylning automatiskt när manuella körningen är klar
+      </label>
+      <div class="big" id="coolRemaining" style="margin-top:10px;">--:--</div>
+      <div class="status-line" id="coolStatus">Inaktiv</div>
+    </div>
+  </div>
+
+  <!-- ============================ PROFILES ============================ -->
+  <div class="view" id="view-profiles">
+    <div class="grid2">
+      <div class="panel">
+        <div class="panel-heading">Sparade profiler</div>
+        <div id="profileList"></div>
+        <button class="small" id="newProfileBtn" style="margin-top:10px;">Ny profil</button>
+        <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="small" id="exportProfilesBtn">Exportera alla</button>
+          <button class="small" id="importProfilesBtn">Importera</button>
+          <input type="file" id="importFile" accept="application/json,.json" style="display:none">
+        </div>
+        <div class="hint">Export ger en JSON-fil med alla profiler. Import läser en sådan fil (skriver över profiler med samma namn).</div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-heading">Namn</div>
+        <input type="text" id="editName" placeholder="t.ex. espresso-1">
+        <div class="controls" style="margin-top:12px;">
+          <button class="primary" id="saveProfileBtn">Spara profil</button>
+          <button id="clearProfileBtn">Rensa profil</button>
+        </div>
+        <div class="hint">Varje rad är ett steg med <b>ramp</b> (linjär uppvärmning) och <b>håll</b> (konstant temperatur), båda i minuter. Rostningen startar på 20 °C vid 0 min. Steg 1: ramp 8 + håll 2 @ 190° = 8 min uppvärmning 20→190°, sedan 2 min på 190°. Klicka i grafen för att lägga till ett steg, dra en grön punkt för att ändra temperaturen.</div>
+      </div>
+    </div>
+
+    <div class="editor-row">
+      <div class="panel editor-graph">
+        <canvas id="editor" height="600"></canvas>
+      </div>
+      <div class="panel editor-steps">
+        <div class="panel-heading">Steg</div>
+        <div class="editor-steps-scroll">
+          <table id="pointsTable">
+            <thead><tr><th>Ramp (min)</th><th>Håll (min)</th><th>Temp (°C)</th><th>Fläkt (%)</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <button class="small" id="addPointBtn" style="margin-top:10px;">Lägg till steg</button>
         </div>
       </div>
-      <div>
-        <div class="small-label">New profile (JSON, paste in)</div>
-        <textarea id="profileJson" rows="4" placeholder='{"name":"test","points":[{"t":0,"temp":20},{"t":600,"temp":200}]}'></textarea>
-        <button id="saveProfileBtn" style="margin-top:6px;">Save profile</button>
+    </div>
+  </div>
+
+  <!-- ============================== LOG ============================== -->
+  <div class="view" id="view-log">
+    <div class="panel">
+      <div class="controls">
+        <button id="exportBtn">Exportera CSV</button>
+        <button id="clearLogBtn">Rensa</button>
+        <span class="status-line" id="logCount" style="margin:0;"></span>
       </div>
     </div>
+    <div class="panel" style="max-height:60vh; overflow:auto;">
+      <table id="logTable">
+        <thead><tr><th>Tid (s)</th><th>BT (°C)</th><th>ET (°C)</th><th>Värme (%)</th><th>Fläkt (%)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
 
-  <script>
-  const canvas = document.getElementById('chart');
-  const ctx = canvas.getContext('2d');
-  let history = [];
+<script>
+'use strict';
 
-  function resizeCanvas() {
-    canvas.width = canvas.clientWidth;
-    canvas.height = canvas.clientHeight;
+// ------------------------------------------------------------- state ----
+
+const START_TEMP = 20;   // profile start point: room temperature at 0 min
+
+// Shared canvas colours. Canvas ignores CSS variables, so these are literals
+// and are reused by both the roast graph and the profile editor.
+const COLOR_BT = '#ff3b30';                       // bean temp (roast)
+const COLOR_ET = '#ff8a4d';                       // environment temp (roast)
+const COLOR_TARGET = 'rgba(255,210,63,0.75)';     // profile target curve (both)
+const COLOR_TARGET_MARK = 'rgba(255,210,63,0.95)';
+const COLOR_FAN = 'rgba(95,176,255,0.8)';         // target fan curve (editor + roast)
+
+const state = {
+  status: {},
+  history: [],
+  profileNames: [],
+  activeProfile: null,   // { name, startTemp, steps:[{ramp,hold,temp,fan}] } (seconds)
+  editSteps: [],         // [{ ramp, hold, temp, fan }] all times in seconds
+  loadedProfileName: '', // name of the profile currently open in the editor
+  dragging: -1,
+};
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (!res.ok) throw new Error(path + ' -> ' + res.status);
+  const text = await res.text();
+  return text ? JSON.parse(text) : {};
 }
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas();
 
-function drawChart() {
-    const w = canvas.width, h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
-    if (history.length < 2) return;
-
-    const maxT = history[history.length - 1].t;
-    const minT = Math.max(0, maxT - 600);
-    const visible = history.filter(p => p.t >= minT);
-    if (visible.length < 2) return;
-
-    const temps = visible.flatMap(p => [p.bt, p.et]).filter(v => !isNaN(v));
-    const maxTemp = Math.max(250, ...temps);
-    const minTemp = Math.min(0, ...temps);
-
-    function x(t) { return ((t - minT) / (maxT - minT || 1)) * w; }
-    function y(temp) { return h - ((temp - minTemp) / (maxTemp - minTemp || 1)) * h; }
-
-    function drawLine(key, color) {
-          ctx.beginPath();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 2;
-          let started = false;
-          for (const p of visible) {
-                  if (isNaN(p[key])) continue;
-                  const px = x(p.t), py = y(p[key]);
-                  if (!started) { ctx.moveTo(px, py); started = true; }
-                  else ctx.lineTo(px, py);
-          }
-          ctx.stroke();
-    }
-
-    drawLine('bt', '#ff8a4d');
-    drawLine('et', '#5fb0ff');
+function fmtClock(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
 }
+
+// Build the piecewise curve (temperature + fan) for a list of steps.
+// Times are in seconds; a ramp segment is linear, a hold segment is flat.
+function buildCurve(steps, startTemp) {
+  let t = 0;
+  const tempPts = [{ t: 0, v: startTemp }];
+  const fanPts = [{ t: 0, v: 0 }];
+  const markers = [];
+  for (const s of steps) {
+    const rampEnd = t + Math.max(0, s.ramp);
+    const holdEnd = rampEnd + Math.max(0, s.hold);
+    tempPts.push({ t: rampEnd, v: s.temp });
+    tempPts.push({ t: holdEnd, v: s.temp });
+    fanPts.push({ t: t, v: s.fan });        // fan steps at the start of the step
+    fanPts.push({ t: holdEnd, v: s.fan });
+    markers.push({ t: holdEnd, temp: s.temp });
+    t = holdEnd;
+  }
+  return { tempPts, fanPts, markers, total: t };
+}
+
+// -------------------------------------------------------------- tabs ----
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
+    tab.classList.add('active');
+    $('view-' + tab.dataset.view).classList.add('active');
+    resize();
+    if (tab.dataset.view === 'profiles') drawEditor();
+    if (tab.dataset.view === 'log') renderLog();
+  });
+});
+
+// ---------------------------------------------------------- status poll ---
 
 async function pollStatus() {
-    try {
-          const res = await fetch('/api/status');
-          const data = await res.json();
+  try {
+    state.status = await api('/api/status');
+  } catch (e) {
+    return;
+  }
+  const s = state.status;
 
-          document.getElementById('valBT').textContent = isFinite(data.bt) ? data.bt.toFixed(1) + '°C' : '--';
-          document.getElementById('valET').textContent = isFinite(data.et) ? data.et.toFixed(1) + '°C' : '--';
-          document.getElementById('valHeater').textContent = data.heaterDuty.toFixed(0) + '%';
-          document.getElementById('valFan').textContent = data.fanSpeed + '%';
-          const mins = Math.floor(data.elapsedSeconds / 60);
-          const secs = data.elapsedSeconds % 60;
-          document.getElementById('valTime').textContent = mins + ':' + String(secs).padStart(2, '0');
+  $('valBT').textContent = isFinite(s.bt) ? s.bt.toFixed(1) + '°C' : '--';
+  $('valET').textContent = isFinite(s.et) ? s.et.toFixed(1) + '°C' : '--';
+  $('valHeater').textContent = Math.round(s.heaterDuty) + '%';
+  $('valFan').textContent = s.fanSpeed + '%';
+  $('valTime').textContent = fmtClock(s.elapsedSeconds);
 
-          history.push({ t: data.elapsedSeconds, bt: data.bt, et: data.et });
-          if (history.length > 2000) history.shift();
-          drawChart();
-    } catch (e) {
-          console.error('status poll failed', e);
-    }
+  const pill = $('modePill');
+  if (s.roastActive && s.roastPaused) { pill.textContent = 'pausad'; pill.className = 'pill paused'; }
+  else if (s.roastActive) { pill.textContent = 'rostning'; pill.className = 'pill on'; }
+  else if (s.manualActive) { pill.textContent = 'manuell'; pill.className = 'pill manual'; }
+  else if (s.coolActive) { pill.textContent = 'kylning'; pill.className = 'pill cool'; }
+  else { pill.textContent = 'idle'; pill.className = 'pill'; }
+
+  const pauseBtn = $('pauseBtn');
+  if (s.roastActive) {
+    pauseBtn.style.display = '';
+    pauseBtn.textContent = s.roastPaused ? 'Återuppta' : 'Pausa';
+  } else {
+    pauseBtn.style.display = 'none';
+  }
+
+  $('manualRemaining').textContent = s.manualActive ? fmtClock(s.manualRemainingSeconds) : '--:--';
+  $('manualStatus').textContent = s.manualActive
+    ? 'Aktiv – mål ' + s.manualTargetTemp.toFixed(0) + '°C'
+    : 'Inaktiv';
+
+  $('coolRemaining').textContent = s.coolActive ? fmtClock(s.coolRemainingSeconds) : '--:--';
+  $('coolStatus').textContent = s.coolActive
+    ? 'Aktiv – fläkt ' + s.coolSpeed + '%'
+    : 'Inaktiv';
+
+  state.history.push({ t: s.elapsedSeconds, bt: s.bt, et: s.et, heater: s.heaterDuty, fan: s.fanSpeed });
+  if (state.history.length > 4000) state.history.shift();
+  drawRoastChart();
 }
+
+// ------------------------------------------------------- roast graph ------
+
+function drawRoastChart() {
+  const canvas = $('chart');
+  if (!canvas.width) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const profile = state.activeProfile;
+  const curve = profile && profile.steps && profile.steps.length
+    ? buildCurve(profile.steps, profile.startTemp || START_TEMP)
+    : null;
+  const profileEnd = curve ? curve.total : 0;
+  const lastT = state.history.length ? state.history[state.history.length - 1].t : 0;
+  const maxT = Math.max(300, profileEnd, lastT);
+
+  const minTemp = 0, maxTemp = 260;
+  const x = (t) => (t / maxT) * w;
+  const y = (temp) => h - ((temp - minTemp) / (maxTemp - minTemp)) * h;
+
+  // grid
+  ctx.strokeStyle = '#2a2a2a'; ctx.lineWidth = 1; ctx.fillStyle = '#666'; ctx.font = '10px sans-serif';
+  for (let temp = 0; temp <= maxTemp; temp += 50) {
+    ctx.beginPath(); ctx.moveTo(0, y(temp)); ctx.lineTo(w, y(temp)); ctx.stroke();
+    ctx.fillText(temp + '°', 2, y(temp) - 2);
+  }
+  for (let t = 0; t <= maxT; t += Math.max(60, Math.round(maxT / 6 / 60) * 60)) {
+    ctx.beginPath(); ctx.moveTo(x(t), 0); ctx.lineTo(x(t), h); ctx.stroke();
+    ctx.fillText(fmtClock(t), x(t) + 2, h - 4);
+  }
+
+  // profile target curve with step markers
+  if (curve) {
+    ctx.beginPath(); ctx.strokeStyle = COLOR_TARGET; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+    curve.tempPts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
+    ctx.stroke(); ctx.setLineDash([]);
+    curve.markers.forEach((m) => {
+      ctx.beginPath(); ctx.arc(x(m.t), y(m.temp), 3, 0, Math.PI * 2);
+      ctx.fillStyle = COLOR_TARGET_MARK; ctx.fill();
+    });
+
+    // target fan curve (0-100 mapped onto the same axis, as in the editor)
+    ctx.beginPath(); ctx.strokeStyle = COLOR_FAN; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    curve.fanPts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // measured BT / ET
+  const drawLine = (key, color) => {
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    let started = false;
+    for (const p of state.history) {
+      if (!isFinite(p[key])) continue;
+      const px = x(p.t), py = y(p[key]);
+      started ? ctx.lineTo(px, py) : (ctx.moveTo(px, py), started = true);
+    }
+    ctx.stroke();
+  };
+  drawLine('bt', COLOR_BT);
+  drawLine('et', COLOR_ET);
+}
+
+// --------------------------------------------------- profiles list/render --
 
 async function loadProfiles() {
-    try {
-          const res = await fetch('/api/profiles');
-          const names = await res.json();
-          const select = document.getElementById('profileSelect');
-          select.innerHTML = '';
-          for (const name of names) {
-                  const opt = document.createElement('option');
-                  opt.value = name.replace('.json', '').replace('/profiles/', '');
-                  opt.textContent = opt.value;
-                  select.appendChild(opt);
-          }
-    } catch (e) {
-          console.error('could not load profiles', e);
-    }
+  try { state.profileNames = await api('/api/profiles'); } catch (e) { state.profileNames = []; }
+  const select = $('profileSelect');
+  select.innerHTML = '';
+  for (const name of state.profileNames) {
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    select.appendChild(opt);
+  }
+
+  const list = $('profileList');
+  list.innerHTML = '';
+  if (!state.profileNames.length) list.innerHTML = '<div class="status-line">Inga profiler sparade än.</div>';
+  for (const name of state.profileNames) {
+    const div = document.createElement('div');
+    div.className = 'profile-item' + ($('editName').value.trim() === name ? ' selected' : '');
+
+    const span = document.createElement('span');
+    span.textContent = name;
+    span.style.flex = '1';
+    span.addEventListener('click', () => loadProfileIntoEditor(name));
+
+    const del = document.createElement('button');
+    del.className = 'small danger';
+    del.textContent = '×';
+    del.title = 'Radera profil';
+    del.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Radera profilen "' + name + '"?')) return;
+      try {
+        await api('/api/profile?name=' + encodeURIComponent(name), { method: 'DELETE' });
+        await loadProfiles();
+      } catch (err) { alert('Kunde inte radera: ' + err.message); }
+    });
+
+    div.appendChild(span);
+    div.appendChild(del);
+    list.appendChild(div);
+  }
 }
 
-document.getElementById('fanSlider').addEventListener('change', async (e) => {
-    await fetch('/api/fan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ speed: parseInt(e.target.value) })
+async function loadProfileIntoEditor(name) {
+  try {
+    const p = await api('/api/profile?name=' + encodeURIComponent(name));
+    state.editSteps = (p.steps || []).map((s) => ({
+      ramp: s.ramp || 0,
+      hold: s.hold || 0,
+      temp: s.temp,
+      fan: s.fan || 0,
+    }));
+    state.loadedProfileName = name;
+    $('editName').value = name;
+    drawEditor(); renderPoints(); loadProfiles();
+  } catch (e) { alert('Kunde inte ladda profil: ' + e.message); }
+}
+
+function renderPoints() {
+  const tbody = $('pointsTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  state.editSteps.forEach((s, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input type="number" data-i="' + i + '" data-k="ramp" value="' + (s.ramp / 60) + '" step="0.5" min="0" style="width:100%"></td>' +
+      '<td><input type="number" data-i="' + i + '" data-k="hold" value="' + (s.hold / 60) + '" step="0.5" min="0" style="width:100%"></td>' +
+      '<td><input type="number" data-i="' + i + '" data-k="temp" value="' + s.temp + '" style="width:100%"></td>' +
+      '<td><input type="number" data-i="' + i + '" data-k="fan" value="' + s.fan + '" style="width:100%"></td>' +
+      '<td><button class="small danger" data-del="' + i + '">x</button></td>';
+    tbody.appendChild(tr);
+  });
+  tbody.querySelectorAll('input').forEach((inp) => {
+    inp.addEventListener('change', (e) => {
+      const i = +e.target.dataset.i, k = e.target.dataset.k;
+      let v = parseFloat(e.target.value) || 0;
+      if (k === 'ramp' || k === 'hold') v = Math.max(0, Math.round(v * 60));  // minutes in UI
+      state.editSteps[i][k] = v;
+      drawEditor();
     });
-});
-
-document.getElementById('heaterSlider').addEventListener('change', async (e) => {
-    await fetch('/api/heater/manual', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ duty: parseInt(e.target.value) })
+  });
+  tbody.querySelectorAll('button[data-del]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      state.editSteps.splice(+e.target.dataset.del, 1);
+      drawEditor(); renderPoints();
     });
-});
+  });
+}
 
-document.getElementById('startBtn').addEventListener('click', async () => {
-    const profile = document.getElementById('profileSelect').value;
-    history = [];
-    await fetch('/api/roast/start', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ profile })
+// ---------------------------------------------------- profile editor -----
+
+function editorGeometry() {
+  const canvas = $('editor');
+  const minTemp = 0, maxTemp = 260;
+  const total = buildCurve(state.editSteps, START_TEMP).total;
+  const maxT = Math.max(600, Math.ceil(total / 300) * 300);   // seconds, min 10 min
+  const x = (t) => (t / maxT) * canvas.width;
+  const y = (temp) => canvas.height - ((temp - minTemp) / (maxTemp - minTemp)) * canvas.height;
+  const invY = (py) => minTemp + (1 - py / canvas.height) * (maxTemp - minTemp);
+  return { canvas, maxT, minTemp, maxTemp, x, y, invY };
+}
+
+function drawEditor() {
+  const canvas = $('editor');
+  if (!canvas.width) return;
+  const { maxT, x, y } = editorGeometry();
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  ctx.strokeStyle = '#2a2a2a'; ctx.fillStyle = '#666'; ctx.font = '10px sans-serif'; ctx.lineWidth = 1;
+  for (let temp = 0; temp <= 260; temp += 50) {
+    ctx.beginPath(); ctx.moveTo(0, y(temp)); ctx.lineTo(w, y(temp)); ctx.stroke();
+    ctx.fillText(temp + '°', 2, y(temp) - 2);
+  }
+  const minuteStep = Math.max(1, Math.ceil(maxT / 60 / 6));
+  for (let m = 0; m * 60 <= maxT; m += minuteStep) {
+    const t = m * 60;
+    ctx.beginPath(); ctx.moveTo(x(t), 0); ctx.lineTo(x(t), h); ctx.stroke();
+    ctx.fillText(m + ' min', x(t) + 2, h - 4);
+  }
+
+  const curve = buildCurve(state.editSteps, START_TEMP);
+
+  // hidden start point
+  ctx.beginPath(); ctx.arc(x(0), y(START_TEMP), 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#666'; ctx.fill();
+
+  if (state.editSteps.length) {
+    // temperature curve
+    ctx.beginPath(); ctx.strokeStyle = COLOR_TARGET; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+    curve.tempPts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
+    ctx.stroke(); ctx.setLineDash([]);
+
+    // fan curve
+    ctx.beginPath(); ctx.strokeStyle = COLOR_FAN; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    curve.fanPts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // draggable step markers (end of each step)
+  curve.markers.forEach((m) => {
+    ctx.beginPath(); ctx.arc(x(m.t), y(m.temp), 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#3a7d44'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+  });
+}
+
+function editorPointerPos(ev) {
+  const canvas = $('editor');
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width / rect.width, sy = canvas.height / rect.height;
+  return { px: (ev.clientX - rect.left) * sx, py: (ev.clientY - rect.top) * sy };
+}
+
+$('editor').addEventListener('pointerdown', (ev) => {
+  const { px, py } = editorPointerPos(ev);
+  const { invY, x, y } = editorGeometry();
+  const curve = buildCurve(state.editSteps, START_TEMP);
+
+  let nearest = -1, best = 15;
+  curve.markers.forEach((m, i) => {
+    const d = Math.hypot(x(m.t) - px, y(m.temp) - py);
+    if (d < best) { best = d; nearest = i; }
+  });
+
+  if (nearest >= 0) {
+    state.dragging = nearest;
+  } else {
+    state.editSteps.push({
+      ramp: 60, hold: 60,
+      temp: Math.round(Math.max(0, Math.min(260, invY(py)))),
+      fan: 0,
     });
+    renderPoints();
+  }
+  drawEditor();
+  $('editor').setPointerCapture(ev.pointerId);
 });
 
-document.getElementById('stopBtn').addEventListener('click', async () => {
-    await fetch('/api/roast/stop', { method: 'POST' });
+$('editor').addEventListener('pointermove', (ev) => {
+  if (state.dragging < 0) return;
+  const { py } = editorPointerPos(ev);
+  const { invY } = editorGeometry();
+  state.editSteps[state.dragging].temp = Math.round(Math.max(0, Math.min(260, invY(py))));
+  drawEditor();
 });
 
-document.getElementById('saveProfileBtn').addEventListener('click', async () => {
+$('editor').addEventListener('pointerup', () => {
+  if (state.dragging >= 0) { state.dragging = -1; renderPoints(); }
+});
+
+// --------------------------------------------------------------- actions --
+
+$('profileSelect').addEventListener('change', loadActiveProfile);
+async function loadActiveProfile() {
+  const name = $('profileSelect').value;
+  if (!name) { state.activeProfile = null; return; }
+  try {
+    state.activeProfile = await api('/api/profile?name=' + encodeURIComponent(name));
+  } catch (e) { state.activeProfile = null; }
+  drawRoastChart();
+}
+
+$('startBtn').addEventListener('click', async () => {
+  const profile = $('profileSelect').value;
+  if (!profile) { alert('Välj en profil först'); return; }
+  state.history = [];
+  await api('/api/roast/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile }),
+  });
+});
+
+$('stopBtn').addEventListener('click', () => api('/api/roast/stop', { method: 'POST' }));
+
+$('pauseBtn').addEventListener('click', () => {
+  api(state.status.roastPaused ? '/api/roast/resume' : '/api/roast/pause', { method: 'POST' });
+});
+
+$('manualStartBtn').addEventListener('click', async () => {
+  const temp = parseFloat($('manualTemp').value);
+  const minutes = parseFloat($('manualMinutes').value);
+  const autoCool = $('autoCool').checked;
+  const coolSpeed = parseInt($('coolSpeed').value);
+  const coolMinutes = parseFloat($('coolMinutes').value);
+  state.history = [];
+  try {
+    await api('/api/manual/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ temp, minutes, autoCool, coolSpeed, coolMinutes }),
+    });
+  } catch (e) { alert('Kunde inte starta: ' + e.message); }
+});
+
+$('manualStopBtn').addEventListener('click', () => api('/api/manual/stop', { method: 'POST' }));
+
+$('coolStartBtn').addEventListener('click', async () => {
+  const speed = parseInt($('coolSpeed').value);
+  const minutes = parseFloat($('coolMinutes').value);
+  try {
+    await api('/api/cool/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speed, minutes }),
+    });
+  } catch (e) { alert('Kunde inte starta kylning: ' + e.message); }
+});
+
+$('coolStopBtn').addEventListener('click', () => api('/api/cool/stop', { method: 'POST' }));
+
+$('newProfileBtn').addEventListener('click', () => {
+  state.editSteps = [
+    { ramp: 480, hold: 120, temp: 190, fan: 50 },   // 8 min ramp, 2 min hold
+    { ramp: 120, hold: 480, temp: 215, fan: 80 },   // 2 min ramp, 8 min hold
+  ];
+  state.loadedProfileName = '';
+  $('editName').value = '';
+  drawEditor(); renderPoints(); loadProfiles();
+});
+
+async function exportProfiles() {
+  if (!state.profileNames.length) { alert('Inga profiler att exportera'); return; }
+  const profiles = [];
+  for (const name of state.profileNames) {
     try {
-          const body = document.getElementById('profileJson').value;
-                JSON.parse(body);
-          await fetch('/api/profiles', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                          body
-                    });
-          await loadProfiles();
-    } catch (e) {
-          alert('Invalid JSON: ' + e.message);
-    }
+      const p = await api('/api/profile?name=' + encodeURIComponent(name));
+      profiles.push({ name: p.name, startTemp: p.startTemp, steps: p.steps });
+    } catch (e) { /* skip unreadable profile */ }
+  }
+  const data = { version: 1, exported: new Date().toISOString(), profiles };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'kaffeprofiler-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+async function importProfiles(file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+  } catch (e) { alert('Ogiltig JSON: ' + e.message); return; }
+
+  const profiles = data.profiles || (Array.isArray(data) ? data : null);
+  if (!profiles || !profiles.length) { alert('Hittade inga profiler i filen'); return; }
+
+  let ok = 0, fail = 0;
+  for (const p of profiles) {
+    if (!p.name || !p.steps) { fail++; continue; }
+    try {
+      await api('/api/profiles', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: p.name, startTemp: p.startTemp || START_TEMP, steps: p.steps }),
+      });
+      ok++;
+    } catch (e) { fail++; }
+  }
+  await loadProfiles(); await loadActiveProfile();
+  alert('Importerade ' + ok + ' profiler' + (fail ? ', ' + fail + ' misslyckades' : ''));
+}
+
+$('exportProfilesBtn').addEventListener('click', exportProfiles);
+$('importProfilesBtn').addEventListener('click', () => $('importFile').click());
+$('importFile').addEventListener('change', (e) => {
+  if (e.target.files.length) importProfiles(e.target.files[0]);
+  e.target.value = '';
 });
 
-loadProfiles();
-setInterval(pollStatus, 1000);
-pollStatus();
+$('addPointBtn').addEventListener('click', () => {
+  const last = state.editSteps.length ? state.editSteps[state.editSteps.length - 1] : { temp: START_TEMP, fan: 0 };
+  state.editSteps.push({ ramp: 60, hold: 60, temp: last.temp, fan: last.fan });
+  drawEditor(); renderPoints();
+});
+
+$('saveProfileBtn').addEventListener('click', async () => {
+  const name = $('editName').value.trim();
+  if (!name) { alert('Ange ett namn'); return; }
+  const steps = state.editSteps.map((s) => ({
+    ramp: Math.round(s.ramp), hold: Math.round(s.hold), temp: s.temp, fan: s.fan,
+  }));
+
+  // Warn before overwriting an existing profile, unless it is the one already
+  // open in the editor.
+  if (state.profileNames.includes(name) && name !== state.loadedProfileName) {
+    if (!confirm('Det finns redan en profil som heter "' + name + '". Vill du skriva över den?')) return;
+  }
+
+  try {
+    await api('/api/profiles', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, startTemp: START_TEMP, steps }),
+    });
+    state.loadedProfileName = name;
+    await loadProfiles();
+    $('profileSelect').value = name;
+    await loadActiveProfile();
+  } catch (e) { alert('Kunde inte spara: ' + e.message); }
+});
+
+// Clears the editor only - the saved profile is untouched (delete it with the
+// x in the saved-profiles list).
+$('clearProfileBtn').addEventListener('click', () => {
+  state.editSteps = [];
+  state.loadedProfileName = '';
+  $('editName').value = '';
+  drawEditor(); renderPoints(); loadProfiles();
+});
+
+// ------------------------------------------------------------------ log ---
+
+function renderLog() {
+  const tbody = $('logTable').querySelector('tbody');
+  tbody.innerHTML = '';
+  const rows = state.history.slice(-500).reverse();
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td>' + r.t + '</td>' +
+      '<td>' + (isFinite(r.bt) ? r.bt.toFixed(1) : '--') + '</td>' +
+      '<td>' + (isFinite(r.et) ? r.et.toFixed(1) : '--') + '</td>' +
+      '<td>' + Math.round(r.heater) + '</td>' +
+      '<td>' + r.fan + '</td>';
+    tbody.appendChild(tr);
+  }
+  $('logCount').textContent = state.history.length + ' mätpunkter';
+}
+
+$('clearLogBtn').addEventListener('click', () => { state.history = []; renderLog(); });
+
+$('exportBtn').addEventListener('click', () => {
+  let csv = 't_seconds,bt_c,et_c,heater_percent,fan_percent\n';
+  for (const r of state.history) {
+    csv += [r.t, r.bt, r.et, r.heater, r.fan].join(',') + '\n';
+  }
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'roast-' + new Date().toISOString().slice(0, 19).replace(/[:]/g, '') + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// ------------------------------------------------------------- resizing ---
+
+function resize() {
+  for (const id of ['chart', 'editor']) {
+    const c = $(id);
+    // Only size visible canvases - a hidden tab reports clientWidth 0, which
+    // would otherwise wipe the backing store of the other graph.
+    if (c.clientWidth > 0) {
+      c.width = c.clientWidth;
+      c.height = 600;
+    }
+  }
+  drawRoastChart(); drawEditor();
+}
+window.addEventListener('resize', resize);
+
+// ------------------------------------------------------------------ init --
+
+(async function init() {
+  resize();
+  await loadProfiles();
+  await loadActiveProfile();
+  renderPoints();
+  await pollStatus();
+  setInterval(pollStatus, 1000);
+  setInterval(() => {
+    if ($('view-log').classList.contains('active')) renderLog();
+  }, 2000);
+})();
 </script>
-  </body>
-  </html>
-  
+</body>
+</html>
