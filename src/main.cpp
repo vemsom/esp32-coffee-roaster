@@ -10,61 +10,222 @@
 #include "roast_profile.h"
 #include "web_server.h"
 
+// One PID instance, shared between manual and profile runs. It is reset
+// whenever a run starts so the integral does not carry over between runs.
 static SimplePID heaterPID(PID_KP, PID_KI, PID_KD, 0, 100);
+
+enum ControlMode { MODE_IDLE, MODE_MANUAL, MODE_PROFILE };
+static ControlMode controlMode = MODE_IDLE;
 
 static float currentBT = NAN;
 static float currentET = NAN;
 static float currentHeaterDuty = 0;
 static int currentFanSpeed = 0;
 
-static bool roastActive = false;
-static bool manualHeaterMode = false;
-static float manualHeaterDuty = 0;
-static unsigned long roastStartMillis = 0;
+// ---- Manual mode state (fixed target temp for a fixed duration) ----
+static float manualTargetTemp = 0;
+static unsigned long manualDurationSeconds = 0;
+static unsigned long manualStartMillis = 0;
+static bool manualAutoCool = false;
+static int manualCoolSpeed = 0;
+static unsigned long manualCoolSeconds = 0;
+
+// ---- Profile mode state ----
 static RoastProfile activeProfile;
+static unsigned long roastStartMillis = 0;
+static bool roastPaused = false;
+static unsigned long roastPauseStarted = 0;
+static unsigned long roastPausedTotal = 0;
+
+// ---- Cool mode state (fan-only timer, independent of heater control) ----
+static bool coolActive = false;
+static int coolSpeed = 0;
+static unsigned long coolDurationSeconds = 0;
+static unsigned long coolStartMillis = 0;
 
 static unsigned long lastSensorRead = 0;
 
+// ---- Status callbacks ----
 static float cbGetBT() { return currentBT; }
 static float cbGetET() { return currentET; }
 static float cbGetHeaterDuty() { return currentHeaterDuty; }
 static int cbGetFanSpeed() { return currentFanSpeed; }
-static bool cbGetRoastActive() { return roastActive; }
 
-static unsigned long cbGetElapsedSeconds() {
-    if (!roastActive) return 0;
-  return (millis() - roastStartMillis) / 1000;
+static bool cbGetRoastActive() { return controlMode == MODE_PROFILE; }
+
+// Roast time excludes any paused stretches, so pausing holds the current
+// setpoint in place without advancing the profile.
+static unsigned long roastElapsedSeconds() {
+  if (controlMode != MODE_PROFILE) return 0;
+  unsigned long now = millis();
+  unsigned long paused = roastPausedTotal + (roastPaused ? now - roastPauseStarted : 0);
+  return (now - roastStartMillis - paused) / 1000;
 }
 
+static unsigned long cbGetElapsedSeconds() { return roastElapsedSeconds(); }
+
+static bool cbGetRoastPaused() { return roastPaused; }
+
+static bool cbGetManualActive() { return controlMode == MODE_MANUAL; }
+static float cbGetManualTargetTemp() { return manualTargetTemp; }
+static bool cbGetManualAutoCool() { return manualAutoCool; }
+
+static unsigned long cbGetManualRemainingSeconds() {
+  if (controlMode != MODE_MANUAL) return 0;
+  unsigned long elapsed = (millis() - manualStartMillis) / 1000;
+  if (elapsed >= manualDurationSeconds) return 0;
+  return manualDurationSeconds - elapsed;
+}
+
+static bool cbGetCoolActive() { return coolActive; }
+static int cbGetCoolSpeed() { return coolSpeed; }
+
+static unsigned long cbGetCoolRemainingSeconds() {
+  if (!coolActive) return 0;
+  unsigned long elapsed = (millis() - coolStartMillis) / 1000;
+  if (elapsed >= coolDurationSeconds) return 0;
+  return coolDurationSeconds - elapsed;
+}
+
+// ---- Command callbacks ----
 static void cbSetFanSpeed(int percent) {
-    currentFanSpeed = percent;
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  currentFanSpeed = percent;
   fan_set_speed(percent);
 }
 
-static void cbSetManualHeaterDuty(float percent) {
-    manualHeaterMode = true;
-  manualHeaterDuty = percent;
+static bool cbStartCool(int speed, unsigned long durationSeconds);  // defined below
+
+// Starts the cooling fan after a manual run if the user armed it (either on
+// natural completion or on a manual stop).
+static void maybeStartAutoCool() {
+  if (manualAutoCool && manualCoolSpeed > 0 && manualCoolSeconds > 0) {
+    cbStartCool(manualCoolSpeed, manualCoolSeconds);
+  }
+  manualAutoCool = false;
+}
+
+static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
+                          bool autoCool, int coolSpeed, unsigned long coolSeconds) {
+  if (targetTemp <= 0 || durationSeconds == 0) return false;
+  manualTargetTemp = targetTemp;
+  manualDurationSeconds = durationSeconds;
+  manualStartMillis = millis();
+  manualAutoCool = autoCool;
+  manualCoolSpeed = coolSpeed;
+  manualCoolSeconds = coolSeconds;
+  heaterPID.reset();
+  controlMode = MODE_MANUAL;
+  return true;
+}
+
+static void cbStopManual() {
+  bool wasManual = (controlMode == MODE_MANUAL);
+  if (wasManual) controlMode = MODE_IDLE;
+  manualStartMillis = 0;
+  currentHeaterDuty = 0;
+  heater_set_duty(0);
+  if (wasManual) maybeStartAutoCool();
+}
+
+static bool cbStartCool(int speed, unsigned long durationSeconds) {
+  if (speed <= 0 || durationSeconds == 0) return false;
+  coolSpeed = speed;
+  coolDurationSeconds = durationSeconds;
+  coolStartMillis = millis();
+  coolActive = true;
+  return true;
+}
+
+static void cbStopCool() {
+  coolActive = false;
+  coolStartMillis = 0;
+  cbSetFanSpeed(0);
 }
 
 static bool cbStartRoast(const String &profileName) {
-    String path = String(PROFILES_DIR) + "/" + profileName + ".json";
+  String path = String(PROFILES_DIR) + "/" + profileName + ".json";
   if (!activeProfile.loadFromFile(path)) return false;
 
-  manualHeaterMode = false;
   heaterPID.reset();
   roastStartMillis = millis();
-  roastActive = true;
+  roastPaused = false;
+  roastPauseStarted = 0;
+  roastPausedTotal = 0;
+  controlMode = MODE_PROFILE;
   return true;
 }
 
 static void cbStopRoast() {
-    roastActive = false;
-  manualHeaterMode = false;
+  if (controlMode == MODE_PROFILE) controlMode = MODE_IDLE;
+  roastStartMillis = 0;
+  roastPaused = false;
+  roastPauseStarted = 0;
+  roastPausedTotal = 0;
+  currentHeaterDuty = 0;
   heater_set_duty(0);
 }
 
+// Pause freezes the roast clock. The PID keeps regulating the setpoint that
+// was active at the pause instant, so the current step is held in place.
+static void cbPauseRoast() {
+  if (controlMode != MODE_PROFILE || roastPaused) return;
+  roastPaused = true;
+  roastPauseStarted = millis();
+}
+
+static void cbResumeRoast() {
+  if (controlMode != MODE_PROFILE || !roastPaused) return;
+  roastPausedTotal += millis() - roastPauseStarted;
+  roastPaused = false;
+}
+
+// Runs the active control mode. Called at the sensor sample rate so the PID
+// sees a stable dt - the main loop itself spins far too fast for that.
+static void updateControl() {
+  if (controlMode == MODE_PROFILE) {
+    unsigned long elapsed = roastElapsedSeconds();
+    float target = activeProfile.targetAt(elapsed);
+    if (!isnan(target) && !isnan(currentBT)) {
+      currentHeaterDuty = heaterPID.compute(target, currentBT);
+      heater_set_duty(currentHeaterDuty);
+    }
+    if (activeProfile.hasFan()) {
+      cbSetFanSpeed((int)(activeProfile.fanAt(elapsed) + 0.5f));
+    }
+  } else if (controlMode == MODE_MANUAL) {
+    unsigned long elapsed = (millis() - manualStartMillis) / 1000;
+    if (elapsed >= manualDurationSeconds) {
+      controlMode = MODE_IDLE;
+      currentHeaterDuty = 0;
+      heater_set_duty(0);
+      maybeStartAutoCool();
+    } else if (!isnan(currentBT)) {
+      currentHeaterDuty = heaterPID.compute(manualTargetTemp, currentBT);
+      heater_set_duty(currentHeaterDuty);
+    }
+  } else {
+    currentHeaterDuty = 0;
+    heater_set_duty(0);
+  }
+}
+
+// Runs the fan-only cool timer. Independent of the heater control modes, and
+// applied after updateControl() so an explicit cool command wins the fan.
+static void updateCool() {
+  if (!coolActive) return;
+  unsigned long elapsed = (millis() - coolStartMillis) / 1000;
+  if (elapsed >= coolDurationSeconds) {
+    coolActive = false;
+    cbSetFanSpeed(0);
+  } else {
+    cbSetFanSpeed(coolSpeed);
+  }
+}
+
 void setup() {
-    Serial.begin(115200);
+  Serial.begin(115200);
   delay(200);
 
   if (!LittleFS.begin(true)) {
@@ -100,16 +261,29 @@ void setup() {
     cbGetFanSpeed,
     cbGetRoastActive,
     cbGetElapsedSeconds,
+    cbGetRoastPaused,
+    cbGetManualActive,
+    cbGetManualTargetTemp,
+    cbGetManualRemainingSeconds,
+    cbGetManualAutoCool,
+    cbGetCoolActive,
+    cbGetCoolSpeed,
+    cbGetCoolRemainingSeconds,
     cbSetFanSpeed,
-    cbSetManualHeaterDuty,
+    cbStartManual,
+    cbStopManual,
+    cbStartCool,
+    cbStopCool,
     cbStartRoast,
     cbStopRoast,
-};
+    cbPauseRoast,
+    cbResumeRoast,
+  };
   web_server_init(callbacks);
 }
 
 void loop() {
-    unsigned long now = millis();
+  unsigned long now = millis();
 
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS) {
     lastSensorRead = now;
@@ -120,23 +294,15 @@ void loop() {
     if (sensors_safety_triggered()) {
       Serial.println("SAFETY: sensor fault - shutting off heater");
       heater_emergency_off();
-      roastActive = false;
+      controlMode = MODE_IDLE;
+      roastPaused = false;
+      roastPauseStarted = 0;
+      roastPausedTotal = 0;
+      manualAutoCool = false;
     }
-  }
 
-  if (roastActive) {
-    unsigned long elapsed = cbGetElapsedSeconds();
-    float target = activeProfile.targetAt(elapsed);
-    if (!isnan(target) && !isnan(currentBT)) {
-      currentHeaterDuty = heaterPID.compute(target, currentBT);
-      heater_set_duty(currentHeaterDuty);
-    }
-  } else if (manualHeaterMode) {
-    currentHeaterDuty = manualHeaterDuty;
-    heater_set_duty(currentHeaterDuty);
-  } else {
-    currentHeaterDuty = 0;
-    heater_set_duty(0);
+    updateControl();
+    updateCool();
   }
 
   heater_update();
@@ -144,4 +310,3 @@ void loop() {
   // AsyncWebServer handles requests in the background, no explicit
   // "server.handleClient()" call needed here like with the sync web server.
 }
-
