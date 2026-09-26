@@ -51,5 +51,5 @@ IRF520 module under load, check for excessive heat, which would indicate the
 V-TAC PSU and MOSFET module to the fan motor, physically isolated from the
 original popper circuit. Sixth, flash and verify: pio run (green, flash ~69 %)
 plus `pio run -t uploadfs` (the web UI lives in the LittleFS image, not in the
-firmware), then check that the 8 discovery configs show up in Home Assistant and
+firmware), then check that the 9 discovery configs show up in Home Assistant and
 that a pulled thermocouple mid-run trips the safety latch.

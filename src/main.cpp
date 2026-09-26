@@ -24,6 +24,28 @@ static float currentET = NAN;
 static float currentHeaterDuty = 0;
 static int currentFanSpeed = 0;
 
+// Fan interlock: true while a positive heat request is being withheld because
+// the fan is below FAN_MIN_FOR_HEATER_PCT. Self-clearing and deliberately
+// separate from the latched sensor alarm - it has its own message and must
+// never be reported as a safety fault.
+static bool fanInterlockFault = false;
+
+// Every heater command goes through here. The interlock decides whether the
+// requested duty may reach the SSR, and the flag is recomputed from scratch on
+// each call so it always means "heat is being withheld right now" instead of
+// sticking on after the run has ended.
+static void applyHeaterDuty(float duty) {
+  if (duty > 0.0f && currentFanSpeed < FAN_MIN_FOR_HEATER_PCT) {
+    fanInterlockFault = true;
+    currentHeaterDuty = 0;
+    heater_set_duty(0);
+    return;
+  }
+  fanInterlockFault = false;
+  currentHeaterDuty = duty;
+  heater_set_duty(duty);
+}
+
 // ---- Manual mode state (fixed target temp for a fixed duration) ----
 static float manualTargetTemp = 0;
 static unsigned long manualDurationSeconds = 0;
@@ -100,6 +122,7 @@ static unsigned long cbGetCoolRemainingSeconds() {
 
 static bool cbGetSafetyFault() { return safety_faulted(); }
 static const char *cbGetSafetyReason() { return safety_code_text(); }
+static bool cbGetFanFault() { return fanInterlockFault; }
 
 static const char *cbGetModeName() {
   if (controlMode == MODE_PROFILE) return "profile";
@@ -148,8 +171,7 @@ static void cbStopManual() {
   bool wasManual = (controlMode == MODE_MANUAL);
   if (wasManual) controlMode = MODE_IDLE;
   manualStartMillis = 0;
-  currentHeaterDuty = 0;
-  heater_set_duty(0);
+  applyHeaterDuty(0);
   if (wasManual) maybeStartAutoCool();
 }
 
@@ -189,8 +211,7 @@ static void cbStopRoast() {
   roastPaused = false;
   roastPauseStarted = 0;
   roastPausedTotal = 0;
-  currentHeaterDuty = 0;
-  heater_set_duty(0);
+  applyHeaterDuty(0);
 }
 
 // Pause freezes the roast clock. The PID keeps regulating the setpoint that
@@ -217,36 +238,36 @@ static void abortRunForSafety() {
   roastPausedTotal = 0;
   manualStartMillis = 0;
   manualAutoCool = false;
-  currentHeaterDuty = 0;
+  applyHeaterDuty(0);
 }
 
 // Runs the active control mode. Called at the sensor sample rate so the PID
 // sees a stable dt - the main loop itself spins far too fast for that.
+// Every duty request goes through applyHeaterDuty(), which is where the fan
+// interlock holds the element off when there is not enough airflow.
 static void updateControl() {
   if (controlMode == MODE_PROFILE) {
     unsigned long elapsed = roastElapsedSeconds();
-    float target = activeProfile.targetAt(elapsed);
-    if (!isnan(target) && !isnan(currentBT)) {
-      currentHeaterDuty = heaterPID.compute(target, currentBT);
-      heater_set_duty(currentHeaterDuty);
-    }
+    // Fan first: the interlock has to see this cycle's fan value, or the very
+    // first duty request of a profile run would be judged against a stale fan.
     if (activeProfile.hasFan()) {
       cbSetFanSpeed((int)(activeProfile.fanAt(elapsed) + 0.5f));
+    }
+    float target = activeProfile.targetAt(elapsed);
+    if (!isnan(target) && !isnan(currentBT)) {
+      applyHeaterDuty(heaterPID.compute(target, currentBT));
     }
   } else if (controlMode == MODE_MANUAL) {
     unsigned long elapsed = (millis() - manualStartMillis) / 1000;
     if (elapsed >= manualDurationSeconds) {
       controlMode = MODE_IDLE;
-      currentHeaterDuty = 0;
-      heater_set_duty(0);
+      applyHeaterDuty(0);
       maybeStartAutoCool();
     } else if (!isnan(currentBT)) {
-      currentHeaterDuty = heaterPID.compute(manualTargetTemp, currentBT);
-      heater_set_duty(currentHeaterDuty);
+      applyHeaterDuty(heaterPID.compute(manualTargetTemp, currentBT));
     }
   } else {
-    currentHeaterDuty = 0;
-    heater_set_duty(0);
+    applyHeaterDuty(0);
   }
 }
 
@@ -311,6 +332,7 @@ void setup() {
     cbGetCoolRemainingSeconds,
     cbGetSafetyFault,
     cbGetSafetyReason,
+    cbGetFanFault,
     cbSetFanSpeed,
     cbStartManual,
     cbStopManual,
@@ -334,6 +356,7 @@ void setup() {
     cbGetSafetyFault,
     cbGetSafetyReason,
     cbGetRoastActive,
+    cbGetFanFault,
   };
   mqtt_init(mqttCallbacks);
 }

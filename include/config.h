@@ -34,6 +34,12 @@
 #define SENSOR_FAULT_MAX_JUMP_C   20.0
 #define SENSOR_FAULT_MAX_COUNT    5
 
+// ---- Flaktsparr (interlock) ----
+// Elementet far bara tandas nar flakten ar minst sa har procent. Under det
+// klipps varmen omedelbart, med eget felmeddelande (korsa inte ihop det med
+// sensorlarmet i safety.cpp). Galler bade manuellt och auto-lage.
+#define FAN_MIN_FOR_HEATER_PCT    10
+
 // ---- Sakerhetsgranser (hardkodade skydd, oberoende av PID och profil) ----
 // Hard grans for bontemperaturen. Nar den nas slas varmet av och ett larm
 // last i safety.cpp - larmet kan inte tystas, det sjalper forst nar
@@ -48,8 +54,25 @@
 #define SAFETY_CLEAR_STREAK         10
 // Plausibilitetsfonster for en enskild MAX6675-avlasning. Utanfor detta raknas
 // avlasningen som ett sensorfel (en frilagd ingang kan ge 0 C utan NaN).
-#define SENSOR_MIN_VALID_C        (-10.0)
-#define SENSOR_MAX_VALID_C         400.0
+//
+// Nedre gransen ar 2 C, inte -10 C. En frilagd prober las 0 C - eller ratt
+// under ratt over - utan att ge NaN, och ratt 0 hamnade innfor det gamla
+// -10..400-fonstret. Det ar precis vad en bench-test med nagot inkopplat
+// visade: alla temperaturer 0 C, ingen foljdeslag, elementet kordes pa 100 %
+// och larmet drog aldrig. Noll grader hor inte hemma i den har byggnaden -
+// kammaren kan inte vara kallare an rummet den star i.
+#define SENSOR_MIN_VALID_C          2.0
+#define SENSOR_MAX_VALID_C        400.0
+
+// Korskontroll av de tva proberna. Bada hor hemma i samma kammare, sa i
+// stillastande batte de ligga nara varandra: en spridning over
+// SENSOR_MAX_SPREAD_C nagot av avlasningarna ar fel, aven om var och en ar
+// plausibel for sig (t.ex. en prober som star kvar i rumstemperatur medan den
+// andra far ratt varde). Kontrollen arbetar bara tills nagot provar passerar
+// SENSOR_SPREAD_MAX_COLD_C - nar rostningen batjat far ET och BT skilja sig
+// pa riktigt och ska inte jamforas.
+#define SENSOR_MAX_SPREAD_C        15.0
+#define SENSOR_SPREAD_MAX_COLD_C   60.0
 
 // ---- MQTT (Home Assistant MQTT-discovery) ----
 // Anslutningsuppgifterna laggs i include/secrets.h (okommiterad) sa att de

@@ -54,6 +54,7 @@ static unsigned long gms() { return 61; }
 static bool gsf() { return false; }
 static const char *gsr() { return "none"; }
 static bool gra() { return true; }
+static bool gff() { return false; }   // fan interlock: not tripped in this test
 
 // ---- test helpers ----
 static int checks = 0;
@@ -81,7 +82,7 @@ static bool startsWith(const std::string &s, const std::string &prefix) {
 }
 
 int main() {
-  MqttCallbacks cb = {gb, ge, gh, gf, gm, gp, gms, gsf, gsr, gra};
+  MqttCallbacks cb = {gb, ge, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
 
   mqtt_init(cb);
 
@@ -115,8 +116,10 @@ int main() {
   std::set<std::string> components;
   int discoveryCount = 0;
   int sensorCount = 0;
+  int binarySensorCount = 0;
   bool commandTopicsFound = false;
   bool safetySeen = false;
+  bool fanFaultSeen = false;
   bool profileSensorSeen = false;
   bool topicsInsideNamespace = true;
 
@@ -176,9 +179,16 @@ int main() {
     }
 
     if (component == "binary_sensor") {
-      safetySeen = true;
-      check(std::string(doc["device_class"].as<const char *>()) == "problem",
-            "safety entity uses device_class 'problem'");
+      binarySensorCount++;
+      if (objectId == std::string(MQTT_DEVICE_ID) + "_safety") {
+        safetySeen = true;
+        check(std::string(doc["device_class"].as<const char *>()) == "problem",
+              "safety entity uses device_class 'problem'");
+      } else if (objectId == std::string(MQTT_DEVICE_ID) + "_fan_fault") {
+        fanFaultSeen = true;
+        check(std::string(doc["device_class"].as<const char *>()) == "problem",
+              "fan interlock entity uses device_class 'problem'");
+      }
     }
     if (objectId == std::string(MQTT_DEVICE_ID) + "_profile") {
       profileSensorSeen = true;
@@ -187,14 +197,15 @@ int main() {
 
   check(topicsInsideNamespace, "every topic lives under coffee_roaster/ or homeassistant/");
   check(!commandTopicsFound, "no entity has a command_topic");
-  check(discoveryCount == 8, "8 discovery configs published");
+  check(discoveryCount == 9, "9 discovery configs published");
   check(sensorCount == 7, "7 read-only sensors (bt, et, heater, fan, mode, elapsed, profile)");
-  check(components.count("binary_sensor") == 1, "1 binary_sensor");
+  check(binarySensorCount == 2, "2 binary_sensors (safety + fan interlock)");
   check(components.size() == 2, "only sensor and binary_sensor components");
   check(components.count("number") == 0 && components.count("select") == 0 &&
             components.count("button") == 0 && components.count("switch") == 0,
         "no controllable entity types published");
   check(safetySeen, "safety alarm entity published");
+  check(fanFaultSeen, "fan interlock entity published");
   check(profileSensorSeen, "profile reported as a sensor");
 
   // ---------------------------------------------------------- status JSON ---
@@ -213,6 +224,8 @@ int main() {
     check(doc["elapsed"].as<unsigned long>() == 61, "status carries elapsed seconds");
     check(doc["safetyFault"].is<bool>() && !doc["safetyFault"].as<bool>(),
           "status carries safetyFault");
+    check(doc["fanFault"].is<bool>() && !doc["fanFault"].as<bool>(),
+          "status carries fanFault");
     check(std::string(doc["ip"].as<const char *>()) == "192.168.1.173", "status carries ip");
     check(!statusPub->retained, "status is not retained");
   }

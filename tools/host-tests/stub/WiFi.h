@@ -18,6 +18,7 @@ class WiFiClient {};
 
 class WiFiClass {
  public:
+  void begin(const char *, const char *) {}
   int status() { return WL_CONNECTED; }
   IPAddress localIP() { return IPAddress(192, 168, 1, 173); }
   int32_t RSSI() { return -55; }

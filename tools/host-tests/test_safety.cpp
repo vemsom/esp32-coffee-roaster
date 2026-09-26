@@ -168,6 +168,28 @@ int main() {
   feed(good(200, 250), SAFETY_CLEAR_STREAK);
   check(!safety_faulted(), "ET alarm clears below its margin");
 
+  // --------------------------------- probes disagreeing while still cold ----
+  // Both are plausible on their own (inside the -10..400 style window) but
+  // they cannot sit 20 C apart in the same chamber at rest: one of them is
+  // wrong and there is no way to tell which.
+  safety_init();
+  feed(good(20, 40), SENSOR_FAULT_MAX_COUNT - 1);
+  check(!safety_faulted(), "four disagreeing samples do not trip");
+  fakeMillis += SENSOR_READ_INTERVAL_MS;
+  safety_update(good(20, 40));
+  check(safety_faulted() && safety_code() == SAFETY_SPREAD,
+        "cold probes that disagree trip the cross-check");
+  check(strcmp(safety_code_text(), "bt/et disagree") == 0,
+        "spread has its own reason text");
+  feed(good(20, 21), SAFETY_CLEAR_STREAK);
+  check(!safety_faulted(), "probes agreeing again clear the spread alarm");
+
+  // Once a probe is hot the difference is real physics (air vs beans) and
+  // must never trip - a real roast runs ET and BT tens of degrees apart.
+  safety_init();
+  feed(good(180, 40), 20);
+  check(!safety_faulted(), "hot and cold probes are not compared");
+
   // NaN readings (nothing has ever been read successfully)
   safety_init();
   SensorReading nan;

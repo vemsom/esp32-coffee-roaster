@@ -55,6 +55,7 @@
   .pill.paused { background: #a06a00; }
   .pill.cool { background: #1f5f8a; }
   .pill.fault { background: var(--red); }
+  .pill.warn { background: #a06a00; }
   .big { font-size: 32px; font-weight: 700; }
   .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
   #profileList { display: flex; flex-direction: column; gap: 6px; }
@@ -65,7 +66,7 @@
 </style>
 </head>
 <body>
-  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span></h1>
+  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none">fläkt</span></h1>
 
   <div class="tabs">
     <div class="tab active" data-view="roast">Rostning</div>
@@ -101,6 +102,14 @@
 
   <!-- ============================ MANUAL ============================ -->
   <div class="view" id="view-manual">
+    <div class="row">
+      <div class="card"><div class="label">Böntemp (BT)</div><div class="value" id="mValBT">--</div></div>
+      <div class="card"><div class="label">Lufttemp (ET)</div><div class="value" id="mValET">--</div></div>
+      <div class="card"><div class="label">Målvärde</div><div class="value" id="mValTarget">--</div></div>
+      <div class="card"><div class="label">Värme</div><div class="value" id="mValHeater">--</div></div>
+      <div class="card"><div class="label">Fläkt</div><div class="value" id="mValFan">--</div></div>
+    </div>
+
     <div class="panel">
       <div class="controls">
         <div style="min-width:120px;">
@@ -111,11 +120,18 @@
           <label>Tid (minuter)</label>
           <input type="number" id="manualMinutes" value="10" min="0.5" max="120" step="0.5">
         </div>
+        <div style="min-width:120px;">
+          <label>Fläkt (%)</label>
+          <input type="number" id="manualFan" value="100" min="0" max="100" step="5">
+        </div>
+        <button id="manualFanBtn">Sätt fläkt</button>
         <button class="primary" id="manualStartBtn">Starta</button>
         <button class="danger" id="manualStopBtn">Stopp</button>
       </div>
-      <div class="hint">PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Fläkten påverkas inte om inte auto-kylning är aktiverad nedan.</div>
+      <div class="hint">PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Elementet kräver minst 10 % fläkt: sätt fläkten först, start nekas annars och värmen klipps om fläkten faller under.</div>
     </div>
+
+    <canvas id="chartManual" height="600"></canvas>
 
     <div class="panel">
       <div class="panel-heading">Återstår</div>
@@ -221,6 +237,7 @@ const COLOR_ET = '#ff8a4d';                       // environment temp (roast)
 const COLOR_TARGET = 'rgba(255,210,63,0.75)';     // profile target curve (both)
 const COLOR_TARGET_MARK = 'rgba(255,210,63,0.95)';
 const COLOR_FAN = 'rgba(95,176,255,0.8)';         // target fan curve (editor + roast)
+const COLOR_FAN_ACTUAL = 'rgba(52,199,89,0.85)';  // measured fan duty (both views)
 
 const state = {
   status: {},
@@ -281,6 +298,16 @@ document.querySelectorAll('.tab').forEach((tab) => {
   });
 });
 
+// The setpoint the manual PID is holding: live from the status while a run is
+// active, otherwise whatever is in the input (so the graph shows where heat
+// would go before the run starts).
+function manualTarget() {
+  const s = state.status;
+  if (s.manualActive && isFinite(s.manualTargetTemp)) return s.manualTargetTemp;
+  const v = parseFloat($('manualTemp').value);
+  return isFinite(v) ? v : null;
+}
+
 // ---------------------------------------------------------- status poll ---
 
 async function pollStatus() {
@@ -301,6 +328,14 @@ async function pollStatus() {
   $('valFan').textContent = s.fanSpeed + '%';
   $('valTime').textContent = fmtClock(s.elapsedSeconds);
 
+  // Same readout in the manual view, plus the setpoint the PID is holding.
+  const target = manualTarget();
+  $('mValBT').textContent = bt === null ? '--' : bt.toFixed(1) + '°C';
+  $('mValET').textContent = et === null ? '--' : et.toFixed(1) + '°C';
+  $('mValTarget').textContent = target === null ? '--' : Math.round(target) + '°C';
+  $('mValHeater').textContent = Math.round(s.heaterDuty) + '%';
+  $('mValFan').textContent = s.fanSpeed + '%';
+
   const pill = $('modePill');
   if (s.safetyFault) { pill.textContent = 'larm'; pill.className = 'pill fault'; }
   else if (s.roastActive && s.roastPaused) { pill.textContent = 'pausad'; pill.className = 'pill paused'; }
@@ -315,6 +350,16 @@ async function pollStatus() {
     faultPill.textContent = 'LARM: ' + (s.safetyReason || 'fel') + ' – värmen av';
   } else {
     faultPill.style.display = 'none';
+  }
+
+  // Fan interlock, kept on its own pill: it is not a sensor alarm and must not
+  // look like one. It clears itself as soon as the fan is back above minimum.
+  const fanPill = $('fanPill');
+  if (s.fanFault) {
+    fanPill.style.display = '';
+    fanPill.textContent = 'FLÄKT <10 % – värmen av';
+  } else {
+    fanPill.style.display = 'none';
   }
 
   const pauseBtn = $('pauseBtn');
@@ -337,19 +382,18 @@ async function pollStatus() {
 
   state.history.push({ t: s.elapsedSeconds, bt: s.bt, et: s.et, heater: s.heaterDuty, fan: s.fanSpeed });
   if (state.history.length > 4000) state.history.shift();
-  drawRoastChart();
+  drawRoastCharts();
 }
 
 // ------------------------------------------------------- roast graph ------
 
-function drawRoastChart() {
-  const canvas = $('chart');
-  if (!canvas.width) return;
+function drawRoastChart(canvas, manual) {
+  if (!canvas || !canvas.width) return;
   const ctx = canvas.getContext('2d');
   const w = canvas.width, h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  const profile = state.activeProfile;
+  const profile = manual ? null : state.activeProfile;
   const curve = profile && profile.steps && profile.steps.length
     ? buildCurve(profile.steps, profile.startTemp || START_TEMP)
     : null;
@@ -388,6 +432,18 @@ function drawRoastChart() {
     ctx.stroke(); ctx.setLineDash([]);
   }
 
+  // Manual view: the setpoint is a flat line instead of a profile curve.
+  if (manual) {
+    const target = manualTarget();
+    if (target !== null && target <= maxTemp) {
+      ctx.beginPath(); ctx.strokeStyle = COLOR_TARGET; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
+      ctx.moveTo(0, y(target)); ctx.lineTo(w, y(target));
+      ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = COLOR_TARGET_MARK;
+      ctx.fillText('mål ' + Math.round(target) + '°', 4, y(target) - 4);
+    }
+  }
+
   // measured BT / ET
   const drawLine = (key, color) => {
     ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
@@ -401,6 +457,15 @@ function drawRoastChart() {
   };
   drawLine('bt', COLOR_BT);
   drawLine('et', COLOR_ET);
+  // measured fan duty (0-100 on the same axis), in both views
+  drawLine('fan', COLOR_FAN_ACTUAL);
+}
+
+// Redraws whichever graph canvases exist: the roast view and the manual view
+// show the same monitor, only the setpoint differs.
+function drawRoastCharts() {
+  drawRoastChart($('chart'), false);
+  drawRoastChart($('chartManual'), true);
 }
 
 // --------------------------------------------------- profiles list/render --
@@ -603,7 +668,7 @@ async function loadActiveProfile() {
   try {
     state.activeProfile = await api('/api/profile?name=' + encodeURIComponent(name));
   } catch (e) { state.activeProfile = null; }
-  drawRoastChart();
+  drawRoastCharts();
 }
 
 $('startBtn').addEventListener('click', async () => {
@@ -635,6 +700,14 @@ $('manualStartBtn').addEventListener('click', async () => {
       body: JSON.stringify({ temp, minutes, autoCool, coolSpeed, coolMinutes }),
     });
   } catch (e) { alert('Kunde inte starta: ' + e.message); }
+});
+
+$('manualFanBtn').addEventListener('click', () => {
+  const speed = parseInt($('manualFan').value, 10) || 0;
+  api('/api/fan', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ speed }),
+  }).catch((e) => alert('Kunde inte sätta fläkt: ' + e.message));
 });
 
 $('manualStopBtn').addEventListener('click', () => api('/api/manual/stop', { method: 'POST' }));
@@ -787,7 +860,7 @@ $('exportBtn').addEventListener('click', () => {
 // ------------------------------------------------------------- resizing ---
 
 function resize() {
-  for (const id of ['chart', 'editor']) {
+  for (const id of ['chart', 'editor', 'chartManual']) {
     const c = $(id);
     // Only size visible canvases - a hidden tab reports clientWidth 0, which
     // would otherwise wipe the backing store of the other graph.
@@ -796,7 +869,7 @@ function resize() {
       c.height = 600;
     }
   }
-  drawRoastChart(); drawEditor();
+  drawRoastCharts(); drawEditor();
 }
 window.addEventListener('resize', resize);
 

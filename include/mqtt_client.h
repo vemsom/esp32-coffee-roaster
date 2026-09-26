@@ -19,6 +19,7 @@ struct MqttCallbacks {
   bool  (*getSafetyFault)();
   const char *(*getSafetyReason)();
   bool  (*getRoastActive)();
+  bool  (*getFanFault)();    // fan interlock: heat withheld, fan below minimum
 };
 
 // No-op (MQTT stays disabled, but the firmware runs) when MQTT_HOST is "TBD".

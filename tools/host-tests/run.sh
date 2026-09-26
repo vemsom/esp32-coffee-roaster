@@ -35,5 +35,16 @@ g++ -std=c++17 -Wall -Wextra \
     "$here/test_mqtt_discovery.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_mqtt"
 
+# The control test links the real main.cpp with stubbed hardware, so it can
+# drive setup()/loop() and the callbacks the web server calls. roast_profile.cpp
+# is deliberately NOT linked - the test supplies its own canned profile.
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+    "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
+    "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
+    "$root/src/fan_control.cpp" "$root/src/mqtt_client.cpp" \
+    -o "$out/test_control"
+
 "$out/test_safety"
 "$out/test_mqtt"
+"$out/test_control"

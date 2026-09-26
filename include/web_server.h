@@ -21,6 +21,7 @@ struct WebServerCallbacks {
   unsigned long (*getCoolRemainingSeconds)();
   bool  (*getSafetyFault)();
   const char *(*getSafetyReason)();
+  bool  (*getFanFault)();   // fan interlock: heat withheld, fan below minimum
 
   // Commands
   void (*setFanSpeed)(int percent);

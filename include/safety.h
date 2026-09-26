@@ -12,6 +12,7 @@ enum SafetyFaultCode {
   SAFETY_OVER_TEMP_ET,  // environment temperature at or above SAFETY_MAX_ET_TEMP_C
   SAFETY_SENSOR_BT,     // BT probe NaN / implausible / stuck jump, sustained
   SAFETY_SENSOR_ET,     // ET probe NaN / implausible / stuck jump, sustained
+  SAFETY_SPREAD,        // BT and ET disagree while both are still cold
 };
 
 void safety_init();

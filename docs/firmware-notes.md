@@ -22,20 +22,36 @@ than NAN, which is why sensors.cpp also rejects values outside
 SENSOR_MIN_VALID_C..SENSOR_MAX_VALID_C and values that jump more than
 SENSOR_FAULT_MAX_JUMP_C.
 
+The floating-low case is not hypothetical: a bench run on 2026-09-26 with
+nothing wired to the ESP32 read 0 C on every channel, ran the heater at 100 %
+and never tripped - the lower bound was -10 C, so steady zeros counted as
+perfectly healthy readings. `SENSOR_MIN_VALID_C` is now 2.0 (include/config.h)
+and there is a BT/ET cross-check on top of it.
+
 Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
-exercised by a host test with stubbed Arduino calls, 25 assertions, all passing.
-See `tools/host-tests/`.
+exercised by host tests with stubbed Arduino calls - `test_safety` (30 checks)
+and `test_control` (44 checks, which drives the real setup()/loop()). All
+passing. See `tools/host-tests/`.
 
 ## Safety behaviour (implemented 2026-09-26)
 
-Two conditions latch a single alarm, both checked on every validated sensor
+Three conditions latch a single alarm, all checked on every validated sensor
 sample in `safety_update()`:
 
 1. Hard temperature limit - BT at or above `SAFETY_MAX_TEMP_C` (260 C) or ET at
    or above `SAFETY_MAX_ET_TEMP_C` (300 C). Both constants live in
    include/config.h and are configurable there.
-2. Sensor fault - NAN, implausible value, or an implausible jump, sustained for
-   `SENSOR_FAULT_MAX_COUNT` (5) consecutive samples.
+2. Sensor fault - NAN, an implausible value (outside `SENSOR_MIN_VALID_C`
+   2 C .. `SENSOR_MAX_VALID_C` 400 C), or an implausible jump, sustained for
+   `SENSOR_FAULT_MAX_COUNT` (5) consecutive samples. The 2 C floor is what
+   catches a probe that was disconnected before power-up: it reads a steady
+   0 C with no previous value to jump from.
+3. Probe disagreement - while both probes stay below
+   `SENSOR_SPREAD_MAX_COLD_C` (60 C) they must agree within
+   `SENSOR_MAX_SPREAD_C` (15 C). This is the case where each reading is
+   plausible on its own but one of them is wrong, so there is no per-channel
+   window that can see it. Above 60 C the check switches off: a roast really
+   does run ET and BT tens of degrees apart.
 
 While the alarm is latched:
 
@@ -70,6 +86,35 @@ Open items in the safety layer:
   hardware before the first real roast, and keep in mind that a K-type
   thermocouple in a hot air stream reads air, not bean temperature.
 
+## Fan interlock (implemented 2026-09-26)
+
+The element may only fire while the fan runs at least `FAN_MIN_FOR_HEATER_PCT`
+(10 %, include/config.h), in manual and profile mode alike:
+
+- Every heater command goes through `applyHeaterDuty()` in src/main.cpp, which
+  holds the duty at 0 and raises `fanInterlockFault` when the fan is below the
+  threshold. The flag is recomputed every control cycle, so it clears itself as
+  soon as the fan is back (or nothing is requested) - unlike the safety latch,
+  this is deliberately not one-way.
+- `handleManualStart` refuses a start below the fan minimum with its own 409
+  ("cannot start: fan must run at least 10 % first"), separate from the safety
+  409. The control-level check behind it is the backstop.
+- Reported as `fanFault` in `/api/status`, as an amber banner in the web UI
+  ("FLÄKT <10 % - värmen av") and as the `binary_sensor` "Flaktsparr" in HA.
+  Kept out of `safetyFault` on purpose: different condition, different fix, and
+  it clears on its own.
+
+In profile mode the fan is applied *before* the duty is computed, otherwise the
+first sample of a run would be judged against the previous run's fan value.
+
+## Web UI monitor
+
+The manual view carries the same readout as the roast view: cards for BT, ET,
+setpoint, heater duty and fan duty, plus a graph with the setpoint drawn as a
+flat dashed line. Measured fan duty is drawn as a line in both views. The
+manual view also has a fan input (`POST /api/fan`) - that is how the fan is
+raised before a start when the interlock is in the way.
+
 ## MQTT / Home Assistant (implemented 2026-09-26)
 
 Broker for this build: the MQTT broker on the Home Assistant host,
@@ -100,12 +145,12 @@ subscribed):
     coffee_roaster/status          JSON, published every 2 s
     coffee_roaster/availability    "online" / "offline" (LWT, retained)
 
-Entities published in discovery (8 configs, all read-only, all under
+Entities published in discovery (9 configs, all read-only, all under
 `homeassistant/<component>/coffee_roaster_<object>/config`): bean temperature,
 environment temperature, heater duty, fan speed, mode, elapsed seconds and
-profile (sensors), plus the safety alarm (binary_sensor, device_class problem).
-Every config is retained and carries the device block, unique_id and
-availability topic.
+profile (sensors), plus the safety alarm and the fan interlock (binary_sensors,
+both device_class problem). Every config is retained and carries the device
+block, unique_id and availability topic.
 
 Topic separation: everything the roaster owns is under `coffee_roaster/` plus
 its own `homeassistant/` configs, so nothing overlaps Tibber Pulse MQTT's topics
@@ -134,10 +179,6 @@ Open items in the MQTT layer:
   arrived. Until those are done the device has nothing to report.
 - No control over MQTT - deliberate, see above. If that ever changes the first
   candidate is a start/stop pair and the fan, never a raw heater duty.
-- The fan can be commanded to 0 % while the heater is on (web UI only). With no
-  airflow the element heats the chamber quickly; the 260 C latch is the
-  backstop. A "fan required when the heater is on" interlock would be the next
-  safety improvement.
 - MQTT reconnects every 5 s while the link is down. The home network has
   intermittent dropouts, so this is expected to be exercised in practice.
 - HA only shows state: manual mode, profile editing and start/stop stay in the
@@ -168,8 +209,10 @@ before step 8.
 5. **Fault injection, heater OFF.** Pull one thermocouple while logging.
    Confirm the library really returns NaN on an open probe (assumed from
    max6675.cpp:46, never seen on hardware) and that the latch trips and holds.
-   Then check the second failure mode: a data line that floats low reads as a
-   fixed 0.0 C, not NaN - see the gap below.
+   Then confirm the second failure mode on hardware as well: a data line that
+   floats low reads a fixed 0.0 C rather than NaN. Today that case is covered
+   by test_control with an *injected* 0 C reading - the real floating input
+   still has to be seen once.
 6. **Fault injection, heater ON, chamber cold.** Start a manual run, then pull
    the probe. Expect: heater off within count x 250 ms, run aborted, alarm in
    the web UI (and HA once flashed), no re-arm until the probe is back and
@@ -179,12 +222,15 @@ before step 8.
    the probe placement (air stream vs beans) makes those numbers meaningful.
 8. **Freeze the constants** and write the measured values back into this file.
 
-Known gap to resolve in step 5: a probe disconnected *at power-on* reads
-0.0 C, which passes the -10..400 C plausibility window and has no previous
-value to jump from - so the PID would happily drive the heater toward the
-setpoint on a false reading until the 260 C limit saves it. Candidates: treat
-an exact 0.0 C as a fault after N samples, or cross-check BT against ET at
-start-up (two probes in the same room must agree within a few degrees).
+Resolved since the bench run, but decide the number here: a probe disconnected
+*at power-on* used to read 0.0 C straight through the -10..400 C window with no
+previous value to jump from, so the PID drove the heater at 100 % on a
+fabricated reading and the alarm never fired. Two fixes are in:
+`SENSOR_MIN_VALID_C` 2 C (a steady 0 C becomes a sensor fault after
+`SENSOR_FAULT_MAX_COUNT` samples) and the BT/ET cross-check. What is still a
+judgement call is whether 2 C is the right floor - if this machine ever stands
+somewhere that cold, move the floor using the numbers from step 2, and confirm
+in step 6 that a genuinely floating input lands below it.
 
 ## Still open, not done
 
@@ -214,16 +260,22 @@ multi-user.
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker:
 
-- `test_safety` - safety latch and heater interlock (25 checks): trip on the
-  hard limit and on sustained sensor faults, commands refused while latched,
-  clear only after the healthy streak.
-- `test_mqtt_discovery` - MQTT layer (119 checks): all 8 discovery configs are
+- `test_safety` - safety latch and heater interlock (30 checks): trip on the
+  hard limit, on sustained sensor faults and on BT/ET disagreement while cold;
+  commands refused while latched; clear only after the healthy streak.
+- `test_mqtt_discovery` - MQTT layer (133 checks): all 9 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
-  carries the expected fields; every payload fits the PubSubClient buffer
-  (largest 647 B against the 900 B limit); and the report-only guarantees hold -
-  no subscriptions, no message callback, no `command_topic` on any entity, no
-  controllable entity types, and every published topic under `coffee_roaster/`
-  or `homeassistant/`.
+  carries the expected fields (including `fanFault`); every payload fits the
+  PubSubClient buffer (largest 647 B against the 900 B limit); and the
+  report-only guarantees hold - no subscriptions, no message callback, no
+  `command_topic` on any entity, no controllable entity types, and every
+  published topic under `coffee_roaster/` or `homeassistant/`.
+- `test_control` - the real src/main.cpp against stubbed hardware (44 checks):
+  the bench case (probes disconnected, 0 C on every channel) trips the latch
+  and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
+  the fan interlock in manual *and* profile mode, both directions; a probe
+  pulled mid-run aborts the running heat; and the MQTT status payload carries
+  both fault flags. This is the test that would have caught the 0 C bug.
 
 The MQTT test needs an enabled config: without `include/secrets.h`, `run.sh`
 passes throwaway `-DMQTT_HOST/-DMQTT_USER/-DMQTT_PASSWORD` values to both
