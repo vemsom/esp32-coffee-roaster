@@ -18,7 +18,7 @@ and `docs/hardware.md` for the hardware decisions.
 - Profile roasts from LittleFS JSON profiles (ramp/hold steps with per-step fan), plus a fixed manual mode and a fan-only cool timer
 - PID with time-proportioning SSR control (~2 s window) and 20 kHz PWM fan control
 - Own REST API + offline-capable web UI in `data/index.html` (no CDN dependencies)
-- Home Assistant integration over MQTT with MQTT discovery - temperatures, heater/fan, mode, profile, safety alarm, and start/stop + profile selection as commands
+- Home Assistant integration over MQTT with MQTT discovery - temperatures, heater/fan, mode, profile, elapsed time and the safety alarm. **Report-only:** the roaster publishes state and can never be started, stopped or adjusted over MQTT; all control lives in the web UI.
 
 ## Safety limits
 The heater is behind a latched alarm that cannot be silenced by any command:

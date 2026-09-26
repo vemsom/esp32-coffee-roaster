@@ -137,74 +137,16 @@ static void publishDiscovery() {
     publishDiscoveryEntity("binary_sensor", "safety", doc);
   }
 
-  // --- controls ---
+  // Profile is reported as a plain sensor. MQTT is report-only: no number,
+  // no select, no buttons, no command topics - see docs/firmware-notes.md.
   {
-    JsonDocument doc;
-    snprintf(uniqueId, sizeof(uniqueId), "%s_fan_set", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Flakthastighet");
-    doc["command_topic"] = MQTT_BASE_TOPIC "/fan/set";
-    doc["state_topic"] = STATUS_TOPIC;
-    doc["value_template"] = "{{ value_json.fan }}";
-    doc["unit_of_measurement"] = "%";
-    doc["min"] = 0;
-    doc["max"] = 100;
-    doc["step"] = 5;
-    doc["mode"] = "slider";
-    doc["icon"] = "mdi:fan";
-    publishDiscoveryEntity("number", "fan_speed", doc);
-  }
-  {
-    JsonDocument doc;
-    snprintf(uniqueId, sizeof(uniqueId), "%s_heater_set", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Varmelement duty");
-    doc["command_topic"] = MQTT_BASE_TOPIC "/heater/set";
-    doc["state_topic"] = STATUS_TOPIC;
-    doc["value_template"] = "{{ value_json.heater }}";
-    doc["unit_of_measurement"] = "%";
-    doc["min"] = 0;
-    doc["max"] = 100;
-    doc["step"] = 5;
-    doc["mode"] = "slider";
-    doc["icon"] = "mdi:radiator";
-    publishDiscoveryEntity("number", "heater_duty", doc);
-  }
-
-  // The select entity is only useful when there is at least one profile on
-  // LittleFS, and HA rejects an empty options list.
-  String names[MQTT_MAX_PROFILE_OPTIONS];
-  int profileCount = cb.listProfiles ? cb.listProfiles(names, MQTT_MAX_PROFILE_OPTIONS) : 0;
-  if (profileCount > 0) {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_profile", MQTT_DEVICE_ID);
     addDeviceBlock(doc, uniqueId, "Profil");
-    JsonArray options = doc["options"].to<JsonArray>();
-    for (int i = 0; i < profileCount; i++) options.add(names[i].c_str());
-    doc["command_topic"] = MQTT_BASE_TOPIC "/profile/set";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ value_json.profile }}";
     doc["icon"] = "mdi:coffee-maker";
-    publishDiscoveryEntity("select", "profile", doc);
-  } else {
-    Serial.println("[MQTT] no profiles on LittleFS - select entity skipped");
-  }
-
-  {
-    JsonDocument doc;
-    snprintf(uniqueId, sizeof(uniqueId), "%s_start", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Starta rostning");
-    doc["command_topic"] = MQTT_BASE_TOPIC "/roast/start";
-    doc["payload_press"] = "start";
-    doc["icon"] = "mdi:play-circle-outline";
-    publishDiscoveryEntity("button", "roast_start", doc);
-  }
-  {
-    JsonDocument doc;
-    snprintf(uniqueId, sizeof(uniqueId), "%s_stop", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Stoppa rostning");
-    doc["command_topic"] = MQTT_BASE_TOPIC "/roast/stop";
-    doc["payload_press"] = "stop";
-    doc["icon"] = "mdi:stop-circle-outline";
-    publishDiscoveryEntity("button", "roast_stop", doc);
+    publishDiscoveryEntity("sensor", "profile", doc);
   }
 }
 
@@ -238,47 +180,6 @@ void mqtt_publish_status() {
   }
 }
 
-// -------------------------------------------------------------- commands ---
-
-static void handleCommand(const String &topic, const String &payload) {
-  if (topic.endsWith("/fan/set")) {
-    cb.setFanSpeed(payload.toInt());
-  } else if (topic.endsWith("/heater/set")) {
-    cb.setHeaterDuty(payload.toFloat());
-  } else if (topic.endsWith("/profile/set")) {
-    if (payload.length()) cb.setSelectedProfile(payload);
-  } else if (topic.endsWith("/roast/start")) {
-    // Accepts either an explicit profile name or "start"/"press"/empty, in
-    // which case the selected profile is used.
-    String name = payload;
-    if (name.length() == 0 || name.equalsIgnoreCase("start") || name.equalsIgnoreCase("press")) {
-      name = cb.getProfileName();
-    }
-    if (name.length() == 0) {
-      Serial.println("[MQTT] roast/start with no profile selected - ignored");
-    } else if (!cb.startRoast(name)) {
-      Serial.print("[MQTT] roast start refused (missing profile or active safety alarm): ");
-      Serial.println(name);
-    }
-  } else if (topic.endsWith("/roast/stop")) {
-    cb.stopRoast();
-  }
-
-  mqtt_publish_status();  // immediate feedback for the UI
-}
-
-static void onMessage(char *topic, byte *payload, unsigned int length) {
-  String message;
-  message.reserve(length);
-  for (unsigned int i = 0; i < length; i++) message += (char)payload[i];
-  message.trim();
-  Serial.print("[MQTT] <- ");
-  Serial.print(topic);
-  Serial.print(" : ");
-  Serial.println(message);
-  handleCommand(String(topic), message);
-}
-
 // ------------------------------------------------------------ connection ---
 
 static bool connectBroker() {
@@ -301,11 +202,8 @@ static bool connectBroker() {
   client.publish(AVAILABILITY_TOPIC, "online", true);
   publishDiscovery();
 
-  client.subscribe(MQTT_BASE_TOPIC "/fan/set");
-  client.subscribe(MQTT_BASE_TOPIC "/heater/set");
-  client.subscribe(MQTT_BASE_TOPIC "/profile/set");
-  client.subscribe(MQTT_BASE_TOPIC "/roast/start");
-  client.subscribe(MQTT_BASE_TOPIC "/roast/stop");
+  // Report-only: no subscriptions at all, the roaster is never commanded
+  // over MQTT (see docs/firmware-notes.md).
 
   mqtt_publish_status();
   return true;
@@ -332,7 +230,6 @@ void mqtt_init(MqttCallbacks callbacks) {
   client.setServer(MQTT_HOST, MQTT_PORT);
   client.setBufferSize(MQTT_CLIENT_BUFFER_BYTES);  // default 256 is too small for discovery
   client.setKeepAlive(30);
-  client.setCallback(onMessage);
   lastConnectAttempt = 0;
 }
 
