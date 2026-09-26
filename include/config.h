@@ -78,7 +78,6 @@
 #define MQTT_CLIENT_ID              "coffee_roaster_esp32"
 #define MQTT_PUBLISH_INTERVAL_MS    2000
 #define MQTT_RECONNECT_INTERVAL_MS  5000
-#define MQTT_MAX_PROFILE_OPTIONS    12
 // Must stay below the PubSubClient buffer (1024) with room for topic + packet
 // header, otherwise the client refuses the publish. Payloads are serialized
 // into a fixed buffer instead of a heap String, and an oversized payload is

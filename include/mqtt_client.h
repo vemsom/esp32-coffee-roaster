@@ -1,9 +1,12 @@
 #pragma once
 #include <Arduino.h>
 
-// MQTT bridge with Home Assistant MQTT discovery. Same pattern as the web
-// server: the module never touches main.cpp internals, it goes through this
-// callback struct.
+// MQTT bridge with Home Assistant MQTT discovery - REPORT-ONLY.
+//
+// The roaster publishes state and nothing else: no command topic is subscribed
+// to, no entity carries a command_topic, and the device cannot be started,
+// stopped or adjusted over MQTT. All control lives in the web UI (and in the
+// safety layer). See docs/firmware-notes.md.
 struct MqttCallbacks {
   // Status getters
   float (*getBT)();
@@ -16,15 +19,6 @@ struct MqttCallbacks {
   bool  (*getSafetyFault)();
   const char *(*getSafetyReason)();
   bool  (*getRoastActive)();
-  // Fills up to maxOut names, returns how many. Used for the select entity.
-  int   (*listProfiles)(String *out, int maxOut);
-
-  // Commands
-  void (*setFanSpeed)(int percent);
-  void (*setHeaterDuty)(float percent);
-  void (*setSelectedProfile)(const String &name);
-  bool (*startRoast)(const String &profileName);
-  void (*stopRoast)();
 };
 
 // No-op (MQTT stays disabled, but the firmware runs) when MQTT_HOST is "TBD".

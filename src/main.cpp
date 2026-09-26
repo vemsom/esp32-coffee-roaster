@@ -47,16 +47,14 @@ static unsigned long coolStartMillis = 0;
 
 static unsigned long lastSensorRead = 0;
 
-// ---- Safety, profile selection and manual heater override ----
+// ---- Safety and profile selection ----
 // Latched alarm state as seen on the previous sample: used so the log line and
 // the heater re-arm happen once per trip/clear instead of every cycle.
 static bool safetyLatched = false;
 
-// Selected profile, shared by the web UI and the MQTT select entity.
+// Selected profile: set when a roast starts, reported by the web UI status
+// and by the MQTT status payload.
 static String selectedProfileName = "";
-
-// Raw duty override, only honoured while no run is active (see updateControl).
-static float heaterOverride = 0;
 
 // ---- Status callbacks ----
 static float cbGetBT() { return currentBT; }
@@ -112,48 +110,12 @@ static const char *cbGetModeName() {
 
 static const char *cbGetProfileName() { return selectedProfileName.c_str(); }
 
-// Used for the MQTT select entity's option list.
-static int cbListProfiles(String *out, int maxOut) {
-  int count = 0;
-  File dir = LittleFS.open(PROFILES_DIR);
-  if (!dir) return 0;
-  File file = dir.openNextFile();
-  while (file && count < maxOut) {
-    String name = String(file.name());
-    name.replace("/profiles/", "");
-    name.replace(".json", "");
-    out[count++] = name;
-    file = dir.openNextFile();
-  }
-  return count;
-}
-
 // ---- Command callbacks ----
 static void cbSetFanSpeed(int percent) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   currentFanSpeed = percent;
   fan_set_speed(percent);
-}
-
-static void cbSetSelectedProfile(const String &name) {
-  if (name.length()) selectedProfileName = name;
-}
-
-// Raw duty override for the MQTT heater entity. Only accepted when nothing is
-// running (a run owns the heater through the PID) and never while the safety
-// alarm is latched. The hard temperature limit in safety.cpp is what stops a
-// careless override - there is no closed loop behind it.
-static void cbSetHeaterOverride(float percent) {
-  if (safety_faulted() || controlMode != MODE_IDLE) {
-    heaterOverride = 0;
-    return;
-  }
-  if (isnan(percent) || percent < 0) percent = 0;
-  if (percent > 100) percent = 100;
-  heaterOverride = percent;
-  currentHeaterDuty = percent;
-  heater_set_duty(percent);
 }
 
 static bool cbStartCool(int speed, unsigned long durationSeconds);  // defined below
@@ -177,7 +139,6 @@ static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
   manualAutoCool = autoCool;
   manualCoolSpeed = coolSpeed;
   manualCoolSeconds = coolSeconds;
-  heaterOverride = 0;
   heaterPID.reset();
   controlMode = MODE_MANUAL;
   return true;
@@ -187,7 +148,6 @@ static void cbStopManual() {
   bool wasManual = (controlMode == MODE_MANUAL);
   if (wasManual) controlMode = MODE_IDLE;
   manualStartMillis = 0;
-  heaterOverride = 0;
   currentHeaterDuty = 0;
   heater_set_duty(0);
   if (wasManual) maybeStartAutoCool();
@@ -214,7 +174,6 @@ static bool cbStartRoast(const String &profileName) {
   if (!activeProfile.loadFromFile(path)) return false;
 
   selectedProfileName = profileName;
-  heaterOverride = 0;
   heaterPID.reset();
   roastStartMillis = millis();
   roastPaused = false;
@@ -230,7 +189,6 @@ static void cbStopRoast() {
   roastPaused = false;
   roastPauseStarted = 0;
   roastPausedTotal = 0;
-  heaterOverride = 0;
   currentHeaterDuty = 0;
   heater_set_duty(0);
 }
@@ -259,7 +217,6 @@ static void abortRunForSafety() {
   roastPausedTotal = 0;
   manualStartMillis = 0;
   manualAutoCool = false;
-  heaterOverride = 0;
   currentHeaterDuty = 0;
 }
 
@@ -288,8 +245,8 @@ static void updateControl() {
       heater_set_duty(currentHeaterDuty);
     }
   } else {
-    currentHeaterDuty = heaterOverride;
-    heater_set_duty(heaterOverride);
+    currentHeaterDuty = 0;
+    heater_set_duty(0);
   }
 }
 
@@ -377,12 +334,6 @@ void setup() {
     cbGetSafetyFault,
     cbGetSafetyReason,
     cbGetRoastActive,
-    cbListProfiles,
-    cbSetFanSpeed,
-    cbSetHeaterOverride,
-    cbSetSelectedProfile,
-    cbStartRoast,
-    cbStopRoast,
   };
   mqtt_init(mqttCallbacks);
 }

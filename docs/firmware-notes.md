@@ -80,31 +80,32 @@ never succeed. Credentials are not in the repo: they go in include/secrets.h,
 which is gitignored. `MQTT_PASS` is accepted as an alias for `MQTT_PASSWORD` in
 case secrets.h is written by other tooling.
 
+**Report-only by design.** The roaster publishes state and nothing else: it
+subscribes to no topic, registers no message callback, and publishes no entity
+with a `command_topic`. There is no `number`, `select`, `button` or `switch` in
+HA and no `fan/set`, `heater/set`, `profile/set`, `roast/start` or
+`roast/stop` topic - MQTT is for reporting, never for control. All control
+lives in the web UI (and in the safety layer).
+
 `src/mqtt_client.cpp` publishes Home Assistant MQTT discovery payloads
-(`homeassistant/<component>/coffee_roaster_<entity>/config`, retained) and
-subscribes to the command topics. Broker connection details come from
-include/secrets.h (gitignored); include/config.h carries `TBD` placeholders, and
-while `MQTT_HOST` is "TBD" MQTT is disabled with a serial log line - the rest of
-the firmware runs normally.
+(`homeassistant/<component>/coffee_roaster_<entity>/config`, retained) and a
+status JSON every 2 s. Broker connection details come from include/secrets.h
+(gitignored); include/config.h carries `TBD` placeholders, and while
+`MQTT_HOST` is "TBD" or `MQTT_USER` is empty MQTT is disabled with a serial log
+line - the rest of the firmware runs normally.
 
-Topics, base `coffee_roaster`:
+Topics, base `coffee_roaster` (nothing else is published, nothing at all is
+subscribed):
 
-    coffee_roaster/status          JSON, published every 2 s and immediately after a command
+    coffee_roaster/status          JSON, published every 2 s
     coffee_roaster/availability    "online" / "offline" (LWT, retained)
-    coffee_roaster/fan/set         payload: 0-100 (int)
-    coffee_roaster/heater/set      payload: 0-100 (float), raw duty override
-    coffee_roaster/profile/set     payload: profile name (no .json)
-    coffee_roaster/roast/start     payload: profile name, or "start"/empty to use the selected one
-    coffee_roaster/roast/stop      payload: anything
-    coffee_roaster/cool/...        not implemented (web UI only)
 
-Entities published in discovery (12 configs, all under
+Entities published in discovery (8 configs, all read-only, all under
 `homeassistant/<component>/coffee_roaster_<object>/config`): bean temperature,
-environment temperature, heater duty, fan speed, mode, elapsed seconds, the
-safety alarm (binary_sensor, device_class problem), fan speed (number), heater
-duty (number), profile (select, options from the LittleFS profile list) and
-start/stop buttons. Every config is retained and carries the device block,
-unique_id and availability topic.
+environment temperature, heater duty, fan speed, mode, elapsed seconds and
+profile (sensors), plus the safety alarm (binary_sensor, device_class problem).
+Every config is retained and carries the device block, unique_id and
+availability topic.
 
 Topic separation: everything the roaster owns is under `coffee_roaster/` plus
 its own `homeassistant/` configs, so nothing overlaps Tibber Pulse MQTT's topics
@@ -113,21 +114,19 @@ on the same broker.
 Open items in the MQTT layer:
 
 - **Broker host, port and credentials are not filled in.** They go in
-  include/secrets.h (MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD). Nothing
-  MQTT-related has been run against a real broker yet.
-- `coffee_roaster/heater/set` is a raw duty override with no closed loop behind
-  it. It is only honoured while no run is active and never while the safety
-  alarm is latched, and the hard temperature limit is what stops a careless
-  value - but it is a blunt control. Prefer manual/profile mode for real roasts.
-- The fan can be commanded to 0 % while the heater is on (via web UI or MQTT).
-  With no airflow the element heats the chamber quickly; the 260 C latch is the
+  include/secrets.h (MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD or
+  MQTT_PASS). Nothing MQTT-related has been run against a real broker yet, and
+  this broker rejects anonymous connects, so without them MQTT stays disabled.
+- No control over MQTT - deliberate, see above. If that ever changes the first
+  candidate is a start/stop pair and the fan, never a raw heater duty.
+- The fan can be commanded to 0 % while the heater is on (web UI only). With no
+  airflow the element heats the chamber quickly; the 260 C latch is the
   backstop. A "fan required when the heater is on" interlock would be the next
   safety improvement.
 - MQTT reconnects every 5 s while the link is down. The home network has
   intermittent dropouts, so this is expected to be exercised in practice.
-- Only roast start/stop and profile selection are exposed over MQTT. Manual
-  mode (target temperature + duration) is web UI only - it has five parameters
-  and no natural MQTT entity shape.
+- HA only shows state: manual mode, profile editing and start/stop stay in the
+  web UI and cannot be reached from MQTT.
 
 ## Still open, not done
 
@@ -160,13 +159,13 @@ WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker:
 - `test_safety` - safety latch and heater interlock (25 checks): trip on the
   hard limit and on sustained sensor faults, commands refused while latched,
   clear only after the healthy streak.
-- `test_mqtt_discovery` - MQTT layer (175 checks): all 12 discovery configs are
+- `test_mqtt_discovery` - MQTT layer (119 checks): all 8 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields; every payload fits the PubSubClient buffer
-  (largest 647 B against the 900 B limit); the five command topics are
-  subscribed and handled (`fan/set`, `heater/set`, `profile/set`,
-  `roast/start` both with a name and with "start", `roast/stop`), unknown
-  topics are ignored.
+  (largest 647 B against the 900 B limit); and the report-only guarantees hold -
+  no subscriptions, no message callback, no `command_topic` on any entity, no
+  controllable entity types, and every published topic under `coffee_roaster/`
+  or `homeassistant/`.
 
 The MQTT test needs an enabled config: without `include/secrets.h`, `run.sh`
 passes throwaway `-DMQTT_HOST/-DMQTT_USER/-DMQTT_PASSWORD` values to both
