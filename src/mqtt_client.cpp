@@ -7,12 +7,27 @@
 static const char *AVAILABILITY_TOPIC = MQTT_BASE_TOPIC "/availability";
 static const char *STATUS_TOPIC = MQTT_BASE_TOPIC "/status";
 
+// Fixed payload buffer instead of a heap String: the size is checked against
+// MQTT_MAX_PAYLOAD_BYTES before publishing, so an oversized discovery config is
+// reported rather than silently dropped by the client.
+static char payloadBuf[MQTT_MAX_PAYLOAD_BYTES];
+
 static WiFiClient mqttSocket;
 static PubSubClient client(mqttSocket);
 static MqttCallbacks cb;
 static bool enabled = false;
 static unsigned long lastPublish = 0;
 static unsigned long lastConnectAttempt = 0;
+
+static bool fillPayload(JsonDocument &doc) {
+  size_t needed = measureJson(doc);
+  if (needed >= sizeof(payloadBuf)) {
+    Serial.println("[MQTT] payload too large for MQTT_MAX_PAYLOAD_BYTES - dropped");
+    return false;
+  }
+  serializeJson(doc, payloadBuf, sizeof(payloadBuf));
+  return true;
+}
 
 // ------------------------------------------------------------- discovery ---
 
@@ -33,9 +48,8 @@ static void addDeviceBlock(JsonDocument &doc, const char *uniqueId, const char *
 
 static void publishDiscoveryEntity(const char *component, const char *objectId, JsonDocument &doc) {
   String topic = String(MQTT_DISCOVERY_PREFIX) + "/" + component + "/" + MQTT_DEVICE_ID + "_" + objectId + "/config";
-  String payload;
-  serializeJson(doc, payload);
-  if (!client.publish(topic.c_str(), payload.c_str(), true)) {
+  if (!fillPayload(doc)) return;
+  if (!client.publish(topic.c_str(), payloadBuf, true)) {
     Serial.print("[MQTT] discovery publish failed (buffer too small?): ");
     Serial.println(topic);
   }
@@ -164,7 +178,7 @@ static void publishDiscovery() {
     snprintf(uniqueId, sizeof(uniqueId), "%s_profile", MQTT_DEVICE_ID);
     addDeviceBlock(doc, uniqueId, "Profil");
     JsonArray options = doc["options"].to<JsonArray>();
-    for (int i = 0; i < profileCount; i++) options.add(names[i]);
+    for (int i = 0; i < profileCount; i++) options.add(names[i].c_str());
     doc["command_topic"] = MQTT_BASE_TOPIC "/profile/set";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ value_json.profile }}";
@@ -212,12 +226,14 @@ void mqtt_publish_status() {
   doc["safetyReason"] = cb.getSafetyReason();
   doc["uptime"] = millis() / 1000;
   doc["rssi"] = WiFi.RSSI();
-  String ip = WiFi.localIP().toString();
+  IPAddress address = WiFi.localIP();
+  char ip[16];
+  snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+           (unsigned)address[0], (unsigned)address[1], (unsigned)address[2], (unsigned)address[3]);
   doc["ip"] = ip;
 
-  String payload;
-  serializeJson(doc, payload);
-  if (!client.publish(STATUS_TOPIC, payload.c_str(), false)) {
+  if (!fillPayload(doc)) return;
+  if (!client.publish(STATUS_TOPIC, payloadBuf, false)) {
     Serial.println("[MQTT] status publish failed");
   }
 }
@@ -304,9 +320,17 @@ void mqtt_init(MqttCallbacks callbacks) {
     return;
   }
 
+  // The broker rejects anonymous connects (verified: CONNACK rc=5), so without
+  // a configured user every reconnect would fail forever - refuse to enable it.
+  if (strlen(MQTT_USER) == 0) {
+    enabled = false;
+    Serial.println("[MQTT] MQTT_USER not set in include/secrets.h - MQTT disabled (broker requires auth)");
+    return;
+  }
+
   enabled = true;
   client.setServer(MQTT_HOST, MQTT_PORT);
-  client.setBufferSize(1024);  // discovery payloads are bigger than the 256 B default
+  client.setBufferSize(MQTT_CLIENT_BUFFER_BYTES);  // default 256 is too small for discovery
   client.setKeepAlive(30);
   client.setCallback(onMessage);
   lastConnectAttempt = 0;
