@@ -4,11 +4,12 @@ Open source conversion of a popcorn popper into a profile-driven coffee roaster,
 
 ## Status
 Early development. Firmware builds clean from scratch (`pio run -t clean &&
-pio run`, PlatformIO env `esp32dev`, no warnings): **RAM 14.2 % (46 600 B),
-Flash 69.8 % (914 669 B)** on Arduino core 2.0.17, platform espressif32 7.1.3,
-FW 0.4.0. The host test suite is green: **252 checks, 0 failures** (plus the
-same control test rebuilt under ThreadSanitizer). Nothing has been
-flashed yet - the hardware is not assembled. See `docs/firmware-notes.md` for
+pio run`, PlatformIO env `esp32dev`, no warnings): **RAM 15.5 % (50 712 B),
+Flash 73.1 % (958 569 B)** on Arduino core 2.0.17, platform espressif32 7.1.3,
+FW 0.5.0. The host test suite is green: **265 checks, 0 failures** (plus the
+same control test rebuilt under ThreadSanitizer, so 340 execute). The first
+build was flashed and bench-tested on 2026-09-26 - the pinout still needs its
+physical verification. See `docs/firmware-notes.md` for
 what is verified and what is still an assumption, and `docs/hardware.md` for
 the hardware decisions.
 
@@ -72,8 +73,9 @@ MQTT is reported as disabled in the serial log.
 ```sh
 pio run                    # firmware
 pio run -t buildfs         # LittleFS image from data/ (the web UI lives here)
-pio run --target upload    # flash the firmware (once the hardware is wired)
+pio run --target upload    # flash the firmware over USB (first time only)
 pio run --target uploadfs  # flash the filesystem - without this the web UI is missing
+sh tools/ota-upload.sh 192.168.0.20   # every update after that, no cable
 ```
 
 ## Tests

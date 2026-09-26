@@ -227,6 +227,50 @@ until contact returns), and **"WIFI SAKNAS"** when the device reports
 rare on purpose: if the roaster's WiFi is down, normally nothing can be served
 at all.
 
+## OTA (implemented 2026-09-26)
+
+The first flash has to be USB - the firmware has never had an update path, and
+adding one does not retroactively make a stock ESP32 updateable. After that it
+is `sh tools/ota-upload.sh <ip>`.
+
+**Chosen approach: ArduinoOTA with a password**, not an upload page. In order
+of weight: it ships with the ESP32 Arduino core (no new entry in `lib_deps`),
+PlatformIO drives it natively (`-e esp32-ota -t upload`), and it opens no new
+HTTP endpoint that accepts binaries - an upload form would put a
+firmware-writing route in the same server that, by documented and accepted
+choice, has no authentication at all.
+
+Two properties make it safe to run next to a live heater:
+
+- **No transfer is served while a session is running.** `serviceOta()`
+  simply does not call `handle()` during a roast, a manual session or the
+  cool-down, so `espota` times out instead of interrupting half a roast. The
+  reason is logged once on the serial console ("paused: a session is
+  running"), so a timeout during a run is explicable rather than mysterious.
+- **`onStart()` latches the heater off before the first byte.** No control
+  cycle runs while the transfer does, and a time-proportioning heater left at
+  its last state would hold the element *on* for the whole upload. The latch
+  is only cleared by `heater_clear_emergency()`, which never runs afterwards:
+  a finished transfer reboots, and a failed one restarts too, so the device
+  always comes back with the heater off and no session running.
+
+Configuration: `OTA_PASSWORD` in `include/secrets.h` (32 hex characters,
+never committed, never printed). Empty means `startOta()` does not start the
+service at all - the same rule MQTT follows, deliberately so: an
+unauthenticated port 3232 on the VLAN is a standing invitation. The
+upload helper reads the value from `secrets.h` at upload time, so it appears
+nowhere in `platformio.ini`, on a command line, or in a shell history.
+
+Host-tested: OTA starts exactly once when the link comes up, is served while
+idle, is *not* served while a run is active, latches the element low on
+`onStart()` while a manual heat is conducting, and requests a restart on both
+`onEnd()` and `onError()`.
+
+Known unknown: the roaster is on 192.168.2.x (VLAN) and the server on
+192.168.1.x. Whether an upload reaches it from the server is a routing
+question, not a firmware one - if it does not, run it from a machine on the
+VLAN or get the VLANs routed.
+
 ## Concurrency / state lock (implemented 2026-09-26)
 
 Two tasks touch the same state in src/main.cpp: `loop()` runs the sensor
@@ -438,14 +482,19 @@ Tagged the same way as above: what it takes, not just what is left.
   recursive mutex, see the Concurrency section above. The residual note is
   about MQTT: `mqtt_update()` stays outside the lock on purpose because it can
   block for seconds - see the known limitation above for what that costs.
+- **CLOSED 2026-09-26 (host-tested)** OTA: `tools/ota-upload.sh` pushes a new
+  image over the network with `ArduinoOTA`, password from `secrets.h`, no USB
+  after the first flash. See the OTA section above for why that form and not
+  an upload page, and for the two rules that keep it away from a live heater.
+  Open only as far as reachability goes: the roaster is on the VLAN.
 
 ## Host-side tests
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
-WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker.
-Last run 2026-09-26: **252 checks, 0 failures**, exit 0, no compiler warnings
-(the control test is built and run a second time under ThreadSanitizer, so
-314 checks execute in total):
+WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
+broker. Last run 2026-09-26: **265 checks, 0 failures**, exit 0, no compiler
+warnings (the control test is built and run a second time under
+ThreadSanitizer, so 340 checks execute in total):
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks): trip on the hard limit, on sustained sensor faults and on
@@ -465,7 +514,7 @@ Last run 2026-09-26: **252 checks, 0 failures**, exit 0, no compiler warnings
   report-only guarantees hold - no subscriptions, no message callback, no
   `command_topic` on any entity, no controllable entity types, and every
   published topic under `coffee_roaster/` or `homeassistant/`.
-- `test_control` - the real src/main.cpp against stubbed hardware (62 checks):
+- `test_control` - the real src/main.cpp against stubbed hardware (75 checks):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions; a probe
@@ -476,7 +525,12 @@ Last run 2026-09-26: **252 checks, 0 failures**, exit 0, no compiler warnings
   `WIFI_RETRY_INTERVAL_MS`; the web callbacks provably take the state lock
   (acquisition counter); and a second thread plays the AsyncTCP task against
   `loop()` for 20 s of simulated control time, checking that nothing deadlocks
-  and that the state it leaves behind still makes sense.
+  and that the state it leaves behind still makes sense. And the OTA path:
+  it starts exactly once when the link comes up with the configured hostname,
+  port and password, is served while idle, is *not* served while a run is
+  active, latches the element low on `onStart()` while a manual heat is
+  conducting (and aborts that run), and asks for a restart on `onEnd()` and
+  on `onError()`.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder

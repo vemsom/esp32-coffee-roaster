@@ -44,6 +44,16 @@ struct SerialStub {
 };
 extern SerialStub Serial;
 
+// Restart, reached from the OTA path: a finished or failed transfer reboots
+// into a clean state (and clears the heater latch the transfer start set).
+// The host stub counts the calls instead of taking the process down.
+class EspClass {
+ public:
+  void restart();
+  int restartCount = 0;
+};
+extern EspClass ESP;
+
 // The subset of the Arduino String API that the firmware actually uses.
 class String {
  public:

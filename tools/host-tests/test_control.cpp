@@ -15,6 +15,7 @@
 //   * the MQTT status payload carrying both fault flags
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include <LittleFS.h>
 #include <max6675.h>
 #include <PubSubClient.h>
@@ -63,6 +64,9 @@ void ledcWrite(int, int) {}
 SerialStub Serial;
 WiFiClass WiFi;
 LittleFSClass LittleFS;
+ArduinoOTAClass ArduinoOTA;
+EspClass ESP;
+void EspClass::restart() { restartCount++; }
 
 // ---- probe readings injected into the MAX6675 stubs ------------------------
 float g_probeBT = 20.0f;
@@ -357,6 +361,48 @@ int main() {
   web.setFanSpeed(100);
   runLoops(4);
   check(web.getFanSpeed() == 100, "commands still take effect after the stress");
+
+  // ------------------------------------------------------------------ OTA ---
+  // The update path has to be up as soon as the link is, must refuse to run
+  // while the roaster is doing its job, and must cut the element before a
+  // single byte of a transfer lands - nothing runs during the transfer to
+  // service the heater window, so a pin left high would heat the whole time.
+  check(ArduinoOTA.beginCount == 1,
+        "OTA starts exactly once when the link comes up");
+  check(ArduinoOTA.hostname == OTA_HOSTNAME, "OTA advertises the configured hostname");
+  check(ArduinoOTA.port == OTA_PORT, "OTA listens on the configured port");
+  check(ArduinoOTA.password == OTA_PASSWORD, "OTA is armed with the password from secrets.h");
+
+  const int idleHandles = ArduinoOTA.handleCount;
+  runLoops(4);
+  check(ArduinoOTA.handleCount > idleHandles, "OTA is served while the roaster is idle");
+
+  check(web.startManual(200, 600, false, 100, 0), "manual run starts for the OTA check");
+  runLoops(4);
+  check(web.getHeaterDuty() > 0 && ssrState == HIGH,
+        "element is conducting when a transfer would arrive");
+
+  const int busyHandles = ArduinoOTA.handleCount;
+  runLoops(6);
+  check(ArduinoOTA.handleCount == busyHandles,
+        "no transfer is served while a run is active");
+
+  ArduinoOTA.fireStart();
+  check(ssrState == LOW, "transfer start latches the element off before any byte lands");
+  check(heater_emergency_active(), "transfer start holds the heater emergency latch");
+  check(!web.getManualActive(), "transfer start aborts the running session");
+
+  const int restartsBeforeError = ESP.restartCount;
+  ArduinoOTA.fireError(OTA_RECEIVE_ERROR);
+  loop();
+  check(ESP.restartCount > restartsBeforeError,
+        "a failed transfer restarts the device instead of leaving it latched");
+
+  const int restartsBeforeEnd = ESP.restartCount;
+  ArduinoOTA.fireEnd();
+  loop();
+  check(ESP.restartCount > restartsBeforeEnd,
+        "a finished transfer restarts the device into the new image");
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;

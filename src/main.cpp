@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ArduinoOTA.h>
 #include <LittleFS.h>
 
 #include "config.h"
@@ -379,6 +380,93 @@ static void updateCool() {
 static unsigned long wifiLastAttempt = 0;
 static bool wifiWasConnected = false;
 
+// ---- OTA ----
+// Network updates, so the next one never needs the USB cable again. Started
+// from serviceWifi() the moment the link is up: with a non-blocking
+// connection the interface can come up long after setup() has returned.
+//
+// Two rules keep this safe to run next to a live heater:
+//
+//   * Nothing is served while a roast, a manual session or the cool-down is
+//     running. handle() is simply not called, so espota times out instead of
+//     interrupting half a roast - and the reason is logged once, on the
+//     serial console, so a timeout during a run is explicable.
+//   * onStart() latches the heater off before the first byte lands. No
+//     control cycle runs during the transfer, and a windowed heater left at
+//     its last state would hold the element ON for the whole upload. The
+//     latch is cleared only by heater_clear_emergency(), which never runs
+//     here: a finished transfer reboots, and a failed one restarts too, so
+//     the device always comes back with the heater off and no session.
+//
+// OTA_PASSWORD comes from include/secrets.h. Empty means the service is not
+// started at all - an unauthenticated OTA port on the VLAN is a standing
+// invitation, which is the same rule MQTT follows.
+static bool otaStarted = false;
+static bool otaSuppressed = false;
+static volatile bool otaReboot = false;
+
+static void serviceOta() {
+  if (otaReboot) {
+    Serial.println("[OTA] transfer finished - restarting into the new image");
+    ESP.restart();
+    return;  // the real restart does not return; the host stub does
+  }
+  if (!otaStarted) return;
+
+  const bool busy =
+      cbGetRoastActive() || cbGetManualActive() || cbGetCoolActive();
+  if (busy) {
+    if (!otaSuppressed) {
+      otaSuppressed = true;
+      Serial.println(
+          "[OTA] paused: a session is running, transfers are not accepted");
+    }
+    return;
+  }
+  otaSuppressed = false;
+  ArduinoOTA.handle();
+}
+
+static void startOta() {
+  if (otaStarted) return;
+
+  if (OTA_PASSWORD[0] == '\0') {
+    static bool reported = false;
+    if (!reported) {
+      reported = true;
+      Serial.println(
+          "[OTA] not started: OTA_PASSWORD is empty in include/secrets.h");
+    }
+    return;
+  }
+
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("[OTA] transfer starting - heater latched off, run aborted");
+    heater_emergency_off();
+    abortRunForSafety();
+  });
+  ArduinoOTA.onEnd([]() { otaReboot = true; });
+  ArduinoOTA.onError([](ota_error_t err) {
+    // Restart as well: the latch set by onStart() must never outlive the
+    // attempt, and the old image is still the boot target when a transfer
+    // fails (otadata only flips after a successful end).
+    Serial.print("[OTA] transfer failed, code ");
+    Serial.println((int)err);
+    otaReboot = true;
+  });
+
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.print("[OTA] ready on ");
+  Serial.print(OTA_HOSTNAME);
+  Serial.print(".local, port ");
+  Serial.println(OTA_PORT);
+}
+
 static void serviceWifi() {
   const bool connected = (WiFi.status() == WL_CONNECTED);
 
@@ -386,6 +474,7 @@ static void serviceWifi() {
     if (connected) {
       Serial.print("[WiFi] connected, IP: ");
       Serial.println(WiFi.localIP());
+      startOta();
     } else {
       Serial.println("[WiFi] link lost - reconnecting in the background");
     }
@@ -497,6 +586,7 @@ void loop() {
   unsigned long now = millis();
 
   serviceWifi();
+  serviceOta();
 
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS) {
     lastSensorRead = now;

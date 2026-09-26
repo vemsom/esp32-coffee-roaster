@@ -146,8 +146,37 @@
 #define MQTT_MAX_PAYLOAD_BYTES      900
 #define MQTT_CLIENT_BUFFER_BYTES    1024
 
+// ---- OTA (natverksuppdatering, sa att nasta gang inte kraver USB) ----
+// ArduinoOTA, samma regel som MQTT: uppdragen ligger i secrets.h och utan
+// losenord startas tjansten inte alls - ett oppet OTA-port i IoT-VLAnn ar en
+// stallande inbjudan. Bilden skrivs till OTA-sloten (app1) och enheten startar
+// om nar overforingen ar klar.
+//
+// Tjansten startar i serviceWifi() sa fort lan ar uppe och handteras i loop().
+// Tvao regler gor det sakert:
+//
+//   * Inget hanteras medan en rostning, ett manuellt lage eller kyldroppet ar
+//     igang - handle() anropas helt enkelt inte, sa espota timeoutar i stallet
+//     for att avbryta en halv rostning.
+//   * ArduinoOTA.onStart() lasar elementet AV innan forsta byten landar. Ingen
+//     kontrollcykel kors under overforingen, och ett tidsstalld element som
+//     kvarstar i sitt sistalage skulle halla elementet PA under hela
+//     uppdateringen. Lasen saknas bara via en explicit nollstallning - och den
+//     haller aldrig, eftersom enheten startar om.
+#ifndef OTA_PASSWORD
+#ifdef OTA_PASS
+#define OTA_PASSWORD      OTA_PASS
+#else
+#define OTA_PASSWORD      ""
+#endif
+#endif
+#define OTA_HOSTNAME       "coffee-roaster"
+#define OTA_PORT           3232
+
 // ---- Firmware-version (rapporteras till Home Assistant) ----
-#define FW_VERSION "0.4.0"
+// 0.4.0 = de fyra godkanda andringarna. 0.5.0 = OTA tillkommer, sa att de tva
+// byggena gar att skillja aven i HA (sw_version ar annars identiskt).
+#define FW_VERSION "0.5.0"
 
 // ---- PID-standardvarden ----
 #define PID_KP  4.0
