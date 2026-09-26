@@ -34,6 +34,55 @@
 #define SENSOR_FAULT_MAX_JUMP_C   20.0
 #define SENSOR_FAULT_MAX_COUNT    5
 
+// ---- Sakerhetsgranser (hardkodade skydd, oberoende av PID och profil) ----
+// Hard grans for bontemperaturen. Nar den nas slas varmet av och ett larm
+// last i safety.cpp - larmet kan inte tystas, det sjalper forst nar
+// temperaturen ar tillbaka under gransen med SAFETY_CLEAR_MARGIN_C marginal
+// och sensorerna rapporterar friska varden igen.
+#define SAFETY_MAX_TEMP_C          260.0
+// Hard grans for miljotemperaturen (ET), hogre an BT-gransen med avsikt.
+#define SAFETY_MAX_ET_TEMP_C       300.0
+// Marginal under gransen som maste uppnas innan larmet sjalper.
+#define SAFETY_CLEAR_MARGIN_C       10.0
+// Antal felfria sampel i rad som kravs innan ett larm sjalper (10 x 250 ms).
+#define SAFETY_CLEAR_STREAK         10
+// Plausibilitetsfonster for en enskild MAX6675-avlasning. Utanfor detta raknas
+// avlasningen som ett sensorfel (en frilagd ingang kan ge 0 C utan NaN).
+#define SENSOR_MIN_VALID_C        (-10.0)
+#define SENSOR_MAX_VALID_C         400.0
+
+// ---- MQTT (Home Assistant MQTT-discovery) ----
+// Anslutningsuppgifterna laggs i include/secrets.h (okommiterad) sa att de
+// aldrig hamnar i repot. Sa lange MQTT_HOST ar "TBD" ar MQTT avstangt.
+#ifndef MQTT_HOST
+#define MQTT_HOST        "TBD"
+#endif
+#ifndef MQTT_PORT
+#define MQTT_PORT        1883
+#endif
+#ifndef MQTT_USER
+#define MQTT_USER        ""
+#endif
+// MQTT_PASS is accepted as an alias: tooling that fills in secrets.h often
+// writes that name instead of MQTT_PASSWORD.
+#ifndef MQTT_PASSWORD
+#ifdef MQTT_PASS
+#define MQTT_PASSWORD    MQTT_PASS
+#else
+#define MQTT_PASSWORD    ""
+#endif
+#endif
+#define MQTT_BASE_TOPIC             "coffee_roaster"
+#define MQTT_DISCOVERY_PREFIX       "homeassistant"
+#define MQTT_DEVICE_ID              "coffee_roaster"
+#define MQTT_CLIENT_ID              "coffee_roaster_esp32"
+#define MQTT_PUBLISH_INTERVAL_MS    2000
+#define MQTT_RECONNECT_INTERVAL_MS  5000
+#define MQTT_MAX_PROFILE_OPTIONS    12
+
+// ---- Firmware-version (rapporteras till Home Assistant) ----
+#define FW_VERSION "0.3.0"
+
 // ---- PID-standardvarden ----
 #define PID_KP  4.0
 #define PID_KI  0.05

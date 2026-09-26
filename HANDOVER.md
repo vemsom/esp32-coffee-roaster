@@ -8,11 +8,15 @@ Converting a hot-air popcorn popper into a profile-driven coffee roaster, contro
 
 ## Repo sync status - IMPORTANT
 
-Verified against the repo at time of writing. These files are NOT yet pushed: include/web_server.h; src/web_server.cpp; src/main.cpp (needs an update - the repo version is only the original stub, not the full orchestration version wiring together sensors, heater, fan and the web server callbacks); data/index.html (the web UI - the data folder does not exist in the repo yet); platformio.ini (needs an update - the repo version only has the MAX6675 and ArduinoJson deps, missing ESPAsyncWebServer/AsyncTCP and the littlefs filesystem setting); docs/firmware-notes.md.
+Everything listed here is committed and pushed (verified 2026-09-26, working
+tree clean, `origin/main` in sync). The earlier note about web_server/main.cpp/
+data/index.html/platformio.ini/firmware-notes.md not being pushed was written
+before those files landed - it was already stale when it was read.
 
-Everything else (config.h, pid.h, fan_control.h/cpp, heater_control.h/cpp, roast_profile.h/cpp, sensors.h/cpp, README.md, docs/hardware.md, docs/notes.md) is pushed and in English.
-
-Ask Claude to finish pushing the files above before starting new firmware work - the code for all of them was already written earlier in that session, it just did not make it into the repo before the conversation ended.
+Since then (2026-09-26) the firmware gained a latched safety layer (hard
+temperature limit + sensor fault, heater held off, see docs/firmware-notes.md),
+an MQTT bridge with Home Assistant discovery, and a host-side test of the latch
+under tools/host-tests/. That work is committed locally and builds clean.
 
 ## Hardware status
 
@@ -34,4 +38,15 @@ Full list in docs/firmware-notes.md, but the highlights: src/fan_control.cpp use
 
 ## Immediate next steps
 
-First, finish pushing the remaining files listed under Repo sync status if not already done. Second, when the MAX6675 modules arrive: wire them up, verify sensor readings against a known-good thermometer, confirm the NaN-on-fault assumption. Third, confirm GPIO pin assignments once the physical layout is decided, update include/config.h. Fourth, test the IRF520 module under load, check for excessive heat, which would indicate the 3.3V gate drive is not sufficient (add an NPN pre-driver if so). Fifth, wire the V-TAC PSU and MOSFET module to the fan motor, physically isolated from the original popper circuit. Sixth, first full build: pio run, fix whatever the LEDC/ESPAsyncWebServer assumptions above get wrong.
+First, fill in the MQTT broker host/port/credentials in include/secrets.h (the
+only thing blocking the HA integration - see docs/firmware-notes.md) and verify
+that discovery shows up in Home Assistant. Second, when the MAX6675 modules
+arrive: wire them up, verify sensor readings against a known-good thermometer,
+and check the fault thresholds against real thermocouple noise. Third, confirm
+GPIO pin assignments once the physical layout is decided, update
+include/config.h. Fourth, test the IRF520 module under load, check for excessive
+heat, which would indicate the 3.3V gate drive is not sufficient (add an NPN
+pre-driver if so). Fifth, wire the V-TAC PSU and MOSFET module to the fan motor,
+physically isolated from the original popper circuit. Sixth, first full build:
+pio run (already green, flash 69.3 %), then a dry run of the safety latch on
+real hardware - pull a thermocouple mid-run and confirm the heater cuts out.

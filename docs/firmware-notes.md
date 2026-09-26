@@ -1,23 +1,150 @@
-# Firmware notes - assumptions to verify on first build
+# Firmware notes - assumptions and what is verified
 
-This code was written before the hardware arrived, so the following are reasonable assumptions that have NOT yet been tested against real hardware. Go through this before trusting the firmware in an actual roast.
+Status: **verified items below were confirmed on 2026-09-26** with `pio run`
+(framework-arduinoespressif32 4.20017.260907, ESP32 core 3.x) and a host-side
+test of the safety logic. Everything still listed as open is untested against
+real hardware.
 
-## Must verify
+## Verified on build / in source
 
-Fan PWM LEDC API (src/fan_control.cpp): written against the arduino-esp32 core 3.x API (ledcAttach/ledcWrite with a pin, not a channel). If platformio pulls core 2.x it will not compile - switch to ledcSetup plus ledcAttachPin plus ledcWrite(channel, ...) instead.
+Fan PWM LEDC API (src/fan_control.cpp): uses the channel-based API
+(ledcSetup + ledcAttachPin + ledcWrite), which the ESP32 core 3.x framework in
+this project still provides as a compatibility layer. Compiles clean.
 
-ESPAsyncWebServer/AsyncTCP package names in platformio.ini: written against the ESP32Async fork (actively maintained as of 2025/2026). Verify the names still resolve in the PlatformIO registry when you build - the older me-no-dev packages do not work on later core versions.
+ESPAsyncWebServer/AsyncTCP package names (platformio.ini): resolved and built as
+`ESPAsyncWebServer @ 3.12.1` and `AsyncTCP @ 3.5.0` (the ESP32Async fork).
 
-MAX6675 NaN behavior (src/sensors.cpp): the sanity check assumes the library returns NaN on a broken or disconnected probe. Verify this actually holds for the library version that gets installed, otherwise fault detection could miss real sensor failures.
+MAX6675 NaN on an open thermocouple (src/sensors.cpp): confirmed in the
+installed library source - `Adafruit MAX6675 1.1.2`, max6675.cpp:46 returns NAN
+when bit 2 of the raw word is set. The same file shows the case that is *not*
+covered by the library: a data line that floats low reads as a fixed 0 C rather
+than NAN, which is why sensors.cpp also rejects values outside
+SENSOR_MIN_VALID_C..SENSOR_MAX_VALID_C and values that jump more than
+SENSOR_FAULT_MAX_JUMP_C.
 
-GPIO pins in include/config.h: placeholders only. Update once you have decided the actual board layout, and avoid the ESP32's strapping pins (0, 2, 12, 15) for critical functions like SSR control.
+Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
+exercised by a host test with stubbed Arduino calls, 25 assertions, all passing.
+See `tools/host-tests/`.
 
-PID values (PID_KP/KI/KD in config.h): unguessed starting values. Will need tuning against real thermal response once the machine is testable.
+## Safety behaviour (implemented 2026-09-26)
 
-## Known gaps, not yet done
+Two conditions latch a single alarm, both checked on every validated sensor
+sample in `safety_update()`:
 
-No error feedback to the web UI if sensors_safety_triggered() fires mid-roast - the UI just shows the heater turning off, with no clear "SENSOR FAULT" indicator yet. Worth adding.
+1. Hard temperature limit - BT at or above `SAFETY_MAX_TEMP_C` (260 C) or ET at
+   or above `SAFETY_MAX_ET_TEMP_C` (300 C). Both constants live in
+   include/config.h and are configurable there.
+2. Sensor fault - NAN, implausible value, or an implausible jump, sustained for
+   `SENSOR_FAULT_MAX_COUNT` (5) consecutive samples.
 
-No authentication on the web API - anyone on the same WiFi network can control the roaster. Fine for hobby use on your own network, not for sharing beyond that.
+While the alarm is latched:
 
-WiFi connection is blocking in setup() (up to a 15s timeout). Works, but gives no feedback in the UI if it fails, only the serial log.
+- `heater_emergency_off()` is re-asserted every control cycle, and
+  `heater_set_duty()` refuses all writes. The SSR is held LOW.
+- The active run (profile or manual) is aborted, but the **fan is deliberately
+  left running** so the beans keep getting air.
+- New runs are refused: `cbStartRoast()` and `cbStartManual()` return false.
+  Fan-only cooling is still allowed.
+- The latch cannot be silenced. There is no command, web endpoint or MQTT
+  message that clears it. It clears only after `SAFETY_CLEAR_STREAK` (10)
+  consecutive samples that are fault-free *and* below the limit minus
+  `SAFETY_CLEAR_MARGIN_C` (10 C). After it clears the heater is re-armed but the
+  run does not resume - it has to be started again.
+
+The alarm is exposed as `safetyFault` + `safetyReason` in `/api/status` (shown
+as a red banner in the web UI) and as the `binary_sensor` "Sakerhetslarm" in
+Home Assistant.
+
+Open items in the safety layer:
+
+- The fault thresholds (`SENSOR_FAULT_MAX_JUMP_C` 20 C, 5 consecutive samples)
+  were chosen on paper. They need to be checked against real thermocouple noise
+  during a roast - too tight and a noisy reading aborts a roast, too loose and a
+  dropped probe is noticed late.
+- No stuck-sensor detection: a probe that freezes on a plausible value that
+  still jitters by less than 20 C per sample is not detected. The hard limit
+  catches the dangerous outcome.
+- The alarm state is in RAM only; a reset clears it. Safe (heater off on boot)
+  but it means an alarm is not visible after a power cycle.
+- 260 C is a guess for this popper and these probes. Confirm against the
+  hardware before the first real roast, and keep in mind that a K-type
+  thermocouple in a hot air stream reads air, not bean temperature.
+
+## MQTT / Home Assistant (implemented 2026-09-26)
+
+Broker for this build: the MQTT broker on the Home Assistant host,
+192.168.1.173:1883 - reachable, and authentication is required (no anonymous
+access). Credentials are not in the repo: they go in include/secrets.h, which
+is gitignored. `MQTT_PASS` is accepted as an alias for `MQTT_PASSWORD` in case
+secrets.h is written by other tooling.
+
+`src/mqtt_client.cpp` publishes Home Assistant MQTT discovery payloads
+(`homeassistant/<component>/coffee_roaster_<entity>/config`, retained) and
+subscribes to the command topics. Broker connection details come from
+include/secrets.h (gitignored); include/config.h carries `TBD` placeholders, and
+while `MQTT_HOST` is "TBD" MQTT is disabled with a serial log line - the rest of
+the firmware runs normally.
+
+Topics, base `coffee_roaster`:
+
+    coffee_roaster/status          JSON, published every 2 s and immediately after a command
+    coffee_roaster/availability    "online" / "offline" (LWT, retained)
+    coffee_roaster/fan/set         payload: 0-100 (int)
+    coffee_roaster/heater/set      payload: 0-100 (float), raw duty override
+    coffee_roaster/profile/set     payload: profile name (no .json)
+    coffee_roaster/roast/start     payload: profile name, or "start"/empty to use the selected one
+    coffee_roaster/roast/stop      payload: anything
+    coffee_roaster/cool/...        not implemented (web UI only)
+
+Entities published in discovery: bean temperature, environment temperature,
+heater duty, fan speed, mode, elapsed seconds, the safety alarm (binary_sensor,
+device_class problem), fan speed (number), heater duty (number), profile
+(select, options from the LittleFS profile list) and start/stop buttons.
+
+Open items in the MQTT layer:
+
+- **Broker host, port and credentials are not filled in.** They go in
+  include/secrets.h (MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD). Nothing
+  MQTT-related has been run against a real broker yet.
+- `coffee_roaster/heater/set` is a raw duty override with no closed loop behind
+  it. It is only honoured while no run is active and never while the safety
+  alarm is latched, and the hard temperature limit is what stops a careless
+  value - but it is a blunt control. Prefer manual/profile mode for real roasts.
+- The fan can be commanded to 0 % while the heater is on (via web UI or MQTT).
+  With no airflow the element heats the chamber quickly; the 260 C latch is the
+  backstop. A "fan required when the heater is on" interlock would be the next
+  safety improvement.
+- MQTT reconnects every 5 s while the link is down. The home network has
+  intermittent dropouts, so this is expected to be exercised in practice.
+- Only roast start/stop and profile selection are exposed over MQTT. Manual
+  mode (target temperature + duration) is web UI only - it has five parameters
+  and no natural MQTT entity shape.
+
+## Still open, not done
+
+GPIO pins in include/config.h: placeholders only. Update once the actual board
+layout is decided, and avoid the ESP32 strapping pins (0, 2, 12, 15) for
+critical functions like SSR control.
+
+PID values (PID_KP/KI/KD in config.h): unguessed starting values. Will need
+tuning against the real thermal response once the machine is testable.
+
+No authentication on the web API - anyone on the same WiFi network can control
+the roaster. Fine for hobby use on your own network, not for sharing beyond
+that. The same applies to the MQTT topics: broker-level auth is the only
+protection.
+
+WiFi connection is blocking in setup() (up to a 15 s timeout). Works, but gives
+no feedback in the UI if it fails, only the serial log.
+
+Concurrency note: ESPAsyncWebServer callbacks run in the AsyncTCP task while
+MQTT callbacks run from `loop()`. Both mutate the same state in main.cpp without
+a lock. Pre-existing, unchanged here, and the consequences are limited to a
+clipped value or a refused start - but worth a proper fix if the UI ever gets
+multi-user.
+
+## Host-side tests
+
+`tools/host-tests/` compiles src/safety.cpp and src/heater_control.cpp against a
+stubbed Arduino.h and asserts the latch/interlock behaviour (25 checks). Run
+with `tools/host-tests/run.sh`.

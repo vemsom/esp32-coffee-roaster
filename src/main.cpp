@@ -5,10 +5,12 @@
 #include "config.h"
 #include "pid.h"
 #include "sensors.h"
+#include "safety.h"
 #include "heater_control.h"
 #include "fan_control.h"
 #include "roast_profile.h"
 #include "web_server.h"
+#include "mqtt_client.h"
 
 // One PID instance, shared between manual and profile runs. It is reset
 // whenever a run starts so the integral does not carry over between runs.
@@ -44,6 +46,17 @@ static unsigned long coolDurationSeconds = 0;
 static unsigned long coolStartMillis = 0;
 
 static unsigned long lastSensorRead = 0;
+
+// ---- Safety, profile selection and manual heater override ----
+// Latched alarm state as seen on the previous sample: used so the log line and
+// the heater re-arm happen once per trip/clear instead of every cycle.
+static bool safetyLatched = false;
+
+// Selected profile, shared by the web UI and the MQTT select entity.
+static String selectedProfileName = "";
+
+// Raw duty override, only honoured while no run is active (see updateControl).
+static float heaterOverride = 0;
 
 // ---- Status callbacks ----
 static float cbGetBT() { return currentBT; }
@@ -87,12 +100,60 @@ static unsigned long cbGetCoolRemainingSeconds() {
   return coolDurationSeconds - elapsed;
 }
 
+static bool cbGetSafetyFault() { return safety_faulted(); }
+static const char *cbGetSafetyReason() { return safety_code_text(); }
+
+static const char *cbGetModeName() {
+  if (controlMode == MODE_PROFILE) return "profile";
+  if (controlMode == MODE_MANUAL) return "manual";
+  if (coolActive) return "cool";
+  return "idle";
+}
+
+static const char *cbGetProfileName() { return selectedProfileName.c_str(); }
+
+// Used for the MQTT select entity's option list.
+static int cbListProfiles(String *out, int maxOut) {
+  int count = 0;
+  File dir = LittleFS.open(PROFILES_DIR);
+  if (!dir) return 0;
+  File file = dir.openNextFile();
+  while (file && count < maxOut) {
+    String name = String(file.name());
+    name.replace("/profiles/", "");
+    name.replace(".json", "");
+    out[count++] = name;
+    file = dir.openNextFile();
+  }
+  return count;
+}
+
 // ---- Command callbacks ----
 static void cbSetFanSpeed(int percent) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   currentFanSpeed = percent;
   fan_set_speed(percent);
+}
+
+static void cbSetSelectedProfile(const String &name) {
+  if (name.length()) selectedProfileName = name;
+}
+
+// Raw duty override for the MQTT heater entity. Only accepted when nothing is
+// running (a run owns the heater through the PID) and never while the safety
+// alarm is latched. The hard temperature limit in safety.cpp is what stops a
+// careless override - there is no closed loop behind it.
+static void cbSetHeaterOverride(float percent) {
+  if (safety_faulted() || controlMode != MODE_IDLE) {
+    heaterOverride = 0;
+    return;
+  }
+  if (isnan(percent) || percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  heaterOverride = percent;
+  currentHeaterDuty = percent;
+  heater_set_duty(percent);
 }
 
 static bool cbStartCool(int speed, unsigned long durationSeconds);  // defined below
@@ -108,6 +169,7 @@ static void maybeStartAutoCool() {
 
 static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
                           bool autoCool, int coolSpeed, unsigned long coolSeconds) {
+  if (safety_faulted()) return false;  // alarm must clear before a new run
   if (targetTemp <= 0 || durationSeconds == 0) return false;
   manualTargetTemp = targetTemp;
   manualDurationSeconds = durationSeconds;
@@ -115,6 +177,7 @@ static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
   manualAutoCool = autoCool;
   manualCoolSpeed = coolSpeed;
   manualCoolSeconds = coolSeconds;
+  heaterOverride = 0;
   heaterPID.reset();
   controlMode = MODE_MANUAL;
   return true;
@@ -124,6 +187,7 @@ static void cbStopManual() {
   bool wasManual = (controlMode == MODE_MANUAL);
   if (wasManual) controlMode = MODE_IDLE;
   manualStartMillis = 0;
+  heaterOverride = 0;
   currentHeaterDuty = 0;
   heater_set_duty(0);
   if (wasManual) maybeStartAutoCool();
@@ -145,9 +209,12 @@ static void cbStopCool() {
 }
 
 static bool cbStartRoast(const String &profileName) {
+  if (safety_faulted()) return false;  // alarm must clear before a new run
   String path = String(PROFILES_DIR) + "/" + profileName + ".json";
   if (!activeProfile.loadFromFile(path)) return false;
 
+  selectedProfileName = profileName;
+  heaterOverride = 0;
   heaterPID.reset();
   roastStartMillis = millis();
   roastPaused = false;
@@ -163,6 +230,7 @@ static void cbStopRoast() {
   roastPaused = false;
   roastPauseStarted = 0;
   roastPausedTotal = 0;
+  heaterOverride = 0;
   currentHeaterDuty = 0;
   heater_set_duty(0);
 }
@@ -179,6 +247,20 @@ static void cbResumeRoast() {
   if (controlMode != MODE_PROFILE || !roastPaused) return;
   roastPausedTotal += millis() - roastPauseStarted;
   roastPaused = false;
+}
+
+// Stops an active run because the safety latch tripped. The fan is left alone
+// on purpose: the beans should keep getting air while the fault is handled.
+static void abortRunForSafety() {
+  controlMode = MODE_IDLE;
+  roastStartMillis = 0;
+  roastPaused = false;
+  roastPauseStarted = 0;
+  roastPausedTotal = 0;
+  manualStartMillis = 0;
+  manualAutoCool = false;
+  heaterOverride = 0;
+  currentHeaterDuty = 0;
 }
 
 // Runs the active control mode. Called at the sensor sample rate so the PID
@@ -206,8 +288,8 @@ static void updateControl() {
       heater_set_duty(currentHeaterDuty);
     }
   } else {
-    currentHeaterDuty = 0;
-    heater_set_duty(0);
+    currentHeaterDuty = heaterOverride;
+    heater_set_duty(heaterOverride);
   }
 }
 
@@ -235,6 +317,7 @@ void setup() {
     LittleFS.mkdir(PROFILES_DIR);
   }
 
+  safety_init();
   sensors_init();
   heater_init();
   fan_init();
@@ -269,6 +352,8 @@ void setup() {
     cbGetCoolActive,
     cbGetCoolSpeed,
     cbGetCoolRemainingSeconds,
+    cbGetSafetyFault,
+    cbGetSafetyReason,
     cbSetFanSpeed,
     cbStartManual,
     cbStopManual,
@@ -280,6 +365,26 @@ void setup() {
     cbResumeRoast,
   };
   web_server_init(callbacks);
+
+  MqttCallbacks mqttCallbacks = {
+    cbGetBT,
+    cbGetET,
+    cbGetHeaterDuty,
+    cbGetFanSpeed,
+    cbGetModeName,
+    cbGetProfileName,
+    cbGetElapsedSeconds,
+    cbGetSafetyFault,
+    cbGetSafetyReason,
+    cbGetRoastActive,
+    cbListProfiles,
+    cbSetFanSpeed,
+    cbSetHeaterOverride,
+    cbSetSelectedProfile,
+    cbStartRoast,
+    cbStopRoast,
+  };
+  mqtt_init(mqttCallbacks);
 }
 
 void loop() {
@@ -291,21 +396,31 @@ void loop() {
     currentBT = r.bt;
     currentET = r.et;
 
-    if (sensors_safety_triggered()) {
-      Serial.println("SAFETY: sensor fault - shutting off heater");
+    safety_update(r);
+
+    if (safety_faulted()) {
+      if (!safetyLatched) {
+        safetyLatched = true;
+        Serial.print("[SAFETY] FAULT: ");
+        Serial.print(safety_code_text());
+        Serial.println(" - heater off, run aborted");
+        abortRunForSafety();
+      }
+      // Re-asserted every cycle: the heater stays latched off until the
+      // condition is measurably gone.
       heater_emergency_off();
-      controlMode = MODE_IDLE;
-      roastPaused = false;
-      roastPauseStarted = 0;
-      roastPausedTotal = 0;
-      manualAutoCool = false;
+    } else if (safetyLatched) {
+      safetyLatched = false;
+      heater_clear_emergency();
+      Serial.println("[SAFETY] alarm cleared - heater re-armed, start the run again manually");
     }
 
-    updateControl();
+    if (!safety_faulted()) updateControl();
     updateCool();
   }
 
   heater_update();
+  mqtt_update();
 
   // AsyncWebServer handles requests in the background, no explicit
   // "server.handleClient()" call needed here like with the sync web server.
