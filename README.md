@@ -76,6 +76,7 @@ pio run -t buildfs         # LittleFS image from data/ (the web UI lives here)
 pio run --target upload    # flash the firmware over USB (first time only)
 pio run --target uploadfs  # flash the filesystem - without this the web UI is missing
 sh tools/ota-upload.sh 192.168.0.20   # every update after that, no cable
+sh tools/ota-upload.sh 192.168.0.20 fs  # same, but only a data/ (web UI) change
 ```
 
 ## Tests

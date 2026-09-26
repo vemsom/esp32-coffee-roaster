@@ -261,6 +261,20 @@ unauthenticated port 3232 on the VLAN is a standing invitation. The
 upload helper reads the value from `secrets.h` at upload time, so it appears
 nowhere in `platformio.ini`, on a command line, or in a shell history.
 
+**What does *not* travel with a firmware update: `data/`.** `ota-upload.sh`
+sends `firmware.bin` to the OTA slot and nothing else - the web UI lives in
+the LittleFS image on its own partition, so a UI change needs its own push.
+That push does not need USB either: `sh tools/ota-upload.sh <ip> fs` runs
+`pio run -e esp32-ota -t uploadfsota`, which rebuilds the image from `data/`
+and sends it with the same espota protocol using `--spiffs`. All three
+layers carry it: PlatformIO adds the flag for that target
+(`builder/main.py:460-461`), `espota.py` switches the command to SPIFFS
+(`tools/espota.py:345-347`), and the ESP32 ArduinoOTA accepts `U_SPIFFS`
+(`libraries/ArduinoOTA/src/ArduinoOTA.cpp:176`) - and the device runs a
+build of exactly that framework version. Verified in code on all three
+layers, **not yet run on hardware**: the first real UI change is where that
+gets proven. `uploadfs` over USB remains the fallback, not the first hand.
+
 Host-tested: OTA starts exactly once when the link comes up, is served while
 idle, is *not* served while a run is active, latches the element low on
 `onStart()` while a manual heat is conducting, and requests a restart on both
