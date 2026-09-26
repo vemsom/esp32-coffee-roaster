@@ -122,7 +122,7 @@ While the alarm is latched:
   run does not resume - it has to be started again.
 
 The alarm is exposed as `safetyFault` + `safetyReason` in `/api/status` (shown
-as a red banner in the web UI) and as the `binary_sensor` "Sakerhetslarm" in
+as a red banner in the web UI) and as the `binary_sensor` "Säkerhetslarm" in
 Home Assistant.
 
 **Persistence (implemented 2026-09-26).** Every latch transition (trip *and*
@@ -190,7 +190,7 @@ The element may only fire while the fan runs at least `FAN_MIN_FOR_HEATER_PCT`
   ("cannot start: fan must run at least 10 % first"), separate from the safety
   409. The control-level check behind it is the backstop.
 - Reported as `fanFault` in `/api/status`, as an amber banner in the web UI
-  ("FLÄKT <10 % - värmen av") and as the `binary_sensor` "Flaktsparr" in HA.
+  ("FLÄKT <10 % - värmen av") and as the `binary_sensor` "Fläktspärr" in HA.
   Kept out of `safetyFault` on purpose: different condition, different fix, and
   it clears on its own.
 

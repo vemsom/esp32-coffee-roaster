@@ -16,7 +16,9 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <algorithm>
+#include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "mqtt_client.h"
@@ -81,6 +83,26 @@ static bool startsWith(const std::string &s, const std::string &prefix) {
   return s.compare(0, prefix.size(), prefix) == 0;
 }
 
+// Home Assistant derives entity_id from the discovery `name`: slugify() folds
+// the Latin-1 letters this firmware uses down to ASCII (a-umlaut and
+// a-ring -> 'a', o-umlaut -> 'o') and lowercases. Reproduce that here so a
+// friendly-name rename that would mint a NEW entity_id fails the test -
+// the point of the Swedish names is that only the friendly name changes.
+static std::string haSlug(const std::string &name) {
+  std::string out;
+  for (size_t i = 0; i < name.size(); i++) {
+    unsigned char c = (unsigned char)name[i];
+    if (c == 0xC3 && i + 1 < name.size()) {
+      unsigned char d = (unsigned char)name[i + 1];
+      if (d == 0xA4 || d == 0xA5) { out += 'a'; i++; continue; }  // ä, å
+      if (d == 0xB6) { out += 'o'; i++; continue; }               // ö
+    }
+    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+    out += (char)c;
+  }
+  return out;
+}
+
 int main() {
   MqttCallbacks cb = {gb, ge, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
 
@@ -122,6 +144,22 @@ int main() {
   bool fanFaultSeen = false;
   bool profileSensorSeen = false;
   bool topicsInsideNamespace = true;
+  int namesChecked = 0;
+
+  // object-suffix -> { friendly name (real Swedish), entity_id slug HA must
+  // derive from it = the original ASCII name }. Keyed on the part of the
+  // discovery topic after <device>_, i.e. the object_id that must not change.
+  const std::map<std::string, std::pair<std::string, std::string>> expectedNames = {
+      {"bt", {"Böntemperatur", "bontemperatur"}},
+      {"et", {"Miljötemperatur", "miljotemperatur"}},
+      {"heater", {"Värmelement", "varmelement"}},
+      {"fan", {"Fläkt", "flakt"}},
+      {"mode", {"Läge", "lage"}},
+      {"elapsed", {"Rosttid", "rosttid"}},
+      {"safety", {"Säkerhetslarm", "sakerhetslarm"}},
+      {"fan_fault", {"Fläktspärr", "flaktsparr"}},
+      {"profile", {"Profil", "profil"}},
+  };
 
   const std::string discoveryPrefix = std::string(MQTT_DISCOVERY_PREFIX) + "/";
   for (const auto &p : g_published) {
@@ -167,6 +205,31 @@ int main() {
     }
     check(p.retained, "discovery config is retained");
 
+    // ---- friendly name + entity_id stability ----
+    std::string suffix =
+        objectId.substr(std::string(MQTT_DEVICE_ID).size() + 1);  // drop "<device>_"
+    auto expected = expectedNames.find(suffix);
+    if (expected == expectedNames.end()) {
+      printf("FAIL unexpected entity object id: %s\n", objectId.c_str());
+      checks++;
+      failures++;
+    } else {
+      namesChecked++;
+      if (doc["name"].is<const char *>()) {
+        std::string friendly = doc["name"].as<const char *>();
+        std::string wantName = "name of " + suffix + " is " + expected->second.first;
+        check(friendly == expected->second.first, wantName.c_str());
+        std::string wantSlug = "slug of " + suffix + " stays " + expected->second.second;
+        check(haSlug(friendly) == expected->second.second, wantSlug.c_str());
+      }
+      // unique_id and object_id are what HA keys the entity on - they may not
+      // move with the rename.
+      if (doc["unique_id"].is<const char *>()) {
+        check(std::string(doc["unique_id"].as<const char *>()) == objectId,
+              "unique_id equals the object id (unchanged by a rename)");
+      }
+    }
+
     if (doc["command_topic"].is<const char *>()) {
       commandTopicsFound = true;
       printf("     command_topic on %s\n", p.topic.c_str());
@@ -207,6 +270,7 @@ int main() {
   check(safetySeen, "safety alarm entity published");
   check(fanFaultSeen, "fan interlock entity published");
   check(profileSensorSeen, "profile reported as a sensor");
+  check(namesChecked == 9, "all 9 entities carry an expected friendly name");
 
   // ---------------------------------------------------------- status JSON ---
   const CapturedPublish *statusPub = findPublish(status);

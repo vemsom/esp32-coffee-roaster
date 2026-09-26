@@ -63,7 +63,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_bt", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Bontemperatur");
+    addDeviceBlock(doc, uniqueId, "Böntemperatur");
     doc["device_class"] = "temperature";
     doc["unit_of_measurement"] = "\xC2\xB0" "C";
     doc["state_class"] = "measurement";
@@ -74,7 +74,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_et", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Miljotemperatur");
+    addDeviceBlock(doc, uniqueId, "Miljötemperatur");
     doc["device_class"] = "temperature";
     doc["unit_of_measurement"] = "\xC2\xB0" "C";
     doc["state_class"] = "measurement";
@@ -85,7 +85,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_heater", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Varmelement");
+    addDeviceBlock(doc, uniqueId, "Värmelement");
     doc["unit_of_measurement"] = "%";
     doc["state_class"] = "measurement";
     doc["state_topic"] = STATUS_TOPIC;
@@ -96,7 +96,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_fan", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Flakt");
+    addDeviceBlock(doc, uniqueId, "Fläkt");
     doc["unit_of_measurement"] = "%";
     doc["state_class"] = "measurement";
     doc["state_topic"] = STATUS_TOPIC;
@@ -107,7 +107,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_mode", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Lage");
+    addDeviceBlock(doc, uniqueId, "Läge");
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ value_json.mode }}";
     doc["icon"] = "mdi:state-machine";
@@ -127,7 +127,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_safety", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Sakerhetslarm");
+    addDeviceBlock(doc, uniqueId, "Säkerhetslarm");
     doc["device_class"] = "problem";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ 'ON' if value_json.safetyFault else 'OFF' }}";
@@ -143,7 +143,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_fan_fault", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Flaktsparr");
+    addDeviceBlock(doc, uniqueId, "Fläktspärr");
     doc["device_class"] = "problem";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ 'ON' if value_json.fanFault else 'OFF' }}";
