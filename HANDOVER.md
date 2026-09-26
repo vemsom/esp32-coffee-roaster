@@ -15,8 +15,9 @@ before those files landed - it was already stale when it was read.
 
 Since then (2026-09-26) the firmware gained a latched safety layer (hard
 temperature limit + sensor fault, heater held off, see docs/firmware-notes.md),
-an MQTT bridge with Home Assistant discovery, and a host-side test of the latch
-under tools/host-tests/. That work is committed locally and builds clean.
+an MQTT bridge with Home Assistant discovery, and host-side tests for the
+safety latch and for the MQTT discovery/command payloads under
+tools/host-tests/. That work is committed locally and builds clean.
 
 ## Hardware status
 

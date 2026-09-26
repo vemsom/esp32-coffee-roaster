@@ -39,7 +39,7 @@ WiFi and MQTT credentials go in `include/secrets.h`, which is gitignored:
 
 #define MQTT_HOST     "192.168.x.x"   // MQTT broker, e.g. the Mosquitto add-on
 #define MQTT_PORT     1883
-#define MQTT_USER     "..."           // leave out for an anonymous broker
+#define MQTT_USER     "..."           // required: this broker rejects anonymous connects
 #define MQTT_PASSWORD "..."
 ```
 

@@ -73,10 +73,12 @@ Open items in the safety layer:
 ## MQTT / Home Assistant (implemented 2026-09-26)
 
 Broker for this build: the MQTT broker on the Home Assistant host,
-192.168.1.173:1883 - reachable, and authentication is required (no anonymous
-access). Credentials are not in the repo: they go in include/secrets.h, which
-is gitignored. `MQTT_PASS` is accepted as an alias for `MQTT_PASSWORD` in case
-secrets.h is written by other tooling.
+192.168.1.173:1883 - reachable, and authentication is required (an anonymous
+CONNECT gets CONNACK rc=5 "not authorized"). The firmware therefore refuses to
+enable MQTT when `MQTT_USER` is empty instead of retrying a connection that can
+never succeed. Credentials are not in the repo: they go in include/secrets.h,
+which is gitignored. `MQTT_PASS` is accepted as an alias for `MQTT_PASSWORD` in
+case secrets.h is written by other tooling.
 
 `src/mqtt_client.cpp` publishes Home Assistant MQTT discovery payloads
 (`homeassistant/<component>/coffee_roaster_<entity>/config`, retained) and
@@ -96,10 +98,17 @@ Topics, base `coffee_roaster`:
     coffee_roaster/roast/stop      payload: anything
     coffee_roaster/cool/...        not implemented (web UI only)
 
-Entities published in discovery: bean temperature, environment temperature,
-heater duty, fan speed, mode, elapsed seconds, the safety alarm (binary_sensor,
-device_class problem), fan speed (number), heater duty (number), profile
-(select, options from the LittleFS profile list) and start/stop buttons.
+Entities published in discovery (12 configs, all under
+`homeassistant/<component>/coffee_roaster_<object>/config`): bean temperature,
+environment temperature, heater duty, fan speed, mode, elapsed seconds, the
+safety alarm (binary_sensor, device_class problem), fan speed (number), heater
+duty (number), profile (select, options from the LittleFS profile list) and
+start/stop buttons. Every config is retained and carries the device block,
+unique_id and availability topic.
+
+Topic separation: everything the roaster owns is under `coffee_roaster/` plus
+its own `homeassistant/` configs, so nothing overlaps Tibber Pulse MQTT's topics
+on the same broker.
 
 Open items in the MQTT layer:
 
@@ -145,6 +154,21 @@ multi-user.
 
 ## Host-side tests
 
-`tools/host-tests/` compiles src/safety.cpp and src/heater_control.cpp against a
-stubbed Arduino.h and asserts the latch/interlock behaviour (25 checks). Run
-with `tools/host-tests/run.sh`.
+`tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
+WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker:
+
+- `test_safety` - safety latch and heater interlock (25 checks): trip on the
+  hard limit and on sustained sensor faults, commands refused while latched,
+  clear only after the healthy streak.
+- `test_mqtt_discovery` - MQTT layer (175 checks): all 12 discovery configs are
+  valid JSON with unique_id, device block and availability; the status payload
+  carries the expected fields; every payload fits the PubSubClient buffer
+  (largest 647 B against the 900 B limit); the five command topics are
+  subscribed and handled (`fan/set`, `heater/set`, `profile/set`,
+  `roast/start` both with a name and with "start", `roast/stop`), unknown
+  topics are ignored.
+
+The MQTT test needs an enabled config: without `include/secrets.h`, `run.sh`
+passes throwaway `-DMQTT_HOST/-DMQTT_USER/-DMQTT_PASSWORD` values to both
+translation units (macros do not cross translation units). The PubSubClient stub
+refuses anonymous connects, so the credential path is exercised too.

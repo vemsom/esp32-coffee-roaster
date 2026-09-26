@@ -79,6 +79,12 @@
 #define MQTT_PUBLISH_INTERVAL_MS    2000
 #define MQTT_RECONNECT_INTERVAL_MS  5000
 #define MQTT_MAX_PROFILE_OPTIONS    12
+// Must stay below the PubSubClient buffer (1024) with room for topic + packet
+// header, otherwise the client refuses the publish. Payloads are serialized
+// into a fixed buffer instead of a heap String, and an oversized payload is
+// reported as an error rather than dropped silently.
+#define MQTT_MAX_PAYLOAD_BYTES      900
+#define MQTT_CLIENT_BUFFER_BYTES    1024
 
 // ---- Firmware-version (rapporteras till Home Assistant) ----
 #define FW_VERSION "0.3.0"
