@@ -21,6 +21,8 @@
 #include <cstdio>
 #include <string>
 #include <vector>
+#include <atomic>
+#include <thread>
 
 #include "config.h"
 #include "safety.h"
@@ -28,14 +30,17 @@
 #include "web_server.h"
 #include "mqtt_client.h"
 #include "roast_profile.h"
+#include "state_lock.h"
 
 void setup();
 void loop();
 
 // ---- Arduino / runtime stubs ------------------------------------------------
-static unsigned long fakeMillis = 0;
-unsigned long millis() { return fakeMillis; }
-// Advances the clock: setup() waits up to 15 s for WiFi, and a no-op delay
+// The clock is atomic because the concurrency stress test runs loop() on this
+// thread while the writer thread calls millis() through the web callbacks.
+static std::atomic<unsigned long> fakeMillis{0};
+unsigned long millis() { return fakeMillis.load(); }
+// Advances the clock: the WiFi service retries on a timer, and a no-op delay
 // would spin forever on a fixed clock.
 void delay(unsigned long ms) { fakeMillis += ms; }
 void delayMicroseconds(unsigned int) {}
@@ -114,6 +119,17 @@ static void check(bool cond, const char *what) {
 // Runs the real loop() at the real sample cadence (SENSOR_READ_INTERVAL_MS).
 static void runLoops(int samples) {
   for (int i = 0; i < samples; i++) {
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    loop();
+  }
+}
+
+// Same, with both probes drifting upwards together: real probes never sit on
+// an identical value forever, and the stuck-sensor check (safety.cpp) would
+// notice if they did. Used by the concurrency stress test.
+static void runLoopsWithMovingProbes(int samples) {
+  for (int i = 0; i < samples; i++) {
+    g_probeBT = g_probeET = 20.0f + i * 0.25f;
     fakeMillis += SENSOR_READ_INTERVAL_MS;
     loop();
   }
@@ -271,6 +287,76 @@ int main() {
   check(!web.startManual(200, 600, false, 0, 0), "restart stays denied while latched");
   runLoops(8);
   check(statusHas("\"safetyFault\":true"), "mqtt status carried the safety fault");
+
+  // ----------------------------------------------- concurrency (state lock) --
+  // The lock has to be taken by the web callbacks, and from a single-threaded
+  // test the acquisition counter is the only way to see that.
+  const unsigned long lockBefore = state_lock_acquisitions();
+  (void)web.getBT();
+  (void)web.getFanSpeed();
+  (void)web.getSafetyFault();
+  check(state_lock_acquisitions() == lockBefore + 3,
+        "every status getter takes the state lock");
+
+  const unsigned long cmdBefore = state_lock_acquisitions();
+  web.setFanSpeed(45);
+  check(state_lock_acquisitions() > cmdBefore,
+        "command callbacks take the state lock");
+
+  // The real thing: one thread plays the AsyncTCP task and hammers the
+  // callbacks while this thread runs the control loop. Every shared field is
+  // guarded in main.cpp, so this must simply finish - and the state it leaves
+  // behind must still make sense. Without the lock this is the exact
+  // interleaving that produced clipped values and refused starts.
+  g_probeBT = 20.0f;
+  g_probeET = 20.0f;
+  runLoops(SAFETY_CLEAR_STREAK + 4);
+  check(!safety_faulted(), "latch cleared before the concurrency stress");
+
+  std::atomic<bool> writerDone(false);
+  std::thread writer([&writerDone]() {
+    int i = 0;
+    while (!writerDone.load()) {
+      web.setFanSpeed(30 + (i % 70));
+      web.startCool(50, 300);
+      (void)web.getCoolActive();
+      (void)web.getCoolRemainingSeconds();
+      (void)web.getBT();
+      (void)web.getET();
+      (void)web.getHeaterDuty();
+      (void)web.getSafetyFault();
+      (void)web.getFanFault();
+      (void)web.getManualActive();
+      if (i % 3 == 0) web.startManual(150, 600, false, 0, 0);
+      if (i % 3 == 1) web.stopManual();
+      if (i % 5 == 0) web.startRoast(String("stress"));
+      if (i % 5 == 2) web.stopRoast();
+      web.stopCool();
+      i++;
+    }
+  });
+
+  runLoopsWithMovingProbes(80);   // 20 s of control time against the writer
+  writerDone.store(true);
+  writer.join();
+
+  check(true, "the async-task stand-in and loop() finish without deadlocking");
+  check(web.getFanSpeed() >= 0 && web.getFanSpeed() <= 100,
+        "fan speed is still a valid percentage after the concurrent run");
+  check(web.getHeaterDuty() >= 0 && web.getHeaterDuty() <= 100,
+        "heater duty is still within 0..100 after the concurrent run");
+  check(web.getManualRemainingSeconds() <= 600,
+        "manual remaining time is consistent after the concurrent run");
+  check(web.getCoolRemainingSeconds() <= 300,
+        "cool remaining time is consistent after the concurrent run");
+
+  // And the system still answers commands once the other task has stopped.
+  web.stopManual();
+  web.stopRoast();
+  web.stopCool();
+  web.setFanSpeed(100);
+  runLoops(4);
+  check(web.getFanSpeed() == 100, "commands still take effect after the stress");
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;

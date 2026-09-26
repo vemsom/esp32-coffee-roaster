@@ -1,5 +1,6 @@
 #include "web_server.h"
 #include "config.h"
+#include "state_lock.h"
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -24,28 +25,35 @@ static void sendError(AsyncWebServerRequest *request, int code, const char *msg)
 
 static void handleStatus(AsyncWebServerRequest *request) {
   JsonDocument doc;
-  doc["bt"] = cb.getBT();
-  doc["et"] = cb.getET();
-  doc["heaterDuty"] = cb.getHeaterDuty();
-  doc["fanSpeed"] = cb.getFanSpeed();
-  doc["roastActive"] = cb.getRoastActive();
-  doc["elapsedSeconds"] = cb.getElapsedSeconds();
-  doc["roastPaused"] = cb.getRoastPaused();
-  doc["manualActive"] = cb.getManualActive();
-  doc["manualTargetTemp"] = cb.getManualTargetTemp();
-  doc["manualRemainingSeconds"] = cb.getManualRemainingSeconds();
-  doc["manualAutoCool"] = cb.getManualAutoCool();
-  doc["coolActive"] = cb.getCoolActive();
-  doc["coolSpeed"] = cb.getCoolSpeed();
-  doc["coolRemainingSeconds"] = cb.getCoolRemainingSeconds();
-  doc["safetyFault"] = cb.getSafetyFault();
-  doc["safetyReason"] = cb.getSafetyReason();
-  doc["fanFault"] = cb.getFanFault();
-  // Device-side WiFi state. The browser normally cannot see this (if the
-  // roaster's WiFi is down the page cannot be fetched at all - that case is
-  // the fetch failing, which the UI shows separately), so it is a secondary
-  // signal, useful for cached pages and for anything else reading the API.
-  doc["wifiConnected"] = cb.getWifiConnected();
+  // Assembled under the state lock for the same reason as the MQTT payload:
+  // the getters lock individually, but only the block keeps one snapshot from
+  // straddling a change (mode from before a stop, elapsed time from after
+  // it). Held for microseconds, never across the send.
+  {
+    StateLockGuard guard;
+    doc["bt"] = cb.getBT();
+    doc["et"] = cb.getET();
+    doc["heaterDuty"] = cb.getHeaterDuty();
+    doc["fanSpeed"] = cb.getFanSpeed();
+    doc["roastActive"] = cb.getRoastActive();
+    doc["elapsedSeconds"] = cb.getElapsedSeconds();
+    doc["roastPaused"] = cb.getRoastPaused();
+    doc["manualActive"] = cb.getManualActive();
+    doc["manualTargetTemp"] = cb.getManualTargetTemp();
+    doc["manualRemainingSeconds"] = cb.getManualRemainingSeconds();
+    doc["manualAutoCool"] = cb.getManualAutoCool();
+    doc["coolActive"] = cb.getCoolActive();
+    doc["coolSpeed"] = cb.getCoolSpeed();
+    doc["coolRemainingSeconds"] = cb.getCoolRemainingSeconds();
+    doc["safetyFault"] = cb.getSafetyFault();
+    doc["safetyReason"] = cb.getSafetyReason();
+    doc["fanFault"] = cb.getFanFault();
+    // Device-side WiFi state. The browser normally cannot see this (if the
+    // roaster's WiFi is down the page cannot be fetched at all - that case is
+    // the fetch failing, which the UI shows separately), so it is a secondary
+    // signal, useful for cached pages and for anything else reading the API.
+    doc["wifiConnected"] = cb.getWifiConnected();
+  }
 
   String out;
   serializeJson(doc, out);
