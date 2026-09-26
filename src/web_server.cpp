@@ -40,6 +40,7 @@ static void handleStatus(AsyncWebServerRequest *request) {
   doc["coolRemainingSeconds"] = cb.getCoolRemainingSeconds();
   doc["safetyFault"] = cb.getSafetyFault();
   doc["safetyReason"] = cb.getSafetyReason();
+  doc["fanFault"] = cb.getFanFault();
 
   String out;
   serializeJson(doc, out);
@@ -79,6 +80,18 @@ static void handleManualStart(AsyncWebServerRequest *request, uint8_t *data, siz
   int coolSpeed = doc["coolSpeed"] | 0;
   float coolMinutes = doc["coolMinutes"] | 0.0f;
   unsigned long coolSeconds = (unsigned long)(coolMinutes * 60.0f + 0.5f);
+
+  // Fan interlock, refused up front with its own message: starting a run that
+  // is not allowed to heat would only look like a broken UI. The same rule is
+  // enforced again in main.cpp, where it cuts the element if the fan drops
+  // below the threshold mid-run.
+  if (cb.getFanSpeed() < FAN_MIN_FOR_HEATER_PCT) {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "cannot start: fan must run at least %d %% first",
+             FAN_MIN_FOR_HEATER_PCT);
+    sendError(request, 409, msg);
+    return;
+  }
   if (!cb.startManual(temp, seconds, autoCool, coolSpeed, coolSeconds)) {
     sendError(request, 409, "cannot start: safety alarm active");
     return;

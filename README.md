@@ -18,16 +18,24 @@ and `docs/hardware.md` for the hardware decisions.
 - Profile roasts from LittleFS JSON profiles (ramp/hold steps with per-step fan), plus a fixed manual mode and a fan-only cool timer
 - PID with time-proportioning SSR control (~2 s window) and 20 kHz PWM fan control
 - Own REST API + offline-capable web UI in `data/index.html` (no CDN dependencies)
-- Home Assistant integration over MQTT with MQTT discovery - temperatures, heater/fan, mode, profile, elapsed time and the safety alarm. **Report-only:** the roaster publishes state and can never be started, stopped or adjusted over MQTT; all control lives in the web UI.
+- Home Assistant integration over MQTT with MQTT discovery - temperatures, heater/fan, mode, profile, elapsed time, the safety alarm and the fan interlock. **Report-only:** the roaster publishes state and can never be started, stopped or adjusted over MQTT; all control lives in the web UI.
 
 ## Safety limits
 The heater is behind a latched alarm that cannot be silenced by any command:
 it trips on a hard temperature limit (260 C bean, 300 C environment, both in
-`include/config.h`) or on a sensor fault (NaN, implausible value, or an
-implausible jump sustained over 5 samples). While it is latched the SSR is held
-off, a running roast is aborted, new runs are refused, and the fan is left
-running so the beans keep getting air. It clears only once the readings are
-healthy again and the temperature has dropped 10 C below the limit. Details in
+`include/config.h`), on a sensor fault (NaN, a value outside 2-400 C, or an
+implausible jump sustained over 5 samples), or on the two probes disagreeing
+while both are still cold. A probe that is disconnected at power-up reads a
+steady 0 C rather than NaN - that is what the 2 C floor is for. While the
+alarm is latched the SSR is held off, a running roast is aborted, new runs are
+refused, and the fan is left running so the beans keep getting air. It clears
+only once the readings are healthy again and the temperature has dropped 10 C
+below the limit.
+
+Separately, and without latching, the fan interlock holds the element off
+unless the fan runs at least 10 % - in manual and profile mode alike. It has
+its own message in the web UI and its own `binary_sensor` in Home Assistant,
+and it clears itself as soon as the fan is back. Details in
 `docs/firmware-notes.md`.
 
 ## Configuration

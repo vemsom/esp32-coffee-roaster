@@ -136,6 +136,21 @@ static void publishDiscovery() {
     doc["json_attributes_template"] = "{\"reason\": \"{{ value_json.safetyReason }}\", \"mode\": \"{{ value_json.mode }}\"}";
     publishDiscoveryEntity("binary_sensor", "safety", doc);
   }
+  // Fan interlock, reported separately from the safety latch on purpose: the
+  // element is being held off because airflow is missing, which is a different
+  // problem with a different fix. Self-clearing, so no latching semantics.
+  {
+    JsonDocument doc;
+    snprintf(uniqueId, sizeof(uniqueId), "%s_fan_fault", MQTT_DEVICE_ID);
+    addDeviceBlock(doc, uniqueId, "Flaktsparr");
+    doc["device_class"] = "problem";
+    doc["state_topic"] = STATUS_TOPIC;
+    doc["value_template"] = "{{ 'ON' if value_json.fanFault else 'OFF' }}";
+    doc["payload_on"] = "ON";
+    doc["payload_off"] = "OFF";
+    doc["icon"] = "mdi:fan-off";
+    publishDiscoveryEntity("binary_sensor", "fan_fault", doc);
+  }
 
   // Profile is reported as a plain sensor. MQTT is report-only: no number,
   // no select, no buttons, no command topics - see docs/firmware-notes.md.
@@ -166,6 +181,7 @@ void mqtt_publish_status() {
   doc["roastActive"] = cb.getRoastActive();
   doc["safetyFault"] = cb.getSafetyFault();
   doc["safetyReason"] = cb.getSafetyReason();
+  doc["fanFault"] = cb.getFanFault();
   doc["uptime"] = millis() / 1000;
   doc["rssi"] = WiFi.RSSI();
   IPAddress address = WiFi.localIP();

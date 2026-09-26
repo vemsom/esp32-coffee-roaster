@@ -29,6 +29,12 @@ unsigned long millis();
 void delay(unsigned long ms);
 void delayMicroseconds(unsigned int us);
 
+// LEDC PWM + map(), used by fan_control.cpp.
+void ledcSetup(int channel, double freq, int resolution);
+void ledcAttachPin(int pin, int channel);
+void ledcWrite(int channel, int duty);
+long map(long x, long inMin, long inMax, long outMin, long outMax);
+
 struct SerialStub {
   void begin(unsigned long) {}
   template <typename T> void print(T) {}
@@ -54,6 +60,7 @@ class String {
   String &operator+=(char c) { _s += c; return *this; }
   String &operator+=(const char *s) { _s += (s ? s : ""); return *this; }
   String operator+(const char *s) const { return String(_s + (s ? s : "")); }
+  String operator+(const String &o) const { return String(_s + o._s); }
 
   long toInt() const { return strtol(_s.c_str(), nullptr, 10); }
   float toFloat() const { return strtof(_s.c_str(), nullptr); }
