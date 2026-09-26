@@ -39,15 +39,15 @@ Full list in docs/firmware-notes.md, but the highlights: src/fan_control.cpp use
 
 ## Immediate next steps
 
-First, fill in the MQTT broker host/port/credentials in include/secrets.h (the
-only thing blocking the HA integration - see docs/firmware-notes.md) and verify
-that discovery shows up in Home Assistant. Second, when the MAX6675 modules
-arrive: wire them up, verify sensor readings against a known-good thermometer,
-and check the fault thresholds against real thermocouple noise. Third, confirm
-GPIO pin assignments once the physical layout is decided, update
+First, add WIFI_SSID/WIFI_PASSWORD to include/secrets.h - MQTT credentials are
+already in place and verified against the broker, but WiFi is still the "TBD"
+fallback, so the device cannot connect to anything. Second, when the MAX6675
+modules arrive: wire them up, verify sensor readings against a known-good
+thermometer, and check the fault thresholds against real thermocouple noise.
+Third, confirm GPIO pin assignments once the physical layout is decided, update
 include/config.h. Fourth, test the IRF520 module under load, check for excessive
 heat, which would indicate the 3.3V gate drive is not sufficient (add an NPN
 pre-driver if so). Fifth, wire the V-TAC PSU and MOSFET module to the fan motor,
-physically isolated from the original popper circuit. Sixth, first full build:
-pio run (already green, flash 69.3 %), then a dry run of the safety latch on
-real hardware - pull a thermocouple mid-run and confirm the heater cuts out.
+physically isolated from the original popper circuit. Sixth, flash and verify:
+pio run (green, flash ~69 %), then check that the 8 discovery configs show up in
+Home Assistant and that a pulled thermocouple mid-run trips the safety latch.

@@ -111,12 +111,24 @@ Topic separation: everything the roaster owns is under `coffee_roaster/` plus
 its own `homeassistant/` configs, so nothing overlaps Tibber Pulse MQTT's topics
 on the same broker.
 
+Verified against the real broker (2026-09-26, read-only probe from this
+machine, nothing published): CONNACK Success with the credentials in
+include/secrets.h. A 15 s listen on `#` saw only `zigbee2mqtt/*` (8 retained
+bridge topics) and one `tibber` message - zero `coffee_roaster/*` and zero
+`homeassistant/*`. Nothing from the roaster exists in HA yet: the firmware has
+never been flashed, the hardware is not assembled (MAX6675 still in transit,
+GPIO placeholders), and WIFI_SSID/WIFI_PASSWORD are still the "TBD" fallback in
+config.h, so a flashed device would not even join the network. Discovery and
+the status stream can only be verified once the ESP32 is on the air.
+
 Open items in the MQTT layer:
 
-- **Broker host, port and credentials are not filled in.** They go in
-  include/secrets.h (MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD or
-  MQTT_PASS). Nothing MQTT-related has been run against a real broker yet, and
-  this broker rejects anonymous connects, so without them MQTT stays disabled.
+- **WiFi is the blocker now.** include/secrets.h (600, gitignored) carries
+  MQTT_HOST 192.168.1.173:1883, MQTT_PORT, MQTT_USER and MQTT_PASSWORD - all
+  four verified with a real CONNECT (CONNACK Success). But it has no
+  WIFI_SSID/WIFI_PASSWORD, so config.h falls back to "TBD", the device never
+  joins the network, and `mqtt_update()` returns before it ever tries to
+  connect. Add WiFi to the same file before flashing.
 - No control over MQTT - deliberate, see above. If that ever changes the first
   candidate is a start/stop pair and the fan, never a raw heater duty.
 - The fan can be commanded to 0 % while the heater is on (web UI only). With no
