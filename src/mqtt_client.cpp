@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "config.h"
+#include "state_lock.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -171,24 +172,34 @@ void mqtt_publish_status() {
   if (!enabled || !client.connected()) return;
 
   JsonDocument doc;
-  doc["bt"] = cb.getBT();
-  doc["et"] = cb.getET();
-  doc["heater"] = cb.getHeaterDuty();
-  doc["fan"] = cb.getFanSpeed();
-  doc["mode"] = cb.getMode();
-  doc["profile"] = cb.getProfileName();
-  doc["elapsed"] = cb.getElapsedSeconds();
-  doc["roastActive"] = cb.getRoastActive();
-  doc["safetyFault"] = cb.getSafetyFault();
-  doc["safetyReason"] = cb.getSafetyReason();
-  doc["fanFault"] = cb.getFanFault();
-  doc["uptime"] = millis() / 1000;
-  doc["rssi"] = WiFi.RSSI();
-  IPAddress address = WiFi.localIP();
-  char ip[16];
-  snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
-           (unsigned)address[0], (unsigned)address[1], (unsigned)address[2], (unsigned)address[3]);
-  doc["ip"] = ip;
+  // The whole snapshot is assembled under the state lock. The getters take it
+  // themselves anyway (the lock is recursive), but taking it around the block
+  // as well is what keeps one payload from straddling a change - reading the
+  // profile name buffer while a concurrent profile start rewrites it was a
+  // real race, caught by ThreadSanitizer in the host tests. Deliberately
+  // released before the publish, which can block on the network.
+  {
+    StateLockGuard guard;
+    doc["bt"] = cb.getBT();
+    doc["et"] = cb.getET();
+    doc["heater"] = cb.getHeaterDuty();
+    doc["fan"] = cb.getFanSpeed();
+    doc["mode"] = cb.getMode();
+    doc["profile"] = cb.getProfileName();
+    doc["elapsed"] = cb.getElapsedSeconds();
+    doc["roastActive"] = cb.getRoastActive();
+    doc["safetyFault"] = cb.getSafetyFault();
+    doc["safetyReason"] = cb.getSafetyReason();
+    doc["fanFault"] = cb.getFanFault();
+    doc["uptime"] = millis() / 1000;
+    doc["rssi"] = WiFi.RSSI();
+    IPAddress address = WiFi.localIP();
+    char ip[16];
+    snprintf(ip, sizeof(ip), "%u.%u.%u.%u",
+             (unsigned)address[0], (unsigned)address[1],
+             (unsigned)address[2], (unsigned)address[3]);
+    doc["ip"] = ip;
+  }
 
   if (!fillPayload(doc)) return;
   if (!client.publish(STATUS_TOPIC, payloadBuf, false)) {

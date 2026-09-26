@@ -198,6 +198,51 @@ until contact returns), and **"WIFI SAKNAS"** when the device reports
 rare on purpose: if the roaster's WiFi is down, normally nothing can be served
 at all.
 
+## Concurrency / state lock (implemented 2026-09-26)
+
+Two tasks touch the same state in src/main.cpp: `loop()` runs the sensor
+sample, the safety latch, the PID and the mode state machine on the Arduino
+loop task, and every web callback runs on the AsyncTCP task because
+ESPAsyncWebServer dispatches its handlers there. There was nothing between
+them - a clipped value or a refused start at worst, a torn read of the profile
+name at best.
+
+`include/state_lock.h` is now that something:
+
+- **One recursive mutex for the whole state.** Recursive because a command
+  callback legitimately calls other command callbacks (`cbStopManual` ->
+  `maybeStartAutoCool` -> `cbStartCool`) and because the loop task's tick
+  calls the same helpers. On the ESP32 it is a FreeRTOS recursive semaphore;
+  on the host it is `std::recursive_mutex`. The branch is chosen with
+  `__has_include(<freertos/FreeRTOS.h>)`, not a platform macro, because
+  main.cpp is compiled by both PlatformIO and the host test suite.
+- **Where it is taken:** every status getter and every command callback in
+  main.cpp; the whole sensor-tick block in `loop()` (the SPI read itself is
+  deliberately outside, it only touches loop-task state); `heater_update()`;
+  and the two status-snapshot blocks - `mqtt_publish_status()` and
+  `handleStatus()` in web_server.cpp, so one payload cannot straddle a
+  change. The lock is never held across a network publish or a response send.
+- **Lock order:** state lock, then NVS or LittleFS if a callback needs them.
+  Nothing that takes NVS or the filesystem ever comes back for the state lock,
+  so there is no cycle and no deadlock.
+- **`mqtt_update()` is deliberately outside the lock.** PubSubClient connects
+  synchronously and can hold `loop()` for seconds with the broker down;
+  freezing every HTTP request for that long would be worse than a status
+  payload that straddles one change (it reads through the locked getters
+  anyway).
+- **The profile name is a fixed `char[64]`, not a `String`.**
+  `cbGetProfileName()` hands that pointer to the JSON builder, which runs
+  outside the lock - a `String` could be re-allocated underneath it. The
+  pointer can still tear, which is why the payload blocks above hold the lock
+  across the copy.
+
+Two host tests back this up: an acquisition counter (a getter or command that
+stops taking the lock fails the test, which is otherwise invisible to a
+single-threaded run), and a stress test where a second thread plays the
+AsyncTCP task against `loop()`. The whole control test is *also* built under
+ThreadSanitizer - that is what found the profile-name race in the first place,
+and it now runs clean.
+
 ## MQTT / Home Assistant (implemented 2026-09-26)
 
 Broker for this build: the MQTT broker on the Home Assistant host,
@@ -356,12 +401,11 @@ Tagged the same way as above: what it takes, not just what is left.
   heater window, which means one skewed proportioning window per stall.
   Closing it needs a non-blocking connect (raw `WiFiClient` + state machine)
   or an MQTT library with an async connect. Separate decision, not done.
-- **CODE CHANGE, no hardware needed - needs a go-ahead** Concurrency note:
-  ESPAsyncWebServer callbacks run in the AsyncTCP task while MQTT callbacks run
-  from `loop()`. Both mutate the same state in main.cpp without a lock.
-  Pre-existing, and the consequences are limited to a clipped value or a refused
-  start - but worth a proper fix if the UI ever gets multi-user. Needs a lock or
-  a single-writer queue, and a host test that drives both paths.
+- **CLOSED 2026-09-26 (approved by Fredrik, host-tested + ThreadSanitizer)**
+  Concurrency: ESPAsyncWebServer callbacks and `loop()` are separated by one
+  recursive mutex, see the Concurrency section above. The residual note is
+  about MQTT: `mqtt_update()` stays outside the lock on purpose because it can
+  block for seconds - see the known limitation above for what that costs.
 
 ## Host-side tests
 

@@ -11,6 +11,7 @@
 #include "roast_profile.h"
 #include "web_server.h"
 #include "mqtt_client.h"
+#include "state_lock.h"
 
 // One PID instance, shared between manual and profile runs. It is reset
 // whenever a run starts so the integral does not carry over between runs.
@@ -76,15 +77,41 @@ static bool safetyLatched = false;
 
 // Selected profile: set when a roast starts, reported by the web UI status
 // and by the MQTT status payload.
-static String selectedProfileName = "";
+// A fixed buffer rather than a String: cbGetProfileName() hands this pointer
+// to the MQTT payload builder, which runs outside the lock, and a String could
+// be re-allocated by a concurrent profile start while that pointer is in use.
+// 64 bytes covers any LittleFS profile name; longer ones are truncated.
+static char selectedProfileName[64] = "";
 
 // ---- Status callbacks ----
-static float cbGetBT() { return currentBT; }
-static float cbGetET() { return currentET; }
-static float cbGetHeaterDuty() { return currentHeaterDuty; }
-static int cbGetFanSpeed() { return currentFanSpeed; }
+// Each of these runs on the AsyncTCP task while loop() runs the control state
+// machine on the Arduino task, so each one takes the state lock first
+// (include/state_lock.h). The lock is recursive: a command callback may call
+// another command callback while holding it.
+static float cbGetBT() {
+  StateLockGuard guard;
+  return currentBT;
+}
 
-static bool cbGetRoastActive() { return controlMode == MODE_PROFILE; }
+static float cbGetET() {
+  StateLockGuard guard;
+  return currentET;
+}
+
+static float cbGetHeaterDuty() {
+  StateLockGuard guard;
+  return currentHeaterDuty;
+}
+
+static int cbGetFanSpeed() {
+  StateLockGuard guard;
+  return currentFanSpeed;
+}
+
+static bool cbGetRoastActive() {
+  StateLockGuard guard;
+  return controlMode == MODE_PROFILE;
+}
 
 // Roast time excludes any paused stretches, so pausing holds the current
 // setpoint in place without advancing the profile.
@@ -95,47 +122,96 @@ static unsigned long roastElapsedSeconds() {
   return (now - roastStartMillis - paused) / 1000;
 }
 
-static unsigned long cbGetElapsedSeconds() { return roastElapsedSeconds(); }
+static unsigned long cbGetElapsedSeconds() {
+  StateLockGuard guard;
+  return roastElapsedSeconds();
+}
 
-static bool cbGetRoastPaused() { return roastPaused; }
+static bool cbGetRoastPaused() {
+  StateLockGuard guard;
+  return roastPaused;
+}
 
-static bool cbGetManualActive() { return controlMode == MODE_MANUAL; }
-static float cbGetManualTargetTemp() { return manualTargetTemp; }
-static bool cbGetManualAutoCool() { return manualAutoCool; }
+static bool cbGetManualActive() {
+  StateLockGuard guard;
+  return controlMode == MODE_MANUAL;
+}
+
+static float cbGetManualTargetTemp() {
+  StateLockGuard guard;
+  return manualTargetTemp;
+}
+
+static bool cbGetManualAutoCool() {
+  StateLockGuard guard;
+  return manualAutoCool;
+}
 
 static unsigned long cbGetManualRemainingSeconds() {
+  StateLockGuard guard;
   if (controlMode != MODE_MANUAL) return 0;
   unsigned long elapsed = (millis() - manualStartMillis) / 1000;
   if (elapsed >= manualDurationSeconds) return 0;
   return manualDurationSeconds - elapsed;
 }
 
-static bool cbGetCoolActive() { return coolActive; }
-static int cbGetCoolSpeed() { return coolSpeed; }
+static bool cbGetCoolActive() {
+  StateLockGuard guard;
+  return coolActive;
+}
+
+static int cbGetCoolSpeed() {
+  StateLockGuard guard;
+  return coolSpeed;
+}
 
 static unsigned long cbGetCoolRemainingSeconds() {
+  StateLockGuard guard;
   if (!coolActive) return 0;
   unsigned long elapsed = (millis() - coolStartMillis) / 1000;
   if (elapsed >= coolDurationSeconds) return 0;
   return coolDurationSeconds - elapsed;
 }
 
-static bool cbGetSafetyFault() { return safety_faulted(); }
-static const char *cbGetSafetyReason() { return safety_code_text(); }
-static bool cbGetFanFault() { return fanInterlockFault; }
+static bool cbGetSafetyFault() {
+  StateLockGuard guard;
+  return safety_faulted();
+}
+
+static const char *cbGetSafetyReason() {
+  StateLockGuard guard;
+  return safety_code_text();
+}
+
+static bool cbGetFanFault() {
+  StateLockGuard guard;
+  return fanInterlockFault;
+}
+
+// Not under the state lock: the link state belongs to the WiFi driver, not to
+// anything loop() writes, and serviceWifi() runs on this same task.
 static bool cbGetWifiConnected() { return WiFi.status() == WL_CONNECTED; }
 
 static const char *cbGetModeName() {
+  StateLockGuard guard;
   if (controlMode == MODE_PROFILE) return "profile";
   if (controlMode == MODE_MANUAL) return "manual";
   if (coolActive) return "cool";
   return "idle";
 }
 
-static const char *cbGetProfileName() { return selectedProfileName.c_str(); }
+static const char *cbGetProfileName() {
+  StateLockGuard guard;
+  return selectedProfileName;
+}
 
 // ---- Command callbacks ----
+// Same rule as the getters: these are entered from the AsyncTCP task, so they
+// take the lock for the whole mutation. cbStartRoast() reaches into LittleFS
+// while holding it - state lock first, filesystem second, never the other way
+// round (see state_lock.h).
 static void cbSetFanSpeed(int percent) {
+  StateLockGuard guard;
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   currentFanSpeed = percent;
@@ -155,6 +231,7 @@ static void maybeStartAutoCool() {
 
 static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
                           bool autoCool, int coolSpeed, unsigned long coolSeconds) {
+  StateLockGuard guard;
   if (safety_faulted()) return false;  // alarm must clear before a new run
   if (targetTemp <= 0 || durationSeconds == 0) return false;
   manualTargetTemp = targetTemp;
@@ -169,6 +246,7 @@ static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
 }
 
 static void cbStopManual() {
+  StateLockGuard guard;
   bool wasManual = (controlMode == MODE_MANUAL);
   if (wasManual) controlMode = MODE_IDLE;
   manualStartMillis = 0;
@@ -177,6 +255,7 @@ static void cbStopManual() {
 }
 
 static bool cbStartCool(int speed, unsigned long durationSeconds) {
+  StateLockGuard guard;
   if (speed <= 0 || durationSeconds == 0) return false;
   coolSpeed = speed;
   coolDurationSeconds = durationSeconds;
@@ -186,17 +265,20 @@ static bool cbStartCool(int speed, unsigned long durationSeconds) {
 }
 
 static void cbStopCool() {
+  StateLockGuard guard;
   coolActive = false;
   coolStartMillis = 0;
   cbSetFanSpeed(0);
 }
 
 static bool cbStartRoast(const String &profileName) {
+  StateLockGuard guard;
   if (safety_faulted()) return false;  // alarm must clear before a new run
   String path = String(PROFILES_DIR) + "/" + profileName + ".json";
   if (!activeProfile.loadFromFile(path)) return false;
 
-  selectedProfileName = profileName;
+  snprintf(selectedProfileName, sizeof(selectedProfileName), "%s",
+           profileName.c_str());
   heaterPID.reset();
   roastStartMillis = millis();
   roastPaused = false;
@@ -207,6 +289,7 @@ static bool cbStartRoast(const String &profileName) {
 }
 
 static void cbStopRoast() {
+  StateLockGuard guard;
   if (controlMode == MODE_PROFILE) controlMode = MODE_IDLE;
   roastStartMillis = 0;
   roastPaused = false;
@@ -218,12 +301,14 @@ static void cbStopRoast() {
 // Pause freezes the roast clock. The PID keeps regulating the setpoint that
 // was active at the pause instant, so the current step is held in place.
 static void cbPauseRoast() {
+  StateLockGuard guard;
   if (controlMode != MODE_PROFILE || roastPaused) return;
   roastPaused = true;
   roastPauseStarted = millis();
 }
 
 static void cbResumeRoast() {
+  StateLockGuard guard;
   if (controlMode != MODE_PROFILE || !roastPaused) return;
   roastPausedTotal += millis() - roastPauseStarted;
   roastPaused = false;
@@ -415,7 +500,13 @@ void loop() {
 
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS) {
     lastSensorRead = now;
+    // The SPI read happens before the lock: it touches only sensors.cpp
+    // state, which is written from this task alone, and holding the lock
+    // across it would only make web requests wait longer.
     SensorReading r = sensors_read();
+
+    // Everything below mutates the state the AsyncTCP task reads.
+    StateLockGuard stateLock;
     currentBT = r.bt;
     currentET = r.et;
 
@@ -442,7 +533,19 @@ void loop() {
     updateCool();
   }
 
-  heater_update();
+  // heater_set_duty() runs from the web task as well (cbStopManual,
+  // cbStopRoast, abortRunForSafety), so the window computation is guarded
+  // too. It never blocks, so the lock is held for microseconds.
+  {
+    StateLockGuard stateLock;
+    heater_update();
+  }
+
+  // mqtt_update() deliberately stays outside the lock: PubSubClient connects
+  // synchronously and can hold loop() for seconds while the broker is down,
+  // and freezing every HTTP request for that long would be worse than a
+  // status payload that straddles one change. It reads through the same
+  // callbacks, which take the lock themselves.
   mqtt_update();
 
   // AsyncWebServer handles requests in the background, no explicit
