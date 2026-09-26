@@ -285,6 +285,16 @@ static void updateCool() {
 }
 
 void setup() {
+  // Heater and fan pins first, before anything that can delay. Between reset
+  // and here the pins are plain inputs, so GPIO26 floats in front of the SSR
+  // input for the length of the ROM boot plus this code - and a floating SSR
+  // input is how an element can go live at power-up. A pull-down on SSR IN+ is
+  // still the only thing that covers the milliseconds before the ROM hands
+  // over, but from the first instruction of setup() onward the pin is driven
+  // low and the fan is at 0 %.
+  heater_init();
+  fan_init();
+
   Serial.begin(115200);
   delay(200);
 
@@ -297,8 +307,6 @@ void setup() {
 
   safety_init();
   sensors_init();
-  heater_init();
-  fan_init();
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");

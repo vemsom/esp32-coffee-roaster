@@ -2,7 +2,7 @@
 
 Ställning: ESP32 drivs initialt över **USB** (5 V). Allt annat kopplas i den ordning
 som står längst ner. Pinnarna är hämtade ur `include/config.h` (FW 0.3.0) och måste
-stämmer mot koden före strömsättning — `git diff` om config.h ändrats.
+stämma mot koden före strömsättning — `git diff` om config.h ändrats.
 
 ## Pinout
 
@@ -15,9 +15,20 @@ stämmer mot koden före strömsättning — `git diff` om config.h ändrats.
 | SSR värmestyre      | 26   | Time-proportioning, 2 s fönster |
 | Fläkt PWM           | 27   | 20 kHz, 8-bit (0–255 = 0–100 %) |
 
-Strapping-pinnar som INTE får belastas vid boot: **0, 2, 12, 15**. GPIO5 är även
-strapping-pin (SDIO-timing) — den får inte hållas låg av en modul vid strömning;
-CS är floating på MAX6675-modulen, så det ska vara OK, men bekräfta med mätning.
+Strapping-pinnar på ESP32 och vad de gör vid reset: **0 och 2** styr bootläge,
+**12** styr spänningen på flash-minnet (den farligaste att hålla fel), **15**
+styr boot-logg och **5** styr SDIO-slav-timing. Endast GPIO5 används av oss,
+som CS för BT — och den strappen gäller bara när chipet startar som SDIO-slav
+(boot från SD-kort). Vi startar intern flash, och GPIO5 har intern pull-up vid
+reset, så CS ligger hög om modulen inte aktivt drar den låg. En låg GPIO5 vid
+reset stoppar alltså **inte** booten.
+
+Vad som inte går att avgöra utan modulen i handen: om just din MAX6675-modul
+har drag på CS. Vid strömning: mät GPIO5 med båda modulerna inkopplade och
+ström på — ska ligga hög. Ligger den låg, eller vill du slippa osäkerheten:
+flytta CS-BT till **GPIO13** (ingen strapping-funktion, ledig) och ändra
+`PIN_MAX6675_CS_BT` i config.h. En rad plus omkoplning — gör det innan någon
+kabel skärs, inte efter.
 
 ## Driftträd (strömkällor)
 
@@ -66,8 +77,10 @@ Modul last B  →  24 V PSU −
 - **Känd risk:** IRF520 är svag vid 3,3 V gate. Blåser inte fläkten rent på 100 %
   PWM eller MOSFETen blir varm → sätt ett NPN-steg (eller byt modul till en
   logik-nivådriven modul).
-- Fläkten måste gå på **minst 10 % innan värmekontaktorn får slå på** — krav i
-  firmware (ska bevisas i test 5).
+- Fläkten måste gå på **minst 10 % innan elementet får tändas** — krav i
+  firmware (`FAN_MIN_FOR_HEATER_PCT`), bevisat i host-testet `test_control` i
+  både manuellt och auto-läge, och ska kännas på riktig hårdvara när fläkten
+  testas i steg 2 och när elementet tas fram i steg 4.
 
 ## 3. SSR (elementet)
 
@@ -84,6 +97,12 @@ Elementets andra ledare → nötrläget (NTC-jord/retur enligt elementets monter
   kan ligga för högt vid 3,3 V) → mät pull-in eller lägg in ett transistorsteg.
 - **Popparens ursprungliga styrkrets kopplas ur** — elementet ska enbart gå via SSR.
   Ursprungskretsen är inte avskild från nätet.
+- **Elementet ska aldrig gå till vid boot.** Firmware kör `heater_init()` som
+  allra första sak i `setup()` och kör därmed GPIO26 lågt medan resten startar
+  (host-testet `test_control` bevisar att pinnet aldrig går högt under init).
+  Men mellan reset och den första instruktionen är GPIO26 en ingång i luften —
+  lägg en **pull-down 10–47 kΩ mellan SSR IN+ och GND**. Det är det enda som
+  täcker de millisekunderna, och inget test kan bevisa det åt dig.
 - All nätarbete: strömlöst, jordat, och helst med en annan person i närheten.
   Små mätningar med multimeter på spänningslösa kretsar först.
 
@@ -91,8 +110,10 @@ Elementets andra ledare → nötrläget (NTC-jord/retur enligt elementets monter
 
 1. **ESP32 via USB, inget annat** → enheten går upp, webb-UI svarar, MQTT ansluter.
 2. **Fläktmodulen** (steg 2 ovan) → test 10/50/100 %, kän på MOSFETens temperatur.
-3. **MAX6675 ×2** → lägg båda proberna på samma plats: värdena ska ligga inom några
-   grader (det är utgångsläget för BT/ET-korschecken). Notera bruset: detta är
-   underlaget för `SENSOR_FAULT_MAX_JUMP_C` (mät ≥5 min, element AV).
+3. **MAX6675 ×2** → lägg båda proberna på samma plats: värdena ska ligga inom
+   några grader — korschecken i firmware triggar först vid **mer än 15 °C
+   spridning** och bara under 60 °C. Notera bruset: detta är underlaget för
+   `SENSOR_FAULT_MAX_JUMP_C` (mät ≥5 min, element AV). Läs sedan av vad en
+   urkopplad probe visar (ska ge larm, inte 0 °C som ser frisk ut).
 4. **SSR** → mätning först, sedan nätet, sist — och först när larm- och
    interlock-testerna är gröna (test 5–6 i `docs/firmware-notes.md`).

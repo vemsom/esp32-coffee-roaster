@@ -41,8 +41,13 @@ void delay(unsigned long ms) { fakeMillis += ms; }
 void delayMicroseconds(unsigned int) {}
 
 static int ssrState = -1;
+static bool ssrEverHigh = false;   // latched: was the heater pin ever driven high?
 void pinMode(int, int) {}
-void digitalWrite(int pin, int value) { if (pin == PIN_SSR_HEATER) ssrState = value; }
+void digitalWrite(int pin, int value) {
+  if (pin != PIN_SSR_HEATER) return;
+  ssrState = value;
+  if (value == HIGH) ssrEverHigh = true;
+}
 int digitalRead(int) { return 0; }
 long map(long x, long inMin, long inMax, long outMin, long outMax) {
   return (x - inMin) * (outMax - outMin) / (inMax - inMin) + outMin;
@@ -135,6 +140,16 @@ int main() {
   g_probeET = 0.0f;
   setup();
   check(webCaptured, "main.cpp registers its web callbacks");
+
+  // Boot safety, asserted before a single control cycle runs: setup() drives
+  // the heater pin low as its very first act and never drives it high while
+  // bringing the rest of the system up. This covers what the code controls;
+  // the window between reset and setup() is a hardware question (pull-down on
+  // SSR IN+), which no test can answer.
+  check(ssrState == LOW, "heater pin is driven low by setup() before the first loop");
+  check(!ssrEverHigh, "setup() never drives the heater pin high while initialising");
+  check(!heater_emergency_active(), "heater starts out of its emergency latch");
+
   runLoops(24);   // also long enough for the first MQTT connect + status
 
   check(safety_faulted(), "0 C probes trip the latch");
