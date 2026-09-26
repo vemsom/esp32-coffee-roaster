@@ -116,19 +116,22 @@ machine, nothing published): CONNACK Success with the credentials in
 include/secrets.h. A 15 s listen on `#` saw only `zigbee2mqtt/*` (8 retained
 bridge topics) and one `tibber` message - zero `coffee_roaster/*` and zero
 `homeassistant/*`. Nothing from the roaster exists in HA yet: the firmware has
-never been flashed, the hardware is not assembled (MAX6675 still in transit,
-GPIO placeholders), and WIFI_SSID/WIFI_PASSWORD are still the "TBD" fallback in
-config.h, so a flashed device would not even join the network. Discovery and
-the status stream can only be verified once the ESP32 is on the air.
+never been flashed and the hardware is not assembled (MAX6675 still in transit,
+GPIO placeholders). Discovery and the status stream can only be verified once
+the ESP32 is on the air.
+
+Configuration is complete as of 2026-09-26: include/secrets.h (600, gitignored)
+carries WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, MQTT_PORT, MQTT_USER and
+MQTT_PASSWORD. Verified present in the built firmware by matching every value
+byte-for-byte against `firmware.elf` (no config value is left as "TBD").
 
 Open items in the MQTT layer:
 
-- **WiFi is the blocker now.** include/secrets.h (600, gitignored) carries
-  MQTT_HOST 192.168.1.173:1883, MQTT_PORT, MQTT_USER and MQTT_PASSWORD - all
-  four verified with a real CONNECT (CONNACK Success). But it has no
-  WIFI_SSID/WIFI_PASSWORD, so config.h falls back to "TBD", the device never
-  joins the network, and `mqtt_update()` returns before it ever tries to
-  connect. Add WiFi to the same file before flashing.
+- **Configuration is done, hardware is not.** WIFI_SSID/WIFI_PASSWORD and the
+  four MQTT macros are in include/secrets.h (600, gitignored) and confirmed
+  present in `firmware.elf`. What blocks the integration now is physical: pinout
+  in include/config.h is still placeholder, and the MAX6675 modules have not
+  arrived. Until those are done the device has nothing to report.
 - No control over MQTT - deliberate, see above. If that ever changes the first
   candidate is a start/stop pair and the fan, never a raw heater duty.
 - The fan can be commanded to 0 % while the heater is on (web UI only). With no
@@ -139,6 +142,49 @@ Open items in the MQTT layer:
   intermittent dropouts, so this is expected to be exercised in practice.
 - HA only shows state: manual mode, profile editing and start/stop stay in the
   web UI and cannot be reached from MQTT.
+
+## Calibrating the safety thresholds on real hardware
+
+Do this once the MAX6675 modules have arrived and the pinout is confirmed. In
+order - each step's output is an input to the next, and no constant gets frozen
+before step 8.
+
+1. **Pinout first.** Put the real GPIO numbers in include/config.h and keep the
+   SSR off the strapping pins (0, 2, 12, 15). Everything below is meaningless
+   while the code and the wiring disagree.
+2. **Baseline noise, heater OFF.** Both probes in the chamber at ambient,
+   logging raw MAX6675 samples over serial at the 250 ms cadence for at least
+   5 minutes (~1200 samples per channel). Record peak-to-peak, standard
+   deviation and the largest |delta| between consecutive samples per channel.
+3. **Set SENSOR_FAULT_MAX_JUMP_C from that.** It has to be several times the
+   largest |delta| seen in a *static* reading, and still above the largest
+   |delta| seen during a real ramp. The current 20 C per 250 ms is 80 C/s,
+   which this popper cannot reach - but prove it with an actual roast curve
+   instead of assuming it.
+4. **Set SENSOR_FAULT_MAX_COUNT from the glitch rate.** count x 250 ms is how
+   long a fault may persist before the heater is cut: short enough to be safe
+   (a couple of seconds at most), long enough that one spike never aborts a
+   roast.
+5. **Fault injection, heater OFF.** Pull one thermocouple while logging.
+   Confirm the library really returns NaN on an open probe (assumed from
+   max6675.cpp:46, never seen on hardware) and that the latch trips and holds.
+   Then check the second failure mode: a data line that floats low reads as a
+   fixed 0.0 C, not NaN - see the gap below.
+6. **Fault injection, heater ON, chamber cold.** Start a manual run, then pull
+   the probe. Expect: heater off within count x 250 ms, run aborted, alarm in
+   the web UI (and HA once flashed), no re-arm until the probe is back and
+   readings have been healthy for SAFETY_CLEAR_STREAK samples.
+7. **Check the limits themselves.** Run a real roast, record peak BT and ET.
+   Confirm 260 C BT / 300 C ET sit above normal operation with margin, and that
+   the probe placement (air stream vs beans) makes those numbers meaningful.
+8. **Freeze the constants** and write the measured values back into this file.
+
+Known gap to resolve in step 5: a probe disconnected *at power-on* reads
+0.0 C, which passes the -10..400 C plausibility window and has no previous
+value to jump from - so the PID would happily drive the heater toward the
+setpoint on a false reading until the 260 C limit saves it. Candidates: treat
+an exact 0.0 C as a fault after N samples, or cross-check BT against ET at
+start-up (two probes in the same room must agree within a few degrees).
 
 ## Still open, not done
 
