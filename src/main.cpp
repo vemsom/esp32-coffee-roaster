@@ -123,6 +123,7 @@ static unsigned long cbGetCoolRemainingSeconds() {
 static bool cbGetSafetyFault() { return safety_faulted(); }
 static const char *cbGetSafetyReason() { return safety_code_text(); }
 static bool cbGetFanFault() { return fanInterlockFault; }
+static bool cbGetWifiConnected() { return WiFi.status() == WL_CONNECTED; }
 
 static const char *cbGetModeName() {
   if (controlMode == MODE_PROFILE) return "profile";
@@ -284,6 +285,35 @@ static void updateCool() {
   }
 }
 
+// ---- WiFi (non-blocking) ----
+// setup() only starts the connection; this runs from loop() and keeps it
+// going. Nothing here ever waits: a missing or flaky access point costs a
+// log line and a re-kick, never a control cycle. WiFi.setAutoReconnect()
+// covers the ordinary dropout, the periodic begin() covers the case where the
+// SDK has given up (wrong channel, AP that renumbered, WPA rekey gone bad).
+static unsigned long wifiLastAttempt = 0;
+static bool wifiWasConnected = false;
+
+static void serviceWifi() {
+  const bool connected = (WiFi.status() == WL_CONNECTED);
+
+  if (connected != wifiWasConnected) {
+    if (connected) {
+      Serial.print("[WiFi] connected, IP: ");
+      Serial.println(WiFi.localIP());
+    } else {
+      Serial.println("[WiFi] link lost - reconnecting in the background");
+    }
+    wifiWasConnected = connected;
+  }
+
+  if (connected) return;
+  if (millis() - wifiLastAttempt < WIFI_RETRY_INTERVAL_MS) return;
+  wifiLastAttempt = millis();
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("[WiFi] still not connected - retrying in the background");
+}
+
 void setup() {
   // Heater and fan pins first, before anything that can delay. Between reset
   // and here the pins are plain inputs, so GPIO26 floats in front of the SSR
@@ -318,20 +348,18 @@ void setup() {
     Serial.println(safety_code_text());
   }
 
+  // Start the connection and move on - never wait for it. The old code spun
+  // up to 15 s here, which meant a roaster whose AP was missing took 15 s to
+  // react to anything at all. serviceWifi() in loop() reports, retries and
+  // keeps the control loop free either way.
+  wifiLastAttempt = millis();
+  wifiWasConnected = false;
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi");
-  unsigned long wifiStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 15000) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println();
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("Connected, IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("WiFi connection failed - continuing offline, web UI unreachable.");
-  }
+  Serial.print("[WiFi] connecting to ");
+  Serial.print(WIFI_SSID);
+  Serial.println(" (non-blocking, the control loop starts now)");
 
   WebServerCallbacks callbacks = {
     cbGetBT,
@@ -351,6 +379,7 @@ void setup() {
     cbGetSafetyFault,
     cbGetSafetyReason,
     cbGetFanFault,
+    cbGetWifiConnected,
     cbSetFanSpeed,
     cbStartManual,
     cbStopManual,
@@ -381,6 +410,8 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  serviceWifi();
 
   if (now - lastSensorRead >= SENSOR_READ_INTERVAL_MS) {
     lastSensorRead = now;

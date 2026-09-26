@@ -138,8 +138,18 @@ int main() {
   // kept heating on a fabricated reading.
   g_probeBT = 0.0f;
   g_probeET = 0.0f;
+
+  // WiFi is down at boot on purpose. The old setup() spun for up to 15 s
+  // waiting for an association that never comes, so a roaster with a missing
+  // AP took 15 s to react to anything at all. It must return promptly now.
+  WiFi.statusValue = WL_DISCONNECTED;
+  const unsigned long bootStart = fakeMillis;
   setup();
+  check(fakeMillis - bootStart < 2000, "setup() returns without waiting for WiFi");
   check(webCaptured, "main.cpp registers its web callbacks");
+  check(!web.getWifiConnected(), "status reports WiFi down while the link is down");
+  const int connectAttempts = WiFi.beginCount;
+  check(connectAttempts >= 1, "setup() starts one connect attempt and moves on");
 
   // Boot safety, asserted before a single control cycle runs: setup() drives
   // the heater pin low as its very first act and never drives it high while
@@ -157,6 +167,20 @@ int main() {
   check(!web.getManualActive(), "no manual run is running");
   check(web.getHeaterDuty() == 0, "reported duty is 0, not 100 %");
   check(ssrState == LOW, "heater pin is low");
+
+  // The control loop has kept running with no network at all: the safety
+  // layer tripped, the heater is held down, nothing waited on an AP.
+  // The retry kick fires after WIFI_RETRY_INTERVAL_MS with the link still down.
+  fakeMillis += WIFI_RETRY_INTERVAL_MS;
+  loop();
+  check(WiFi.beginCount == connectAttempts + 1,
+        "a fresh connect attempt is kicked off while the link stays down");
+
+  // Link comes up: the status follows, and no control state was disturbed.
+  WiFi.statusValue = WL_CONNECTED;
+  runLoops(1);
+  check(web.getWifiConnected(), "status reports WiFi connected once the link is up");
+  check(safety_faulted(), "the latch held across the WiFi outage");
 
   // The required path: manual mode must be denied while the alarm is held.
   check(!web.startManual(200, 600, false, 0, 0), "manual start is denied in alarm state");

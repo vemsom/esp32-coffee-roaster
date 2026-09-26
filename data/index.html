@@ -66,7 +66,7 @@
 </style>
 </head>
 <body>
-  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none">fläkt</span></h1>
+  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none">fläkt</span> <span id="netPill" class="pill warn" style="display:none">nätverk</span></h1>
 
   <div class="tabs">
     <div class="tab active" data-view="roast">Rostning</div>
@@ -247,6 +247,8 @@ const state = {
   editSteps: [],         // [{ ramp, hold, temp, fan }] all times in seconds
   loadedProfileName: '', // name of the profile currently open in the editor
   dragging: -1,
+  lastContact: 0,        // Date.now() of the last successful status poll
+  contactLost: false,    // polling is failing - the roaster is unreachable
 };
 
 const $ = (id) => document.getElementById(id);
@@ -310,12 +312,42 @@ function manualTarget() {
 
 // ---------------------------------------------------------- status poll ---
 
+// Network indicator. Two different failures, one pill, because from the
+// browser's point of view they are the same thing: I cannot reach the
+// roaster. "No contact" means the status poll itself failed (the roaster's
+// WiFi is down, the AP is gone, or this device lost the network) and shows
+// how long it has been like that. "WiFi saknas" is the device reporting that
+// it is off the network while still serving a page - a cached page, or
+// anything else that can read the API.
+function renderNet() {
+  const netPill = $('netPill');
+  if (state.contactLost) {
+    const age = state.lastContact ? Math.round((Date.now() - state.lastContact) / 1000) : null;
+    netPill.style.display = '';
+    netPill.textContent = age === null ? 'INGEN KONTAKT' : 'INGEN KONTAKT ' + age + ' s';
+    return;
+  }
+  if (state.status.wifiConnected === false) {
+    netPill.style.display = '';
+    netPill.textContent = 'WIFI SAKNAS';
+    return;
+  }
+  netPill.style.display = 'none';
+}
+
 async function pollStatus() {
   try {
     state.status = await api('/api/status');
   } catch (e) {
+    // The roaster itself cannot be reached: its WiFi is down, the AP is gone,
+    // or this device dropped off the network. Keep showing the last known
+    // values, but say so instead of freezing the page in silence.
+    state.contactLost = true;
+    renderNet();
     return;
   }
+  state.contactLost = false;
+  state.lastContact = Date.now();
   const s = state.status;
 
   // NaN serialises as null over the API, so check the type instead of
@@ -361,6 +393,8 @@ async function pollStatus() {
   } else {
     fanPill.style.display = 'none';
   }
+
+  renderNet();
 
   const pauseBtn = $('pauseBtn');
   if (s.roastActive) {

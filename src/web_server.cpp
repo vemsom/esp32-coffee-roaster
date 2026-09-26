@@ -41,6 +41,11 @@ static void handleStatus(AsyncWebServerRequest *request) {
   doc["safetyFault"] = cb.getSafetyFault();
   doc["safetyReason"] = cb.getSafetyReason();
   doc["fanFault"] = cb.getFanFault();
+  // Device-side WiFi state. The browser normally cannot see this (if the
+  // roaster's WiFi is down the page cannot be fetched at all - that case is
+  // the fetch failing, which the UI shows separately), so it is a secondary
+  // signal, useful for cached pages and for anything else reading the API.
+  doc["wifiConnected"] = cb.getWifiConnected();
 
   String out;
   serializeJson(doc, out);
