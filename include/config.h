@@ -34,6 +34,13 @@
 #define SENSOR_FAULT_MAX_JUMP_C   20.0
 #define SENSOR_FAULT_MAX_COUNT    5
 
+// ---- WiFi ----
+// Anslutningen startas i setup() utan att vänta, och serviceWifi() i loop()
+// kickar om den med sa har mellanrum om den inte ar uppe. Kontrollloopen far
+// aldrig stanna pa natverket: rostningen ska fungera aven om accesspunkten
+// ar borta eller byter kanal.
+#define WIFI_RETRY_INTERVAL_MS    15000
+
 // ---- Flaktsparr (interlock) ----
 // Elementet far bara tandas nar flakten ar minst sa har procent. Under det
 // klipps varmen omedelbart, med eget felmeddelande (korsa inte ihop det med

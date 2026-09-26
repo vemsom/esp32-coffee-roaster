@@ -176,6 +176,28 @@ flat dashed line. Measured fan duty is drawn as a line in both views. The
 manual view also has a fan input (`POST /api/fan`) - that is how the fan is
 raised before a start when the interlock is in the way.
 
+## WiFi (changed 2026-09-26)
+
+`setup()` no longer waits for an association. It configures STA mode, turns on
+the SDK's auto-reconnect, fires one `WiFi.begin()` and returns - the control
+loop starts with or without a network. `serviceWifi()` runs from `loop()` on
+every pass and does three things, none of them blocking:
+
+- logs the transition when the link comes up (with the IP) or goes down;
+- re-kicks `WiFi.begin()` every `WIFI_RETRY_INTERVAL_MS` (15 s,
+  include/config.h) while the link is down, for the cases auto-reconnect does
+  not recover from on its own;
+- exposes the state as `wifiConnected` in `/api/status`.
+
+The web UI shows it as a new pill next to the alarm pills, with two distinct
+meanings that look the same from the browser: **"INGEN KONTAKT n s"** when the
+status poll itself fails (the roaster's WiFi is down, the AP is gone, or the
+viewing device lost the network - it also stops appending to the roast history
+until contact returns), and **"WIFI SAKNAS"** when the device reports
+`wifiConnected:false` while a page is still being served. The second case is
+rare on purpose: if the roaster's WiFi is down, normally nothing can be served
+at all.
+
 ## MQTT / Home Assistant (implemented 2026-09-26)
 
 Broker for this build: the MQTT broker on the Home Assistant host,
@@ -319,10 +341,21 @@ Tagged the same way as above: what it takes, not just what is left.
   topics: broker-level auth is the only protection. Closing it means a token or
   basic-auth check on every handler in src/web_server.cpp plus a login page in
   data/index.html - doable without hardware, deliberately not done.
-- **CODE CHANGE, no hardware needed - needs a go-ahead** WiFi connection is
-  blocking in setup() (up to a 15 s timeout). Works, but gives no feedback in
-  the UI if it fails, only the serial log. Closing it means a non-blocking
-  connect state machine plus a "WiFi saknas" indicator in the UI.
+- **CLOSED 2026-09-26 (approved by Fredrik, host-tested)** WiFi connection is
+  non-blocking: `setup()` starts it and returns, `serviceWifi()` in `loop()`
+  reports and re-kicks it, and the web UI has a network pill (see the WiFi
+  section above). The host test boots with the link down and asserts that
+  `setup()` returns promptly, that the control loop still trips the safety
+  latch, and that the retry fires after `WIFI_RETRY_INTERVAL_MS`.
+- **KNOWN LIMITATION, not part of this change** MQTT reconnect can still block
+  `loop()` while the broker is unreachable: `PubSubClient::connect()` does a
+  synchronous TCP connect, and the Arduino core's default connect timeout is
+  3000 ms (`libraries/WiFi/src/WiFiClient.cpp:26`). Paced by
+  `MQTT_RECONNECT_INTERVAL_MS` (5 s), so the worst case is roughly a 3 s stall
+  every 5 s while WiFi is up but the broker is not - longer than the 2 s
+  heater window, which means one skewed proportioning window per stall.
+  Closing it needs a non-blocking connect (raw `WiFiClient` + state machine)
+  or an MQTT library with an async connect. Separate decision, not done.
 - **CODE CHANGE, no hardware needed - needs a go-ahead** Concurrency note:
   ESPAsyncWebServer callbacks run in the AsyncTCP task while MQTT callbacks run
   from `loop()`. Both mutate the same state in main.cpp without a lock.

@@ -22,6 +22,7 @@ struct WebServerCallbacks {
   bool  (*getSafetyFault)();
   const char *(*getSafetyReason)();
   bool  (*getFanFault)();   // fan interlock: heat withheld, fan below minimum
+  bool  (*getWifiConnected)();  // device-side WiFi state, shown in the UI
 
   // Commands
   void (*setFanSpeed)(int percent);
