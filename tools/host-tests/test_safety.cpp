@@ -29,6 +29,11 @@ SerialStub Serial;
 static int failures = 0;
 static int checks = 0;
 
+// Whether the element is asking for power. It is what arms the stuck-probe
+// check, so every scenario that is not about that check leaves it off - which
+// is also what a real bench test looks like: probes frozen, heater idle.
+static bool g_heatActive = false;
+
 static void check(bool cond, const char *what) {
   checks++;
   if (cond) {
@@ -60,7 +65,7 @@ static SensorReading btBroken(float lastGood, float et) {
 static void feed(const SensorReading &r, int times) {
   for (int i = 0; i < times; i++) {
     fakeMillis += SENSOR_READ_INTERVAL_MS;
-    safety_update(r);
+    safety_update(r, g_heatActive);
   }
 }
 
@@ -100,11 +105,11 @@ int main() {
 
   // ------------------------------------------------- hard over-temp (BT) ---
   fakeMillis += 10;
-  safety_update(good(259.9, 30));
+  safety_update(good(259.9, 30), g_heatActive);
   check(!safety_faulted(), "259.9 C stays below the 260 C limit");
 
   fakeMillis += 10;
-  safety_update(good(260.0, 30));
+  safety_update(good(260.0, 30), g_heatActive);
   check(safety_faulted(), "260.0 C trips the latch");
   check(safety_code() == SAFETY_OVER_TEMP_BT, "trip reason is bt over temp");
 
@@ -126,7 +131,7 @@ int main() {
   check(safety_faulted(), "still latched on sample 9 of the clear streak");
 
   fakeMillis += SENSOR_READ_INTERVAL_MS;
-  safety_update(good(240, 30));
+  safety_update(good(240, 30), g_heatActive);
   check(!safety_faulted(), "clears on the 10th healthy sample below the margin");
   check(safety_code() == SAFETY_OK, "fault code resets to none");
 
@@ -144,7 +149,7 @@ int main() {
   feed(btBroken(180, 40), SENSOR_FAULT_MAX_COUNT - 1);
   check(!safety_faulted(), "four faulted samples in a row do not trip");
   fakeMillis += SENSOR_READ_INTERVAL_MS;
-  safety_update(btBroken(180, 40));
+  safety_update(btBroken(180, 40), g_heatActive);
   check(safety_faulted(), "the 5th consecutive faulted sample trips");
   check(safety_code() == SAFETY_SENSOR_BT, "trip reason is bt sensor fault");
   applyMainLoopPolicy();
@@ -168,7 +173,7 @@ int main() {
   check(safety_faulted(), "sustained fault trips");
   for (int i = 0; i < SAFETY_CLEAR_STREAK; i++) {
     fakeMillis += SENSOR_READ_INTERVAL_MS;
-    safety_update(btBroken(180, 40));
+    safety_update(btBroken(180, 40), g_heatActive);
   }
   check(safety_faulted(), "a still-broken probe cannot clear the latch");
   feed(good(180, 40), SAFETY_CLEAR_STREAK);
@@ -179,7 +184,7 @@ int main() {
   feed(good(200, 299), 3);
   check(!safety_faulted(), "ET below its own limit does not trip");
   fakeMillis += SENSOR_READ_INTERVAL_MS;
-  safety_update(good(200, SAFETY_MAX_ET_TEMP_C));
+  safety_update(good(200, SAFETY_MAX_ET_TEMP_C), g_heatActive);
   check(safety_faulted() && safety_code() == SAFETY_OVER_TEMP_ET, "ET limit trips with its own code");
   feed(good(200, 250), SAFETY_CLEAR_STREAK);
   check(!safety_faulted(), "ET alarm clears below its margin");
@@ -192,7 +197,7 @@ int main() {
   feed(good(20, 40), SENSOR_FAULT_MAX_COUNT - 1);
   check(!safety_faulted(), "four disagreeing samples do not trip");
   fakeMillis += SENSOR_READ_INTERVAL_MS;
-  safety_update(good(20, 40));
+  safety_update(good(20, 40), g_heatActive);
   check(safety_faulted() && safety_code() == SAFETY_SPREAD,
         "cold probes that disagree trip the cross-check");
   check(strcmp(safety_code_text(), "bt/et disagree") == 0,
@@ -262,6 +267,91 @@ int main() {
   rebootKeepingNvs();
   check(!safety_faulted(), "without NVS the latch does not survive a reboot");
   preferencesFailBegin() = false;
+  freshBoot();
+
+  // ------------------------------------------------------- stuck probe -------
+  // Idle machine: both probes frozen on the same value for two minutes. That
+  // is exactly what a healthy cold roaster looks like, and the element is off.
+  freshBoot();
+  g_heatActive = false;
+  feed(good(20, 20), 480);
+  check(!safety_faulted(), "frozen probes with the element off never trip");
+
+  // Heat on, probes moving: a real roast never sits still for a minute.
+  g_heatActive = true;
+  for (int i = 0; i < 240; i++) {
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    safety_update(good(150.0f + (i % 4) * 0.25f, 120.0f + (i % 4) * 0.25f), true);
+  }
+  check(!safety_faulted(), "probes that keep moving with heat on never trip");
+
+  // Heat on, BT frozen: trips exactly at the window, not a sample earlier.
+  // First sample only starts the timer, so it takes
+  // SENSOR_STUCK_MAX_MS / SENSOR_READ_INTERVAL_MS + 1 samples to trip.
+  freshBoot();
+  g_heatActive = true;
+  feed(good(180, 40), SENSOR_STUCK_MAX_MS / SENSOR_READ_INTERVAL_MS);
+  check(!safety_faulted(), "identical readings just under the window do not trip");
+  fakeMillis += SENSOR_READ_INTERVAL_MS;
+  safety_update(good(180, 40), true);
+  check(safety_faulted(), "identical readings for the full window with heat on trip");
+  check(safety_code() == SAFETY_STUCK_BT, "trip reason is bt sensor stuck");
+  check(strcmp(safety_code_text(), "bt sensor stuck") == 0,
+        "stuck has its own reason text");
+
+  // The latch does not release by itself. Every one of these samples looks
+  // perfectly healthy - that is what "stuck" means - so the ordinary clear
+  // streak would otherwise silence the alarm 2.5 s after it tripped.
+  applyMainLoopPolicy();
+  g_heatActive = false;   // the trip aborts the run, so the element is off
+  feed(good(180, 40), SAFETY_CLEAR_STREAK * 4);
+  check(safety_faulted(), "healthy-looking samples alone do not release a stuck alarm");
+  check(safety_code() == SAFETY_STUCK_BT, "the reason stays the stuck probe");
+
+  // Proof of movement is what releases it.
+  feed(good(180.25f, 40), SAFETY_CLEAR_STREAK);
+  check(!safety_faulted(), "a different value from the frozen channel clears it");
+
+  // Cooling: the reading stalls while the element has been off for minutes.
+  // This is the tail of every cool cycle and must never false-alarm.
+  freshBoot();
+  g_heatActive = true;
+  feed(good(60, 55), 2);      // heat on, value recorded
+  g_heatActive = false;
+  feed(good(60, 55), 960);    // four minutes of identical readings, no heat
+  check(!safety_faulted(), "a stalled reading while cooling does not trip");
+
+  // The other channel must not mask a frozen one: BT keeps moving the whole
+  // time while ET sits still (both stay inside the cold-spread window).
+  freshBoot();
+  g_heatActive = true;
+  for (int i = 0; i < SENSOR_STUCK_MAX_MS / SENSOR_READ_INTERVAL_MS; i++) {
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    safety_update(good(30.0f + (i % 20) * 0.25f, 40.0f), true);
+  }
+  check(!safety_faulted(), "a moving BT keeps the pair healthy for the whole window");
+  fakeMillis += SENSOR_READ_INTERVAL_MS;
+  safety_update(good(30.0f + (240 % 20) * 0.25f, 40.0f), true);
+  check(safety_faulted() && safety_code() == SAFETY_STUCK_ET,
+        "a frozen ET trips even while BT keeps moving");
+
+  // Power cycle during a stuck alarm - the case the NVS latch and the
+  // proof rule exist for together.
+  freshBoot();
+  g_heatActive = true;
+  feed(good(180, 40), SENSOR_STUCK_MAX_MS / SENSOR_READ_INTERVAL_MS + 1);
+  check(safety_faulted() && safety_code() == SAFETY_STUCK_BT,
+        "stuck probe trips before the power cycle");
+  g_heatActive = false;
+  rebootKeepingNvs();
+  check(safety_faulted() && safety_code() == SAFETY_STUCK_BT,
+        "a stuck alarm survives the power cycle");
+  feed(good(180, 40), SAFETY_CLEAR_STREAK * 4);
+  check(safety_faulted(), "and is not cleared by healthy-looking samples after the reboot");
+  feed(good(179.75f, 40), SAFETY_CLEAR_STREAK);
+  check(!safety_faulted(), "it clears once the probe shows a different value");
+
+  g_heatActive = false;
   freshBoot();
 
   printf("\n%d checks, %d failures\n", checks, failures);

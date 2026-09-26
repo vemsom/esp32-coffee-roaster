@@ -63,8 +63,8 @@ the real setup()/loop()). 210 checks, 0 failures, as of the 2026-09-26 run of
 
 ## Safety behaviour (implemented 2026-09-26)
 
-Three conditions latch a single alarm, all checked on every validated sensor
-sample in `safety_update()`:
+Four conditions latch a single alarm, all checked on every validated sensor
+sample in `safety_update(r, heaterActive)`:
 
 1. Hard temperature limit - BT at or above `SAFETY_MAX_TEMP_C` (260 C) or ET at
    or above `SAFETY_MAX_ET_TEMP_C` (300 C). Both constants live in
@@ -80,6 +80,29 @@ sample in `safety_update()`:
    plausible on its own but one of them is wrong, so there is no per-channel
    window that can see it. Above 60 C the check switches off: a roast really
    does run ET and BT tens of degrees apart.
+4. Stuck probe (implemented 2026-09-26) - the same reading, bit for bit, for
+   `SENSOR_STUCK_MAX_MS` (60 s) **while the element is asking for power at
+   that moment**. A frozen probe is plausible, never jumps and disagrees with
+   nobody, so conditions 1-3 cannot see it; the dangerous direction (probe
+   stuck low while the PID drives at 100 %) is exactly the one this catches,
+   with the ET limit as backstop if ET is the healthy one. The two choices
+   that keep it from false-tripping are deliberate and are spelled out in
+   include/config.h:
+   - *heat right now*, not "heat recently". The tail of a cooling cycle is
+     where the reading stalls for minutes (the drift falls below the 0.25 C
+     resolution), and by then the element has been off for longer than any
+     reasonable context window. With the element off there is no overheat to
+     protect against anyway, and that is where the check holds back.
+   - *the timer is reset whenever the element is off*, so the window can only
+     be spent under actual heat. A probe sitting still in a switched-off
+     machine does not start counting the moment someone hits start - it gets
+     a full period of heat to prove itself first.
+   A stuck alarm is also the one condition that is **not** released by the
+   healthy streak: its samples look healthy by definition, so it would
+   otherwise clear 2.5 s after tripping (or straight after a reboot, where the
+   detector starts out disarmed). It releases only when the frozen channel
+   reports a value different from the one it froze on - and that rule travels
+   with the alarm through NVS, so a power cycle does not launder it.
 
 While the alarm is latched:
 
@@ -123,20 +146,23 @@ with the same reason reported by the UI and MQTT. Details that matter:
   held off from the first instruction after boot.
 
 Open items in the safety layer (tagged with what it actually takes to close
-them; nothing here can be closed from a desk):
+them - the two that needed no hardware are marked CLOSED 2026-09-26, the rest
+still cannot be closed from a desk):
 
 - **REQUIRES HARDWARE/ROAST DATA** The fault thresholds
   (`SENSOR_FAULT_MAX_JUMP_C` 20 C, 5 consecutive samples) were chosen on paper.
   They need to be checked against real thermocouple noise during a roast - too
   tight and a noisy reading aborts a roast, too loose and a dropped probe is
   noticed late. Input: calibration steps 2-4 below.
-- **REQUIRES ROAST DATA, code change after it** No stuck-sensor detection: a
-  probe that freezes on a plausible value that still jitters by less than 20 C
-  per sample is not detected. The hard limit catches the dangerous outcome.
-  Closing it means adding a "no trend / no variance over N samples" check - the
-  window size cannot be chosen before the real noise figures from step 2 exist,
-  otherwise it will false-trip on a stable ambient reading. Implementable and
-  host-testable the moment those numbers are in.
+- **CLOSED 2026-09-26 (approved by Fredrik, host-tested)** Stuck-sensor
+  detection exists: `SENSOR_STUCK_MAX_MS` (60 s of bit-identical readings
+  while the element is asking for power), conditions 4 above. The window was
+  chosen so that neither roasting nor cooling can false-trip - see the two
+  rules in include/config.h. Residual: the 60 s number still wants a
+  confirmation against the real noise figures from calibration step 2 (record
+  the longest run of *identical* consecutive samples there; if a healthy
+  static reading ever holds still that long with heat on, raise the constant).
+  That is a calibration input, not a missing feature.
 - **CLOSED 2026-09-26 (approved by Fredrik, host-tested)** The alarm state is
   persisted to NVS and re-asserted in `setup()` - see "Persistence" above. The
   behaviour change is deliberate and was signed off: a power cycle no longer
@@ -330,6 +356,9 @@ before step 8.
    logging raw MAX6675 samples over serial at the 250 ms cadence for at least
    5 minutes (~1200 samples per channel). Record peak-to-peak, standard
    deviation and the largest |delta| between consecutive samples per channel.
+   Also record the longest run of *bit-identical* consecutive samples - that
+   is the number that confirms or moves `SENSOR_STUCK_MAX_MS` (60 s), which
+   only ever looks at readings taken while the element is on.
 3. **Set SENSOR_FAULT_MAX_JUMP_C from that.** It has to be several times the
    largest |delta| seen in a *static* reading, and still above the largest
    |delta| seen during a real ramp. The current 20 C per 250 ms is 80 C/s,

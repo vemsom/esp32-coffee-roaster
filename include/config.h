@@ -81,6 +81,37 @@
 #define SENSOR_MAX_SPREAD_C        15.0
 #define SENSOR_SPREAD_MAX_COLD_C   60.0
 
+// ---- Fastskad sensor (stuck probe) ----
+// En MAX6675 som fryser pa ett plausibelt varde ar osynlig for alla andra
+// kontroller: ingen NaN, inget hopp, ingen korsskontroll. Den kan dock inte
+// fortsatta ge ett *foranderligt* varde, sa detektorn ar enkel: samma
+// avlasning, bit for bit, sa lange att elementet ber om effekt.
+//
+// Gransen ar SENSOR_STUCK_MAX_MS (60 s). Tva valjningar skyddar mot
+// falsklarm:
+//
+//   * Kontrollen ar endast aktiv nar elementet ber om effekt *just nu*.
+//     Kylning mot omgivningen ar fallet som annars larmar i onodan: dar
+//     stannar avlasningen i minuter pa slutet, eftersom temperaturandringen
+//     blir mindre an en LSB (0,25 C) per minutt - men dar ar elementet for
+//     lagt sedan. Med "just nu" finns inget fonnster dar en stallande
+//     avlasning kan halka in efter att varmen slutat.
+//   * Medan elementet ar av nollstalls timern, sa fonstret bara kan
+//     tillbringas under faktisk varme. En prober som star stilla i timmar i
+//     ett avstangt maskin far dar inte starta 60-s-rakningen i samma
+//     oygonblick som start knapps in - den far en hel period av varme pa sig.
+//
+// Under en rostning ar 60 s identiska avlasningar omojliga for en levande
+// prober: vardet ar kvantiserat till 0,25 C och ligger aldrig stilla nar
+// kammaren varmas. Steg 2 i kalibreringen (baslinjebrus) ar vad som
+// bekrftar siffran mot riktigt hardvara.
+//
+// Farligaste riktningen - prober frusen i lagt lane medan PID:n ar pa 100 %
+// - ar precis den kontrollen ser, och ET-gransen (SAFETY_MAX_ET_TEMP_C)
+// backar upp om ET ar frisk. Om elementet ar av finns ingen overhettning att
+// skydda mot, och det ar dar den haller inne.
+#define SENSOR_STUCK_MAX_MS       60000
+
 // ---- MQTT (Home Assistant MQTT-discovery) ----
 // Anslutningsuppgifterna laggs i include/secrets.h (okommiterad) sa att de
 // aldrig hamnar i repot. Sa lange MQTT_HOST ar "TBD" ar MQTT avstangt.

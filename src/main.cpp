@@ -510,7 +510,10 @@ void loop() {
     currentBT = r.bt;
     currentET = r.et;
 
-    safety_update(r);
+    // The stuck-probe check is armed by the heater actually asking for
+    // power, not by "heat recently" - see include/config.h for why that is
+    // what keeps the cooling tail from false-tripping.
+    safety_update(r, currentHeaterDuty > 0);
 
     if (safety_faulted()) {
       if (!safetyLatched) {
