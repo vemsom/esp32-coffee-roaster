@@ -1,7 +1,7 @@
 # Kopplingschema — ESP32-kaffrostaren
 
 Ställning: ESP32 drivs initialt över **USB** (5 V). Allt annat kopplas i den ordning
-som står längst ner. Pinnarna är hämtade ur `include/config.h` (FW 0.3.0) och måste
+som står längst ner. Pinnarna är hämtade ur `include/config.h` (FW 0.4.0) och måste
 stämma mot koden före strömsättning — `git diff` om config.h ändrats.
 
 ## Pinout

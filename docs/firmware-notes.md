@@ -1,19 +1,20 @@
 # Firmware notes - assumptions and what is verified
 
 Status: **verified items below were confirmed on 2026-09-26** with a clean
-`pio run` (`pio run -t clean` then `pio run`, 46.7 s, zero warnings) and the
+`pio run` (`pio run -t clean` then `pio run`, 45.2 s, zero warnings) and the
 host-side test suite. Everything still listed as open is untested against
 real hardware.
 
-Build of record (2026-09-26, clean rebuild):
+Build of record (2026-09-26, clean rebuild after the four approved changes):
 
     platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
     Arduino core 2.0.17 (esp_arduino_version.h: ESP_ARDUINO_VERSION 2.0.17)
     ESPAsyncWebServer @ 3.12.1, AsyncTCP @ 3.5.0, ArduinoJson @ 7.4.3,
     PubSubClient @ 2.8.0, MAX6675 library @ 1.1.2, toolchain 8.4.0
-    RAM:   14.2 %  (46 432 / 327 680 bytes)
-    Flash: 69.3 %  (908 057 / 1 310 720 bytes)
+    RAM:   14.2 %  (46 600 / 327 680 bytes)
+    Flash: 69.8 %  (914 669 / 1 310 720 bytes)
     [SUCCESS] - no warnings, no errors
+    FW_VERSION 0.4.0 (was 0.3.0 before these changes)
 
 ## Verified on build / in source
 
@@ -56,10 +57,12 @@ perfectly healthy readings. `SENSOR_MIN_VALID_C` is now 2.0 (include/config.h)
 and there is a BT/ET cross-check on top of it.
 
 Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
-exercised by host tests with stubbed Arduino calls - `test_safety` (30 checks),
-`test_mqtt_discovery` (133 checks) and `test_control` (47 checks, which drives
-the real setup()/loop()). 210 checks, 0 failures, as of the 2026-09-26 run of
-`tools/host-tests/run.sh`. See `tools/host-tests/`.
+exercised by host tests with stubbed Arduino calls - `test_safety` (57 checks),
+`test_mqtt_discovery` (133 checks) and `test_control` (62 checks, which drives
+the real setup()/loop() and also runs a second thread in the role of the
+AsyncTCP task). 252 checks, 0 failures, as of the 2026-09-26 run of
+`tools/host-tests/run.sh`, plus the same `test_control` source rebuilt under
+ThreadSanitizer (also 62/0, zero race reports). See `tools/host-tests/`.
 
 ## Safety behaviour (implemented 2026-09-26)
 
@@ -440,11 +443,21 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker.
-Last run 2026-09-26: **210 checks, 0 failures**, exit 0, no compiler warnings:
+Last run 2026-09-26: **252 checks, 0 failures**, exit 0, no compiler warnings
+(the control test is built and run a second time under ThreadSanitizer, so
+314 checks execute in total):
 
-- `test_safety` - safety latch and heater interlock (30 checks): trip on the
-  hard limit, on sustained sensor faults and on BT/ET disagreement while cold;
-  commands refused while latched; clear only after the healthy streak.
+- `test_safety` - safety latch, heater interlock and the stuck-probe detector
+  (57 checks): trip on the hard limit, on sustained sensor faults and on
+  BT/ET disagreement while cold; commands refused while latched; clear only
+  after the healthy streak. Plus persistence: a latch survives a reboot with
+  its reason intact, a corrupted or unreadable NVS record is repaired rather
+  than obeyed, and the degraded RAM-only path still trips. Plus the stuck
+  probe: idle frozen probes never trip, moving probes under heat never trip,
+  the exact window boundary trips on the right sample, a stalled reading while
+  cooling never trips, a frozen channel trips while the other one moves, and a
+  stuck alarm survives a power cycle without being laundered by healthy-looking
+  samples.
 - `test_mqtt_discovery` - MQTT layer (133 checks): all 9 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault`); every payload fits the
@@ -452,12 +465,25 @@ Last run 2026-09-26: **210 checks, 0 failures**, exit 0, no compiler warnings:
   report-only guarantees hold - no subscriptions, no message callback, no
   `command_topic` on any entity, no controllable entity types, and every
   published topic under `coffee_roaster/` or `homeassistant/`.
-- `test_control` - the real src/main.cpp against stubbed hardware (47 checks):
+- `test_control` - the real src/main.cpp against stubbed hardware (62 checks):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions; a probe
   pulled mid-run aborts the running heat; and the MQTT status payload carries
-  both fault flags. This is the test that would have caught the 0 C bug.
+  both fault flags. This is the test that would have caught the 0 C bug. On
+  top of that: booting with WiFi down returns from `setup()` promptly, still
+  trips the safety latch, and retries the connect after
+  `WIFI_RETRY_INTERVAL_MS`; the web callbacks provably take the state lock
+  (acquisition counter); and a second thread plays the AsyncTCP task against
+  `loop()` for 20 s of simulated control time, checking that nothing deadlocks
+  and that the state it leaves behind still makes sense.
+- **ThreadSanitizer pass**: the `test_control` source is compiled a second
+  time with `-fsanitize=thread` and run as part of the suite. That is what
+  found the profile-name race (a `char*` handed to the MQTT payload builder
+  outside the lock), which is fixed. It runs clean now. It needs
+  `setarch -R` on this kernel (TSAN cannot map its shadow under the current
+  ASLR entropy) - `run.sh` handles that, and only the address layout
+  changes, not the threads.
 
 The MQTT test needs an enabled config: without `include/secrets.h`, `run.sh`
 passes throwaway `-DMQTT_HOST/-DMQTT_USER/-DMQTT_PASSWORD` values to both

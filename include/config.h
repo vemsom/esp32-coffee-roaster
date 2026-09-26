@@ -147,7 +147,7 @@
 #define MQTT_CLIENT_BUFFER_BYTES    1024
 
 // ---- Firmware-version (rapporteras till Home Assistant) ----
-#define FW_VERSION "0.3.0"
+#define FW_VERSION "0.4.0"
 
 // ---- PID-standardvarden ----
 #define PID_KP  4.0
