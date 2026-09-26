@@ -15,14 +15,19 @@ enum SafetyFaultCode {
   SAFETY_SENSOR_BT,     // BT probe NaN / implausible / stuck jump, sustained
   SAFETY_SENSOR_ET,     // ET probe NaN / implausible / stuck jump, sustained
   SAFETY_SPREAD,        // BT and ET disagree while both are still cold
+  SAFETY_STUCK_BT,      // BT identical for SENSOR_STUCK_MAX_MS with heat on
+  SAFETY_STUCK_ET,      // ET identical for SENSOR_STUCK_MAX_MS with heat on
   // Not a fault: upper bound for codes read back from NVS, so a corrupt store
   // cannot boot the firmware into an unknown alarm state.
   SAFETY_FAULT_COUNT,
 };
 
 void safety_init();
-// Call once per sensor sample, before any control update.
-void safety_update(const SensorReading &r);
+// Call once per sensor sample, before any control update. heaterActive is
+// whether the element is being asked for power right now - it is what arms the
+// stuck-probe check (see safety.cpp for why the gate is "now" and not
+// "recently").
+void safety_update(const SensorReading &r, bool heaterActive);
 
 bool safety_faulted();
 SafetyFaultCode safety_code();
