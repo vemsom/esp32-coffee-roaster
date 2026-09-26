@@ -308,6 +308,16 @@ void setup() {
   safety_init();
   sensors_init();
 
+  // A latch restored from NVS has to reach the heater before the first sensor
+  // sample, not 250 ms after it: the SSR pin is already low from heater_init(),
+  // this holds it there by refusing every duty from here on.
+  if (safety_faulted()) {
+    heater_emergency_off();
+    abortRunForSafety();
+    Serial.print("[SAFETY] booting with a persisted alarm: ");
+    Serial.println(safety_code_text());
+  }
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to WiFi");
   unsigned long wifiStart = millis();

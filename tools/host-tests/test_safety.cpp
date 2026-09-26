@@ -8,6 +8,7 @@
 #include "safety.h"
 #include "heater_control.h"
 #include "config.h"
+#include <Preferences.h>
 
 // ---- Arduino stubs ----
 static unsigned long fakeMillis = 0;
@@ -68,9 +69,24 @@ static void applyMainLoopPolicy() {
   if (safety_faulted()) heater_emergency_off();
 }
 
+// Boots the safety layer from scratch. The simulated flash is wiped first so
+// a latch persisted by an earlier scenario cannot leak into this one - every
+// scenario that is not about persistence starts from a clean NVS.
+static void freshBoot() {
+  Preferences prefs;
+  prefs.begin("safety");
+  prefs.clear();
+  prefs.end();
+  safety_init();
+}
+
+// Reboots the safety layer *without* wiping NVS: this is what a power cycle
+// looks like to the firmware.
+static void rebootKeepingNvs() { safety_init(); }
+
 int main() {
   // ---------------------------------------------------- healthy baseline ---
-  safety_init();
+  freshBoot();
   heater_init();
   fakeMillis = 0;
 
@@ -121,7 +137,7 @@ int main() {
   check(ssrState == HIGH, "heater conducts again after the alarm cleared");
 
   // --------------------------------------------------- sensor fault (BT) ---
-  safety_init();
+  freshBoot();
   heater_init();
   feed(good(180, 40), 5);
 
@@ -137,7 +153,7 @@ int main() {
   check(ssrState == LOW, "heater off on sensor fault");
 
   // a single healthy sample in between resets the fault streak
-  safety_init();
+  freshBoot();
   feed(good(180, 40), 3);
   for (int i = 0; i < 8; i++) {
     feed(btBroken(180, 40), SENSOR_FAULT_MAX_COUNT - 1);
@@ -146,7 +162,7 @@ int main() {
   check(!safety_faulted(), "alternating faults never reach the trip streak");
 
   // a sensor fault also needs a clean streak before it clears
-  safety_init();
+  freshBoot();
   feed(good(180, 40), 1);
   feed(btBroken(180, 40), SENSOR_FAULT_MAX_COUNT);
   check(safety_faulted(), "sustained fault trips");
@@ -159,7 +175,7 @@ int main() {
   check(!safety_faulted(), "clears once the probe reads plausibly again");
 
   // ------------------------------------------------ hard over-temp (ET) ----
-  safety_init();
+  freshBoot();
   feed(good(200, 299), 3);
   check(!safety_faulted(), "ET below its own limit does not trip");
   fakeMillis += SENSOR_READ_INTERVAL_MS;
@@ -172,7 +188,7 @@ int main() {
   // Both are plausible on their own (inside the -10..400 style window) but
   // they cannot sit 20 C apart in the same chamber at rest: one of them is
   // wrong and there is no way to tell which.
-  safety_init();
+  freshBoot();
   feed(good(20, 40), SENSOR_FAULT_MAX_COUNT - 1);
   check(!safety_faulted(), "four disagreeing samples do not trip");
   fakeMillis += SENSOR_READ_INTERVAL_MS;
@@ -186,12 +202,12 @@ int main() {
 
   // Once a probe is hot the difference is real physics (air vs beans) and
   // must never trip - a real roast runs ET and BT tens of degrees apart.
-  safety_init();
+  freshBoot();
   feed(good(180, 40), 20);
   check(!safety_faulted(), "hot and cold probes are not compared");
 
   // NaN readings (nothing has ever been read successfully)
-  safety_init();
+  freshBoot();
   SensorReading nan;
   nan.bt = NAN;
   nan.et = NAN;
@@ -199,6 +215,54 @@ int main() {
   nan.etFault = true;
   feed(nan, SENSOR_FAULT_MAX_COUNT);
   check(safety_faulted(), "NaN from a never-connected probe trips");
+
+  // ---------------------------------------------- latch survives a reboot ---
+  freshBoot();
+  feed(good(260, 30), 1);
+  check(safety_faulted(), "over-temp trips before the power cycle");
+
+  rebootKeepingNvs();
+  check(safety_faulted(), "the latch is still held after the power cycle");
+  check(safety_code() == SAFETY_OVER_TEMP_BT, "the fault reason survives the power cycle too");
+  heater_init();
+  applyMainLoopPolicy();
+  fakeMillis += 100;
+  heater_update();
+  check(ssrState == LOW, "heater is held off when booting with a restored alarm");
+
+  // A restored latch follows the normal clear rule - it is the same alarm
+  // that was already running, not a permanent lock-out.
+  feed(good(240, 30), SAFETY_CLEAR_STREAK);
+  check(!safety_faulted(), "restored latch clears on the healthy streak");
+  rebootKeepingNvs();
+  check(!safety_faulted(), "the cleared state is persisted as well");
+
+  freshBoot();
+  check(!safety_faulted(), "an empty store boots into the cleared state");
+
+  // A record that cannot be trusted is healed instead of obeyed.
+  {
+    Preferences corrupted;
+    corrupted.begin("safety");
+    corrupted.putBool("latched", true);
+    corrupted.putInt("code", 4242);
+    corrupted.end();
+  }
+  rebootKeepingNvs();
+  check(!safety_faulted(), "an out-of-range stored reason is ignored, not obeyed");
+
+  // NVS that will not open: the alarm still trips, it just lives in RAM only.
+  // Degraded and logged, never silent.
+  freshBoot();
+  preferencesFailBegin() = true;
+  rebootKeepingNvs();
+  check(!safety_faulted(), "with NVS unavailable a boot starts clear");
+  feed(good(260, 30), 1);
+  check(safety_faulted(), "the latch still trips when NVS is unavailable");
+  rebootKeepingNvs();
+  check(!safety_faulted(), "without NVS the latch does not survive a reboot");
+  preferencesFailBegin() = false;
+  freshBoot();
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;

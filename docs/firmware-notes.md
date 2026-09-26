@@ -99,6 +99,29 @@ The alarm is exposed as `safetyFault` + `safetyReason` in `/api/status` (shown
 as a red banner in the web UI) and as the `binary_sensor` "Sakerhetslarm" in
 Home Assistant.
 
+**Persistence (implemented 2026-09-26).** Every latch transition (trip *and*
+clear) is written to NVS, namespace `safety`, keys `latched` + `code`, and
+`safety_init()` reads it back on boot. A power cycle in the middle of an alarm
+therefore boots with the heater already held off (`heater_emergency_off()` is
+called from `setup()`, before the first sensor sample, not 250 ms after it) and
+with the same reason reported by the UI and MQTT. Details that matter:
+
+- Writes happen on transitions only, never per sample - flash endurance is not
+  a 4 Hz resource.
+- The reason code is written before the flag, so a reset between the two
+  writes can never restore "latched" with a stale or unknown reason. An
+  out-of-range stored code is ignored, logged and repaired.
+- A restored latch is the *same alarm*, so it follows the normal clear rule:
+  healthy readings for `SAFETY_CLEAR_STREAK` samples and it releases. The
+  exceptions are the fault types whose evidence is gone simply because the
+  machine rebooted (see the stuck-probe item below).
+- If NVS will not open (`Preferences::begin` fails) the alarm still works, it
+  just lives in RAM only - logged once at boot, degraded and never silent.
+- What persistence does *not* buy: an over-temp alarm restored on a cold
+  machine clears after the healthy streak, because the condition really is
+  measurably gone. The point is that the alarm is visible and the heater is
+  held off from the first instruction after boot.
+
 Open items in the safety layer (tagged with what it actually takes to close
 them; nothing here can be closed from a desk):
 
@@ -114,12 +137,11 @@ them; nothing here can be closed from a desk):
   window size cannot be chosen before the real noise figures from step 2 exist,
   otherwise it will false-trip on a stable ambient reading. Implementable and
   host-testable the moment those numbers are in.
-- **CODE CHANGE, no hardware needed - not done, needs a go-ahead** The alarm
-  state is in RAM only; a reset clears it. Safe (heater off on boot) but it
-  means an alarm is not visible after a power cycle. Closing it means persisting
-  the latch (ESP32 `Preferences`/NVS) and re-asserting it in `setup()`. Left
-  alone deliberately: it changes boot behaviour of a safety function, so it
-  should be an explicit decision rather than an opportunistic edit.
+- **CLOSED 2026-09-26 (approved by Fredrik, host-tested)** The alarm state is
+  persisted to NVS and re-asserted in `setup()` - see "Persistence" above. The
+  behaviour change is deliberate and was signed off: a power cycle no longer
+  clears an alarm. Degradation path if NVS is unavailable: RAM-only latch, one
+  serial log line.
 - **REQUIRES HARDWARE** 260 C is a guess for this popper and these probes.
   Confirm against the hardware before the first real roast (step 7 below), and
   keep in mind that a K-type thermocouple in a hot air stream reads air, not
