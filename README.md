@@ -48,8 +48,10 @@ MQTT is reported as disabled in the serial log.
 
 ## Build
 ```sh
-pio run                 # build
-pio run --target upload # flash (once the hardware is wired)
+pio run                    # firmware
+pio run -t buildfs         # LittleFS image from data/ (the web UI lives here)
+pio run --target upload    # flash the firmware (once the hardware is wired)
+pio run --target uploadfs  # flash the filesystem - without this the web UI is missing
 ```
 
 ## Tests

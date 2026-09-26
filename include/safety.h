@@ -21,4 +21,3 @@ void safety_update(const SensorReading &r);
 bool safety_faulted();
 SafetyFaultCode safety_code();
 const char *safety_code_text();          // "none", "bt over temp", ...
-unsigned long safety_fault_since_ms();   // millis() when the latch tripped, 0 when clear

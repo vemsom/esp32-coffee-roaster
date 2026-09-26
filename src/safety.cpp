@@ -88,4 +88,3 @@ void safety_update(const SensorReading &r) {
 
 bool safety_faulted() { return latched; }
 SafetyFaultCode safety_code() { return activeCode; }
-unsigned long safety_fault_since_ms() { return trippedAt; }
