@@ -12,13 +12,20 @@ static int consecutiveFaultsBT = 0;
 static int consecutiveFaultsET = 0;
 
 void sensors_init() {
-    delay(300);
+  delay(300);  // MAX6675 needs time after power-up before the first read
+}
+
+// A MAX6675 with a detached probe either returns NaN (bit 2 set) or - if the
+// data line floats low - a fixed reading near 0 C. Both must count as faults,
+// otherwise a dropped probe can look like a valid cold roaster.
+static bool implausible(float value) {
+  return value < SENSOR_MIN_VALID_C || value > SENSOR_MAX_VALID_C;
 }
 
 static float readWithSanityCheck(MAX6675 &sensor, float &lastGood, int &faultCount, bool &faultOut) {
-    float value = sensor.readCelsius();
+  float value = sensor.readCelsius();
 
-  if (isnan(value)) {
+  if (isnan(value) || implausible(value)) {
     faultCount++;
     faultOut = true;
     return lastGood;
@@ -37,13 +44,8 @@ static float readWithSanityCheck(MAX6675 &sensor, float &lastGood, int &faultCou
 }
 
 SensorReading sensors_read() {
-    SensorReading r;
+  SensorReading r;
   r.bt = readWithSanityCheck(thermoBT, lastGoodBT, consecutiveFaultsBT, r.btFault);
   r.et = readWithSanityCheck(thermoET, lastGoodET, consecutiveFaultsET, r.etFault);
   return r;
-}
-
-bool sensors_safety_triggered() {
-    return consecutiveFaultsBT >= SENSOR_FAULT_MAX_COUNT ||
-               consecutiveFaultsET >= SENSOR_FAULT_MAX_COUNT;
 }

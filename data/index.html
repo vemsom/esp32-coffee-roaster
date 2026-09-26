@@ -291,18 +291,31 @@ async function pollStatus() {
   }
   const s = state.status;
 
-  $('valBT').textContent = isFinite(s.bt) ? s.bt.toFixed(1) + '°C' : '--';
-  $('valET').textContent = isFinite(s.et) ? s.et.toFixed(1) + '°C' : '--';
+  // NaN serialises as null over the API, so check the type instead of
+  // isFinite() - isFinite(null) is true and would show up as 0.0 C.
+  const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : null;
+  const bt = num(s.bt), et = num(s.et);
+  $('valBT').textContent = bt === null ? '--' : bt.toFixed(1) + '°C';
+  $('valET').textContent = et === null ? '--' : et.toFixed(1) + '°C';
   $('valHeater').textContent = Math.round(s.heaterDuty) + '%';
   $('valFan').textContent = s.fanSpeed + '%';
   $('valTime').textContent = fmtClock(s.elapsedSeconds);
 
   const pill = $('modePill');
-  if (s.roastActive && s.roastPaused) { pill.textContent = 'pausad'; pill.className = 'pill paused'; }
+  if (s.safetyFault) { pill.textContent = 'larm'; pill.className = 'pill fault'; }
+  else if (s.roastActive && s.roastPaused) { pill.textContent = 'pausad'; pill.className = 'pill paused'; }
   else if (s.roastActive) { pill.textContent = 'rostning'; pill.className = 'pill on'; }
   else if (s.manualActive) { pill.textContent = 'manuell'; pill.className = 'pill manual'; }
   else if (s.coolActive) { pill.textContent = 'kylning'; pill.className = 'pill cool'; }
   else { pill.textContent = 'idle'; pill.className = 'pill'; }
+
+  const faultPill = $('faultPill');
+  if (s.safetyFault) {
+    faultPill.style.display = '';
+    faultPill.textContent = 'LARM: ' + (s.safetyReason || 'fel') + ' – värmen av';
+  } else {
+    faultPill.style.display = 'none';
+  }
 
   const pauseBtn = $('pauseBtn');
   if (s.roastActive) {

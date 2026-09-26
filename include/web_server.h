@@ -19,6 +19,8 @@ struct WebServerCallbacks {
   bool  (*getCoolActive)();
   int   (*getCoolSpeed)();
   unsigned long (*getCoolRemainingSeconds)();
+  bool  (*getSafetyFault)();
+  const char *(*getSafetyReason)();
 
   // Commands
   void (*setFanSpeed)(int percent);

@@ -38,6 +38,8 @@ static void handleStatus(AsyncWebServerRequest *request) {
   doc["coolActive"] = cb.getCoolActive();
   doc["coolSpeed"] = cb.getCoolSpeed();
   doc["coolRemainingSeconds"] = cb.getCoolRemainingSeconds();
+  doc["safetyFault"] = cb.getSafetyFault();
+  doc["safetyReason"] = cb.getSafetyReason();
 
   String out;
   serializeJson(doc, out);
@@ -77,7 +79,10 @@ static void handleManualStart(AsyncWebServerRequest *request, uint8_t *data, siz
   int coolSpeed = doc["coolSpeed"] | 0;
   float coolMinutes = doc["coolMinutes"] | 0.0f;
   unsigned long coolSeconds = (unsigned long)(coolMinutes * 60.0f + 0.5f);
-  cb.startManual(temp, seconds, autoCool, coolSpeed, coolSeconds);
+  if (!cb.startManual(temp, seconds, autoCool, coolSpeed, coolSeconds)) {
+    sendError(request, 409, "cannot start: safety alarm active");
+    return;
+  }
   sendOk(request);
 }
 
