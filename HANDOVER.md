@@ -49,6 +49,7 @@ once the physical layout is decided, update include/config.h. Fourth, test the
 IRF520 module under load, check for excessive heat, which would indicate the
 3.3V gate drive is not sufficient (add an NPN pre-driver if so). Fifth, wire the
 V-TAC PSU and MOSFET module to the fan motor, physically isolated from the
-original popper circuit. Sixth, flash and verify: pio run (green, flash ~69 %),
-then check that the 8 discovery configs show up in Home Assistant and that a
-pulled thermocouple mid-run trips the safety latch.
+original popper circuit. Sixth, flash and verify: pio run (green, flash ~69 %)
+plus `pio run -t uploadfs` (the web UI lives in the LittleFS image, not in the
+firmware), then check that the 8 discovery configs show up in Home Assistant and
+that a pulled thermocouple mid-run trips the safety latch.
