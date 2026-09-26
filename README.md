@@ -3,9 +3,13 @@
 Open source conversion of a popcorn popper into a profile-driven coffee roaster, built around an ESP32.
 
 ## Status
-Early development. Firmware builds (`pio run`, PlatformIO env `esp32dev`). See
-`docs/firmware-notes.md` for what is verified and what is still an assumption,
-and `docs/hardware.md` for the hardware decisions.
+Early development. Firmware builds clean from scratch (`pio run -t clean &&
+pio run`, PlatformIO env `esp32dev`, no warnings): **RAM 14.2 % (46 432 B),
+Flash 69.3 % (908 057 B)** on Arduino core 2.0.17, platform espressif32 7.1.3.
+The host test suite is green: **210 checks, 0 failures**. Nothing has been
+flashed yet - the hardware is not assembled. See `docs/firmware-notes.md` for
+what is verified and what is still an assumption, and `docs/hardware.md` for
+the hardware decisions.
 
 ## Hardware
 - Popcorn popper
@@ -63,8 +67,12 @@ pio run --target uploadfs  # flash the filesystem - without this the web UI is m
 ```
 
 ## Tests
-`tools/host-tests/run.sh` compiles the safety and heater logic against a stub
-Arduino and checks the latch behaviour on the host - no ESP32 needed.
+`tools/host-tests/run.sh` compiles the firmware logic against a stub Arduino
+and runs it on the host - no ESP32 and no broker needed. Three binaries:
+`test_safety` (30 checks, latch + interlock), `test_mqtt_discovery` (133
+checks, discovery payloads and the report-only guarantees) and `test_control`
+(47 checks, the real `src/main.cpp` driven through `setup()`/`loop()`).
+210 checks, 0 failures as of 2026-09-26.
 
 ## License
 Not decided yet (open source - MIT or similar, to be finalized before first release)

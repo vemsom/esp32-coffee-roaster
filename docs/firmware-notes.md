@@ -1,26 +1,53 @@
 # Firmware notes - assumptions and what is verified
 
-Status: **verified items below were confirmed on 2026-09-26** with `pio run`
-(framework-arduinoespressif32 4.20017.260907, ESP32 core 3.x) and a host-side
-test of the safety logic. Everything still listed as open is untested against
+Status: **verified items below were confirmed on 2026-09-26** with a clean
+`pio run` (`pio run -t clean` then `pio run`, 46.7 s, zero warnings) and the
+host-side test suite. Everything still listed as open is untested against
 real hardware.
+
+Build of record (2026-09-26, clean rebuild):
+
+    platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
+    Arduino core 2.0.17 (esp_arduino_version.h: ESP_ARDUINO_VERSION 2.0.17)
+    ESPAsyncWebServer @ 3.12.1, AsyncTCP @ 3.5.0, ArduinoJson @ 7.4.3,
+    PubSubClient @ 2.8.0, MAX6675 library @ 1.1.2, toolchain 8.4.0
+    RAM:   14.2 %  (46 432 / 327 680 bytes)
+    Flash: 69.3 %  (908 057 / 1 310 720 bytes)
+    [SUCCESS] - no warnings, no errors
 
 ## Verified on build / in source
 
-Fan PWM LEDC API (src/fan_control.cpp): uses the channel-based API
-(ledcSetup + ledcAttachPin + ledcWrite), which the ESP32 core 3.x framework in
-this project still provides as a compatibility layer. Compiles clean.
+Fan PWM LEDC API (src/fan_control.cpp) - **CLOSED 2026-09-26.** The code uses
+the channel-based API (`ledcSetup` + `ledcAttachPin` + `ledcWrite` with
+`FAN_LEDC_CHANNEL 0`). The resolved framework is Arduino core **2.0.17**, where
+that is the *native* API, not a compatibility layer:
+`cores/esp32/esp32-hal-ledc.h:30` declares
+`ledcSetup(uint8_t channel, uint32_t freq, uint8_t resolution_bits)` and
+`:36` declares `ledcAttachPin(uint8_t pin, uint8_t channel)`. The pin-based
+3.x API (`ledcAttach(pin)`) does not exist in this framework at all, so there
+was never anything to rewrite - the old HANDOVER note had it backwards.
+Compiles clean with `-Wall` equivalent, 0 warnings.
 
-ESPAsyncWebServer/AsyncTCP package names (platformio.ini): resolved and built as
-`ESPAsyncWebServer @ 3.12.1` and `AsyncTCP @ 3.5.0` (the ESP32Async fork).
+Residual risk (no hardware needed, just a decision): `platform = espressif32`
+in platformio.ini is unpinned. Core 3.x removed the channel API, so a future
+`pio platform update` would break fan_control.cpp at compile time (loudly, not
+silently). Either pin `platform = espressif32@7.1.3` or rewrite fan_control.cpp
+to the pin-based API when that upgrade is wanted.
 
-MAX6675 NaN on an open thermocouple (src/sensors.cpp): confirmed in the
-installed library source - `Adafruit MAX6675 1.1.2`, max6675.cpp:46 returns NAN
+ESPAsyncWebServer/AsyncTCP package names - **CLOSED 2026-09-26.** Both resolve
+in the registry and link into the firmware: `ESPAsyncWebServer @ 3.12.1` and
+`AsyncTCP @ 3.5.0` (the ESP32Async fork). The me-no-dev packages are not
+referenced anywhere.
+
+MAX6675 NaN on an open thermocouple (src/sensors.cpp) - **library source
+verified, hardware behaviour still open:** confirmed in the installed library
+source - `Adafruit MAX6675 1.1.2`, max6675.cpp:46 returns NAN
 when bit 2 of the raw word is set. The same file shows the case that is *not*
 covered by the library: a data line that floats low reads as a fixed 0 C rather
 than NAN, which is why sensors.cpp also rejects values outside
 SENSOR_MIN_VALID_C..SENSOR_MAX_VALID_C and values that jump more than
-SENSOR_FAULT_MAX_JUMP_C.
+SENSOR_FAULT_MAX_JUMP_C. The NaN path has never been seen on real hardware -
+that is calibration step 5.
 
 The floating-low case is not hypothetical: a bench run on 2026-09-26 with
 nothing wired to the ESP32 read 0 C on every channel, ran the heater at 100 %
@@ -29,9 +56,10 @@ perfectly healthy readings. `SENSOR_MIN_VALID_C` is now 2.0 (include/config.h)
 and there is a BT/ET cross-check on top of it.
 
 Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
-exercised by host tests with stubbed Arduino calls - `test_safety` (30 checks)
-and `test_control` (44 checks, which drives the real setup()/loop()). All
-passing. See `tools/host-tests/`.
+exercised by host tests with stubbed Arduino calls - `test_safety` (30 checks),
+`test_mqtt_discovery` (133 checks) and `test_control` (47 checks, which drives
+the real setup()/loop()). 210 checks, 0 failures, as of the 2026-09-26 run of
+`tools/host-tests/run.sh`. See `tools/host-tests/`.
 
 ## Safety behaviour (implemented 2026-09-26)
 
@@ -71,20 +99,31 @@ The alarm is exposed as `safetyFault` + `safetyReason` in `/api/status` (shown
 as a red banner in the web UI) and as the `binary_sensor` "Sakerhetslarm" in
 Home Assistant.
 
-Open items in the safety layer:
+Open items in the safety layer (tagged with what it actually takes to close
+them; nothing here can be closed from a desk):
 
-- The fault thresholds (`SENSOR_FAULT_MAX_JUMP_C` 20 C, 5 consecutive samples)
-  were chosen on paper. They need to be checked against real thermocouple noise
-  during a roast - too tight and a noisy reading aborts a roast, too loose and a
-  dropped probe is noticed late.
-- No stuck-sensor detection: a probe that freezes on a plausible value that
-  still jitters by less than 20 C per sample is not detected. The hard limit
-  catches the dangerous outcome.
-- The alarm state is in RAM only; a reset clears it. Safe (heater off on boot)
-  but it means an alarm is not visible after a power cycle.
-- 260 C is a guess for this popper and these probes. Confirm against the
-  hardware before the first real roast, and keep in mind that a K-type
-  thermocouple in a hot air stream reads air, not bean temperature.
+- **REQUIRES HARDWARE/ROAST DATA** The fault thresholds
+  (`SENSOR_FAULT_MAX_JUMP_C` 20 C, 5 consecutive samples) were chosen on paper.
+  They need to be checked against real thermocouple noise during a roast - too
+  tight and a noisy reading aborts a roast, too loose and a dropped probe is
+  noticed late. Input: calibration steps 2-4 below.
+- **REQUIRES ROAST DATA, code change after it** No stuck-sensor detection: a
+  probe that freezes on a plausible value that still jitters by less than 20 C
+  per sample is not detected. The hard limit catches the dangerous outcome.
+  Closing it means adding a "no trend / no variance over N samples" check - the
+  window size cannot be chosen before the real noise figures from step 2 exist,
+  otherwise it will false-trip on a stable ambient reading. Implementable and
+  host-testable the moment those numbers are in.
+- **CODE CHANGE, no hardware needed - not done, needs a go-ahead** The alarm
+  state is in RAM only; a reset clears it. Safe (heater off on boot) but it
+  means an alarm is not visible after a power cycle. Closing it means persisting
+  the latch (ESP32 `Preferences`/NVS) and re-asserting it in `setup()`. Left
+  alone deliberately: it changes boot behaviour of a safety function, so it
+  should be an explicit decision rather than an opportunistic edit.
+- **REQUIRES HARDWARE** 260 C is a guess for this popper and these probes.
+  Confirm against the hardware before the first real roast (step 7 below), and
+  keep in mind that a K-type thermocouple in a hot air stream reads air, not
+  bean temperature.
 
 ## Fan interlock (implemented 2026-09-26)
 
@@ -161,9 +200,9 @@ machine, nothing published): CONNACK Success with the credentials in
 include/secrets.h. A 15 s listen on `#` saw only `zigbee2mqtt/*` (8 retained
 bridge topics) and one `tibber` message - zero `coffee_roaster/*` and zero
 `homeassistant/*`. Nothing from the roaster exists in HA yet: the firmware has
-never been flashed and the hardware is not assembled (MAX6675 still in transit,
-GPIO placeholders). Discovery and the status stream can only be verified once
-the ESP32 is on the air.
+never been flashed and the hardware is not assembled (MAX6675 still in
+transit). Discovery and the status stream can only be verified once the ESP32
+is on the air.
 
 Configuration is complete as of 2026-09-26: include/secrets.h (600, gitignored)
 carries WIFI_SSID, WIFI_PASSWORD, MQTT_HOST, MQTT_PORT, MQTT_USER and
@@ -172,17 +211,22 @@ byte-for-byte against `firmware.elf` (no config value is left as "TBD").
 
 Open items in the MQTT layer:
 
-- **Configuration is done, hardware is not.** WIFI_SSID/WIFI_PASSWORD and the
-  four MQTT macros are in include/secrets.h (600, gitignored) and confirmed
-  present in `firmware.elf`. What blocks the integration now is physical: pinout
-  in include/config.h is still placeholder, and the MAX6675 modules have not
-  arrived. Until those are done the device has nothing to report.
-- No control over MQTT - deliberate, see above. If that ever changes the first
+- **CLOSED (decision recorded)** No control over MQTT - deliberate, see above.
+  The host test asserts it: no subscriptions, no message callback, no
+  `command_topic`, no controllable entity types. If that ever changes the first
   candidate is a start/stop pair and the fan, never a raw heater duty.
-- MQTT reconnects every 5 s while the link is down. The home network has
-  intermittent dropouts, so this is expected to be exercised in practice.
-- HA only shows state: manual mode, profile editing and start/stop stay in the
-  web UI and cannot be reached from MQTT.
+- **CLOSED (decision recorded)** HA only shows state: manual mode, profile
+  editing and start/stop stay in the web UI and cannot be reached from MQTT.
+- **REQUIRES HARDWARE** Configuration is done, hardware is not.
+  WIFI_SSID/WIFI_PASSWORD and the four MQTT macros are in include/secrets.h
+  (600, gitignored), confirmed present in `firmware.elf`, and the broker accepts
+  them (CONNACK Success). What is left is physical: the ESP32 has never been
+  flashed, so nothing has ever been published and no discovery config has ever
+  appeared in HA. Pinout in include/config.h is assigned but not confirmed
+  against a wired board.
+- **REQUIRES RUNTIME** MQTT reconnects every 5 s while the link is down. The
+  home network has intermittent dropouts, so this is expected to be exercised
+  in practice - it needs the device on the network, not a host test.
 
 ## Calibrating the safety thresholds on real hardware
 
@@ -234,31 +278,41 @@ in step 6 that a genuinely floating input lands below it.
 
 ## Still open, not done
 
-GPIO pins in include/config.h: placeholders only. Update once the actual board
-layout is decided, and avoid the ESP32 strapping pins (0, 2, 12, 15) for
-critical functions like SSR control.
+Tagged the same way as above: what it takes, not just what is left.
 
-PID values (PID_KP/KI/KD in config.h): unguessed starting values. Will need
-tuning against the real thermal response once the machine is testable.
-
-No authentication on the web API - anyone on the same WiFi network can control
-the roaster. Fine for hobby use on your own network, not for sharing beyond
-that. The same applies to the MQTT topics: broker-level auth is the only
-protection.
-
-WiFi connection is blocking in setup() (up to a 15 s timeout). Works, but gives
-no feedback in the UI if it fails, only the serial log.
-
-Concurrency note: ESPAsyncWebServer callbacks run in the AsyncTCP task while
-MQTT callbacks run from `loop()`. Both mutate the same state in main.cpp without
-a lock. Pre-existing, unchanged here, and the consequences are limited to a
-clipped value or a refused start - but worth a proper fix if the UI ever gets
-multi-user.
+- **ASSIGNED, REQUIRES HARDWARE CONFIRMATION** GPIO pins in include/config.h.
+  These are no longer TBD placeholders - the current assignment is CLK 18,
+  MISO 19, CS-BT 5, CS-ET 17, SSR 26, fan PWM 27, written down and cross-checked
+  against the code in docs/wiring.md (2026-09-26). What has *not* happened is
+  the physical check: the board does not exist yet. Re-check on wiring that
+  nothing sits on a strapping pin (0, 2, 12, 15), and specifically measure
+  GPIO5 high at reset with both MAX6675 modules powered - wiring.md has the
+  fallback (move CS-BT to GPIO13) if it is not.
+- **REQUIRES HARDWARE** PID values (PID_KP/KI/KD in config.h): unguessed
+  starting values. Will need tuning against the real thermal response once the
+  machine is testable.
+- **KNOWN LIMITATION, accepted on purpose** No authentication on the web API -
+  anyone on the same WiFi network can control the roaster. Fine for hobby use on
+  your own network, not for sharing beyond that. The same applies to the MQTT
+  topics: broker-level auth is the only protection. Closing it means a token or
+  basic-auth check on every handler in src/web_server.cpp plus a login page in
+  data/index.html - doable without hardware, deliberately not done.
+- **CODE CHANGE, no hardware needed - needs a go-ahead** WiFi connection is
+  blocking in setup() (up to a 15 s timeout). Works, but gives no feedback in
+  the UI if it fails, only the serial log. Closing it means a non-blocking
+  connect state machine plus a "WiFi saknas" indicator in the UI.
+- **CODE CHANGE, no hardware needed - needs a go-ahead** Concurrency note:
+  ESPAsyncWebServer callbacks run in the AsyncTCP task while MQTT callbacks run
+  from `loop()`. Both mutate the same state in main.cpp without a lock.
+  Pre-existing, and the consequences are limited to a clipped value or a refused
+  start - but worth a proper fix if the UI ever gets multi-user. Needs a lock or
+  a single-writer queue, and a host test that drives both paths.
 
 ## Host-side tests
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
-WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker:
+WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker.
+Last run 2026-09-26: **210 checks, 0 failures**, exit 0, no compiler warnings:
 
 - `test_safety` - safety latch and heater interlock (30 checks): trip on the
   hard limit, on sustained sensor faults and on BT/ET disagreement while cold;
@@ -270,7 +324,7 @@ WiFi/PubSubClient headers and runs it on the host - no ESP32 and no broker:
   report-only guarantees hold - no subscriptions, no message callback, no
   `command_topic` on any entity, no controllable entity types, and every
   published topic under `coffee_roaster/` or `homeassistant/`.
-- `test_control` - the real src/main.cpp against stubbed hardware (44 checks):
+- `test_control` - the real src/main.cpp against stubbed hardware (47 checks):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions; a probe
