@@ -148,9 +148,8 @@
 
 // ---- OTA (natverksuppdatering, sa att nasta gang inte kraver USB) ----
 // ArduinoOTA, samma regel som MQTT: uppdragen ligger i secrets.h och utan
-// losenord startas tjansten inte alls - ett oppet OTA-port i IoT-VLAnn ar en
-// stallande inbjudan. Bilden skrivs till OTA-sloten (app1) och enheten startar
-// om nar overforingen ar klar.
+// losenord startas tjansten inte alls. Bilden skrivs till OTA-sloten (app1)
+// och enheten startar om nar overforingen ar klar.
 //
 // Tjansten startar i serviceWifi() sa fort lan ar uppe och handteras i loop().
 // Tvao regler gor det sakert:

@@ -1,8 +1,8 @@
 #!/bin/sh
 # Uppdatera kaffrostaren över nätet - ingen USB-kabel.
 #
-#   sh tools/ota-upload.sh 192.168.0.20        firmware (app-partitionen)
-#   sh tools/ota-upload.sh 192.168.0.20 fs     webb-UI:t (data/ -> LittleFS)
+#   sh tools/ota-upload.sh 192.168.x.x        firmware (app-partitionen)
+#   sh tools/ota-upload.sh 192.168.x.x fs     webb-UI:t (data/ -> LittleFS)
 #
 # Första kommandot är det vanliga: det skickar firmware.bin till OTA-slotten
 # och startar om. Ändringar i data/ (webb-UI:t) följer INTE med den - kör då
@@ -21,8 +21,8 @@ cd "$(dirname "$0")/.."
 HOST="$1"
 if [ -z "$HOST" ]; then
   echo "Användning: sh tools/ota-upload.sh <ip-eller-host> [fs]"
-  echo "  exempel:   sh tools/ota-upload.sh 192.168.0.20"
-  echo "             sh tools/ota-upload.sh 192.168.0.20 fs   (bara webb-UI:t)"
+  echo "  exempel:   sh tools/ota-upload.sh 192.168.x.x"
+  echo "             sh tools/ota-upload.sh 192.168.x.x fs   (bara webb-UI:t)"
   exit 2
 fi
 

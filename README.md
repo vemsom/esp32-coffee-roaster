@@ -1,59 +1,52 @@
 # ESP32 Coffee Roaster
 
-Open source conversion of a popcorn popper into a profile-driven coffee roaster, built around an ESP32.
+Turn a hot-air popcorn popper into a programmable coffee roaster. An ESP32
+reads two temperatures, switches the heater and the fan, and follows a roasting
+profile you draw yourself. Everything is controlled from a web page that lives
+on the device. Home Assistant can watch the numbers; it can never start or stop
+a roast.
 
-## Status
-Early development. Firmware builds clean from scratch (`pio run -t clean &&
-pio run`, PlatformIO env `esp32dev`, no warnings): **RAM 15.5 % (50 712 B),
-Flash 73.1 % (958 569 B)** on Arduino core 2.0.17, platform espressif32 7.1.3,
-FW 0.5.0. The host test suite is green: **265 checks, 0 failures** (plus the
-same control test rebuilt under ThreadSanitizer, so 340 execute). The first
-build was flashed and bench-tested on 2026-09-26 - the pinout still needs its
-physical verification. See `docs/firmware-notes.md` for
-what is verified and what is still an assumption, and `docs/hardware.md` for
-the hardware decisions.
+The project is open source hardware plus firmware. You buy the parts, wire
+them, build the firmware with PlatformIO, flash it once over USB, and update it
+over the network from then on.
 
-## Hardware
-- Popcorn popper
-- ESP32 dev board
-- MAX6675 x2 (BT/ET sensors, K-type thermocouples)
-- SSR for the heating element (time-proportioning control)
-- Separate isolated DC PSU + MOSFET motor driver for the fan (the original popper circuit is NOT isolated from mains - see docs/hardware.md)
+## What you need
 
-## Features
-- Profile roasts from LittleFS JSON profiles (ramp/hold steps with per-step fan), plus a fixed manual mode and a fan-only cool timer
-- PID with time-proportioning SSR control (~2 s window) and 20 kHz PWM fan control
-- Own REST API + offline-capable web UI in `data/index.html` (no CDN dependencies), with a network pill that says when the roaster is unreachable ("INGEN KONTAKT n s") or off the network ("WIFI SAKNAS")
-- WiFi connects in the background: `setup()` starts it and returns, so the control loop is running with or without a network
-- Home Assistant integration over MQTT with MQTT discovery - temperatures, heater/fan, mode, profile, elapsed time, the safety alarm and the fan interlock. **Report-only:** the roaster publishes state and can never be started, stopped or adjusted over MQTT; all control lives in the web UI.
+- A hot-air popcorn popper (the heating element and the fan you reuse)
+- An ESP32 dev board
+- 2x MAX6675 boards with K-type thermocouples (one for the beans, one for the air)
+- A solid-state relay (SSR) with heatsink, to switch the heater element
+- A MOSFET driver board, to PWM the fan motor
+- A separate isolated 24 V DC power supply for the fan motor
+- A 5 V supply for the ESP32 (USB is fine)
 
-## Safety limits
-The heater is behind a latched alarm that cannot be silenced by any command:
-it trips on a hard temperature limit (260 C bean, 300 C environment, both in
-`include/config.h`), on a sensor fault (NaN, a value outside 2-400 C, or an
-implausible jump sustained over 5 samples), on the two probes disagreeing
-while both are still cold, or on a stuck probe (the same reading bit for bit
-for 60 s while the element is asking for power - a frozen probe is plausible
-enough to fool every other check, and the heat condition is what keeps the
-cooling tail from false-tripping). A probe that is disconnected at power-up
-reads a steady 0 C rather than NaN - that is what the 2 C floor is for. While
-the alarm is latched the SSR is held off, a running roast is aborted, new runs
-are refused, and the fan is left running so the beans keep getting air. It
-clears only once the readings are healthy again and the temperature has
-dropped 10 C below the limit; a stuck alarm additionally waits for the probe
-to show a different value.
+The stock fan wiring inside the popper is not galvanically isolated from the
+mains. This build does not use it: the fan runs from its own 24 V supply, and
+the heater runs only through the SSR. See `docs/hardware.md` before you wire
+anything, and `docs/wiring.md` for the pin-by-pin connections.
 
-The latch is persisted to NVS, so a power cycle during an alarm boots with the
-heater already held off and the same reason reported - it does not clear
-because the machine was unplugged.
+## Build and flash
 
-Separately, and without latching, the fan interlock holds the element off
-unless the fan runs at least 10 % - in manual and profile mode alike. It has
-its own message in the web UI and its own `binary_sensor` in Home Assistant,
-and it clears itself as soon as the fan is back. Details in
-`docs/firmware-notes.md`.
+You need [PlatformIO](https://platformio.org/) (`pio` on your PATH).
+
+```sh
+pio run                    # build the firmware
+pio run -t buildfs          # build the web UI image (it lives in data/)
+pio run --target upload     # first flash, over USB
+pio run --target uploadfs   # flash the web UI - without this there is no UI
+```
+
+After the first flash, updates go over the network, no cable:
+
+```sh
+sh tools/ota-upload.sh 192.168.x.x      # firmware
+sh tools/ota-upload.sh 192.168.x.x fs   # web UI only
+```
+
+Replace `192.168.x.x` with the address your roaster got on your network.
 
 ## Configuration
+
 WiFi and MQTT credentials go in `include/secrets.h`, which is gitignored:
 
 ```c
@@ -62,33 +55,84 @@ WiFi and MQTT credentials go in `include/secrets.h`, which is gitignored:
 
 #define MQTT_HOST     "192.168.x.x"   // MQTT broker, e.g. the Mosquitto add-on
 #define MQTT_PORT     1883
-#define MQTT_USER     "..."           // required: this broker rejects anonymous connects
+#define MQTT_USER     "..."           // required if your broker rejects anonymous connects
 #define MQTT_PASSWORD "..."
 ```
 
-Without `secrets.h` the firmware still builds and runs: WiFi stays offline and
-MQTT is reported as disabled in the serial log.
+You can skip this file entirely. The firmware still builds and runs: it stays
+offline and reports MQTT as disabled in the serial log.
 
-## Build
-```sh
-pio run                    # firmware
-pio run -t buildfs         # LittleFS image from data/ (the web UI lives here)
-pio run --target upload    # flash the firmware over USB (first time only)
-pio run --target uploadfs  # flash the filesystem - without this the web UI is missing
-sh tools/ota-upload.sh 192.168.0.20   # every update after that, no cable
-sh tools/ota-upload.sh 192.168.0.20 fs  # same, but only a data/ (web UI) change
-```
+## Use it
+
+1. Power the roaster and wait for it to join your WiFi, then open the device
+   address in a browser (any phone or laptop on the same network works).
+2. The page shows bean temperature, air temperature, heater power, fan power
+   and a live graph. There are three modes:
+   - **Profile** - the roaster follows a saved ramp/hold schedule, with a
+     fan percentage per step. Profiles are stored as JSON on the device.
+   - **Manual** - you set the heater and fan yourself.
+   - **Cool** - fan only, on a timer, for after a roast.
+3. Press start. The graph draws the actual curve against your setpoint.
+4. Stop at any time from the same page. The safety alarm (below) also stops it.
+
+Everything is controlled from the web page. MQTT is **report-only**: the
+firmware publishes temperatures, heater and fan, mode, elapsed time and the
+alarm states, and it subscribes to nothing. There is no MQTT command that can
+start, stop or change a roast.
+
+The web UI has no external dependencies (no CDN), so it works without internet
+access on the device that views it.
+
+## Safety limits
+
+The heater sits behind a latched alarm that no command can silence. It trips on:
+
+- a hard temperature limit (260 C bean, 300 C air, both in `include/config.h`)
+- a sensor fault: NaN, a value outside 2-400 C, or an implausible jump sustained
+  over 5 samples
+- the two probes disagreeing while both are still cold
+- a stuck probe: the same reading bit for bit for 60 s while the element is
+  asking for power
+
+While the alarm is latched the relay is held off, a running roast is aborted,
+new runs are refused, and the fan keeps running so the beans still get air. It
+clears only when the readings are healthy again and the temperature has dropped
+10 C below the limit. The latch is stored in flash, so unplugging the machine
+does not clear it.
+
+Separately, and without latching, the fan interlock holds the element off unless
+the fan runs at least 10 % - in manual and profile mode alike. Details in
+`docs/firmware-notes.md`.
+
+Do not skip the wiring notes in `docs/hardware.md`. This is mains-voltage
+hardware.
 
 ## Tests
+
 `tools/host-tests/run.sh` compiles the firmware logic against a stub Arduino
-and runs it on the host - no ESP32 and no broker needed. Three binaries:
-`test_safety` (57 checks, latch + interlock + NVS persistence + stuck probe),
-`test_mqtt_discovery` (133 checks, discovery payloads and the report-only
-guarantees) and `test_control` (62 checks, the real `src/main.cpp` driven
-through `setup()`/`loop()`, including a second thread in the role of the
-AsyncTCP task). `test_control` is also built a second time under
-ThreadSanitizer and run as part of the suite - that is what caught the
-profile-name race. 252 checks, 0 failures as of 2026-09-26.
+and runs it on your computer. No ESP32 and no broker needed, only `g++`:
+
+```sh
+tools/host-tests/run.sh
+```
+
+Three binaries: `test_safety` (the alarm, the interlock and the stuck-probe
+detector), `test_mqtt_discovery` (discovery payloads and the report-only
+guarantees) and `test_control` (the real `src/main.cpp` driven through
+`setup()`/`loop()`, including a second thread in the role of the AsyncTCP
+task). `test_control` also runs a second time under ThreadSanitizer - that pass
+is what found a data race in the profile name.
+
+## Project status
+
+Early development. The firmware builds clean and the host test suite is green
+(RAM 15.5 %, Flash 73.1 %, FW 0.5.0, Arduino core 2.0.17, espressif32 7.1.3).
+The hardware is not finished: the temperature modules were still in transit and
+the GPIO assignment has never been checked against a physical board.
+`docs/firmware-notes.md` lists what is verified and what is still an
+assumption; `docs/hardware.md` records the hardware decisions.
 
 ## License
-Not decided yet (open source - MIT or similar, to be finalized before first release)
+
+Not decided yet (open source - MIT or similar, to be finalized before the first
+release).

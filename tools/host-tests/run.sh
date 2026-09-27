@@ -20,7 +20,7 @@ trap 'rm -rf "$out"' EXIT
 # secrets.h we pass nothing and the test picks up the real configuration.
 mqtt_defs=""
 if [ ! -f "$root/include/secrets.h" ]; then
-  mqtt_defs='-DMQTT_HOST="192.168.0.10" -DMQTT_USER="host-test-user" -DMQTT_PASSWORD="host-test-pass"'
+  mqtt_defs='-DMQTT_HOST="192.168.0.x" -DMQTT_USER="host-test-user" -DMQTT_PASSWORD="host-test-pass"'
 fi
 
 if [ ! -d "$json_inc" ]; then

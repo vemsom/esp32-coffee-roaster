@@ -290,7 +290,13 @@ int main() {
           "status carries safetyFault");
     check(doc["fanFault"].is<bool>() && !doc["fanFault"].as<bool>(),
           "status carries fanFault");
-    check(std::string(doc["ip"].as<const char *>()) == "192.168.0.10", "status carries ip");
+    // The stub WiFi (tools/host-tests/stub/WiFi.h) owns the address; build the
+    // expectation from it so the fixture stays a fixture and not a literal.
+    IPAddress localIp = WiFi.localIP();
+    char expectIp[16];
+    snprintf(expectIp, sizeof(expectIp), "%u.%u.%u.%u", (unsigned)localIp[0],
+             (unsigned)localIp[1], (unsigned)localIp[2], (unsigned)localIp[3]);
+    check(std::string(doc["ip"].as<const char *>()) == expectIp, "status carries ip");
     check(!statusPub->retained, "status is not retained");
   }
 

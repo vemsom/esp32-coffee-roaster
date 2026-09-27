@@ -399,8 +399,7 @@ static bool wifiWasConnected = false;
 //     the device always comes back with the heater off and no session.
 //
 // OTA_PASSWORD comes from include/secrets.h. Empty means the service is not
-// started at all - an unauthenticated OTA port on the VLAN is a standing
-// invitation, which is the same rule MQTT follows.
+// started at all, which is the same rule MQTT follows: no password, no service.
 static bool otaStarted = false;
 static bool otaSuppressed = false;
 static volatile bool otaReboot = false;

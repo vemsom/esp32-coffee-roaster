@@ -1,20 +1,22 @@
 # Firmware notes - assumptions and what is verified
 
-Status: **verified items below were confirmed on 2026-09-26** with a clean
-`pio run` (`pio run -t clean` then `pio run`, 45.2 s, zero warnings) and the
-host-side test suite. Everything still listed as open is untested against
-real hardware.
+Status: **verified items below were re-confirmed on 2026-09-27** with a clean
+`pio run` (`pio run -t clean` then `pio run`, 48.4 s, zero warnings) and the
+host-side test suite (293 checks, 0 failures). Everything still listed as open
+is untested against real hardware.
 
-Build of record (2026-09-26, clean rebuild after the four approved changes):
+Build of record (2026-09-27, clean rebuild):
 
-    platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
-    Arduino core 2.0.17 (esp_arduino_version.h: ESP_ARDUINO_VERSION 2.0.17)
-    ESPAsyncWebServer @ 3.12.1, AsyncTCP @ 3.5.0, ArduinoJson @ 7.4.3,
-    PubSubClient @ 2.8.0, MAX6675 library @ 1.1.2, toolchain 8.4.0
-    RAM:   14.2 %  (46 600 / 327 680 bytes)
-    Flash: 69.8 %  (914 669 / 1 310 720 bytes)
-    [SUCCESS] - no warnings, no errors
-    FW_VERSION 0.4.0 (was 0.3.0 before these changes)
+```text
+platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
+Arduino core 2.0.17 (esp_arduino_version.h: ESP_ARDUINO_VERSION 2.0.17)
+ESPAsyncWebServer @ 3.12.1, AsyncTCP @ 3.5.0, ArduinoJson @ 7.4.3,
+PubSubClient @ 2.8.0, MAX6675 library @ 1.1.2, toolchain 8.4.0
+RAM:   15.5 %  (50 712 / 327 680 bytes)
+Flash: 73.1 %  (958 585 / 1 310 720 bytes)
+[SUCCESS] - no warnings, no errors
+FW_VERSION 0.5.0
+```
 
 ## Verified on build / in source
 
@@ -58,11 +60,11 @@ and there is a BT/ET cross-check on top of it.
 
 Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
 exercised by host tests with stubbed Arduino calls - `test_safety` (57 checks),
-`test_mqtt_discovery` (133 checks) and `test_control` (62 checks, which drives
+`test_mqtt_discovery` (161 checks) and `test_control` (75 checks, which drives
 the real setup()/loop() and also runs a second thread in the role of the
-AsyncTCP task). 252 checks, 0 failures, as of the 2026-09-26 run of
+AsyncTCP task). 293 checks, 0 failures, as of the 2026-09-27 run of
 `tools/host-tests/run.sh`, plus the same `test_control` source rebuilt under
-ThreadSanitizer (also 62/0, zero race reports). See `tools/host-tests/`.
+ThreadSanitizer (also 75/0, zero race reports). See `tools/host-tests/`.
 
 ## Safety behaviour (implemented 2026-09-26)
 
@@ -157,7 +159,7 @@ still cannot be closed from a desk):
   They need to be checked against real thermocouple noise during a roast - too
   tight and a noisy reading aborts a roast, too loose and a dropped probe is
   noticed late. Input: calibration steps 2-4 below.
-- **CLOSED 2026-09-26 (approved by the maintainer, host-tested)** Stuck-sensor
+- **CLOSED 2026-09-26 (host-tested)** Stuck-sensor
   detection exists: `SENSOR_STUCK_MAX_MS` (60 s of bit-identical readings
   while the element is asking for power), conditions 4 above. The window was
   chosen so that neither roasting nor cooling can false-trip - see the two
@@ -166,9 +168,9 @@ still cannot be closed from a desk):
   the longest run of *identical* consecutive samples there; if a healthy
   static reading ever holds still that long with heat on, raise the constant).
   That is a calibration input, not a missing feature.
-- **CLOSED 2026-09-26 (approved by the maintainer, host-tested)** The alarm state is
+- **CLOSED 2026-09-26 (host-tested)** The alarm state is
   persisted to NVS and re-asserted in `setup()` - see "Persistence" above. The
-  behaviour change is deliberate and was signed off: a power cycle no longer
+  behaviour change is deliberate: a power cycle no longer
   clears an alarm. Degradation path if NVS is unavailable: RAM-only latch, one
   serial log line.
 - **REQUIRES HARDWARE** 260 C is a guess for this popper and these probes.
@@ -256,10 +258,10 @@ Two properties make it safe to run next to a live heater:
 
 Configuration: `OTA_PASSWORD` in `include/secrets.h` (32 hex characters,
 never committed, never printed). Empty means `startOta()` does not start the
-service at all - the same rule MQTT follows, deliberately so: an
-unauthenticated port 3232 on the VLAN is a standing invitation. The
-upload helper reads the value from `secrets.h` at upload time, so it appears
-nowhere in `platformio.ini`, on a command line, or in a shell history.
+service at all - the same rule MQTT follows: no password, no service, and
+nothing listening on the network. The upload helper reads the value from
+`secrets.h` at upload time, so it appears nowhere in `platformio.ini`, on a
+command line, or in a shell history.
 
 **What does *not* travel with a firmware update: `data/`.** `ota-upload.sh`
 sends `firmware.bin` to the OTA slot and nothing else - the web UI lives in
@@ -280,10 +282,9 @@ idle, is *not* served while a run is active, latches the element low on
 `onStart()` while a manual heat is conducting, and requests a restart on both
 `onEnd()` and `onError()`.
 
-Known unknown: the roaster is on 192.168.2.x (VLAN) and the server on
-192.168.1.x. Whether an upload reaches it from the server is a routing
-question, not a firmware one - if it does not, run it from a machine on the
-VLAN or get the VLANs routed.
+Known unknown: whether an OTA upload reaches the roaster from the machine that
+runs the script depends on the network it is installed on, not on the firmware
+- if it does not, run the upload from a machine that can reach the roaster.
 
 ## Concurrency / state lock (implemented 2026-09-26)
 
@@ -332,11 +333,11 @@ and it now runs clean.
 
 ## MQTT / Home Assistant (implemented 2026-09-26)
 
-Broker for this build: the MQTT broker on the Home Assistant host,
-192.168.0.10:1883 - reachable, and authentication is required (an anonymous
-CONNECT gets CONNACK rc=5 "not authorized"). The firmware therefore refuses to
-enable MQTT when `MQTT_USER` is empty instead of retrying a connection that can
-never succeed. Credentials are not in the repo: they go in include/secrets.h,
+Broker for this build: any MQTT broker that requires authentication. The
+firmware treats an anonymous CONNECT as fatal for the feature (the broker
+answers CONNACK rc=5 "not authorized"), so it refuses to enable MQTT when
+`MQTT_USER` is empty instead of retrying a connection that can never succeed.
+Credentials are not in the repo: they go in include/secrets.h,
 which is gitignored. `MQTT_PASS` is accepted as an alias for `MQTT_PASSWORD` in
 case secrets.h is written by other tooling.
 
@@ -368,15 +369,13 @@ both device_class problem). Every config is retained and carries the device
 block, unique_id and availability topic.
 
 Topic separation: everything the roaster owns is under `coffee_roaster/` plus
-its own `homeassistant/` configs, so nothing overlaps Tibber Pulse MQTT's topics
-on the same broker.
+its own `homeassistant/` configs, so it cannot collide with anything else
+publishing to the same broker.
 
-Verified against the real broker (2026-09-26, read-only probe from this
-machine, nothing published): CONNACK Success with the credentials in
-include/secrets.h. A 15 s listen on `#` saw only `another MQTT device/*` (8 retained
-bridge topics) and one `tibber` message - zero `coffee_roaster/*` and zero
-`homeassistant/*`. Nothing from the roaster exists in HA yet: the firmware has
-never been flashed and the hardware is not assembled (MAX6675 still in
+Verified from a workstation (2026-09-26, read-only, nothing published): the
+broker accepts the credentials in include/secrets.h (CONNACK Success).
+Nothing from the roaster exists in HA yet: the firmware has never been
+flashed and the hardware is not assembled (MAX6675 still in
 transit). Discovery and the status stream can only be verified once the ESP32
 is on the air.
 
@@ -400,9 +399,9 @@ Open items in the MQTT layer:
   flashed, so nothing has ever been published and no discovery config has ever
   appeared in HA. Pinout in include/config.h is assigned but not confirmed
   against a wired board.
-- **REQUIRES RUNTIME** MQTT reconnects every 5 s while the link is down. The
-  home network has intermittent dropouts, so this is expected to be exercised
-  in practice - it needs the device on the network, not a host test.
+- **REQUIRES RUNTIME** MQTT reconnects every 5 s while the link is down.
+  Brief dropouts are exactly what this is meant to ride out, so it has to be
+  exercised in practice - it needs the device on a network, not a host test.
 
 ## Calibrating the safety thresholds on real hardware
 
@@ -470,13 +469,12 @@ Tagged the same way as above: what it takes, not just what is left.
 - **REQUIRES HARDWARE** PID values (PID_KP/KI/KD in config.h): unguessed
   starting values. Will need tuning against the real thermal response once the
   machine is testable.
-- **KNOWN LIMITATION, accepted on purpose** No authentication on the web API -
-  anyone on the same WiFi network can control the roaster. Fine for hobby use on
-  your own network, not for sharing beyond that. The same applies to the MQTT
-  topics: broker-level auth is the only protection. Closing it means a token or
-  basic-auth check on every handler in src/web_server.cpp plus a login page in
-  data/index.html - doable without hardware, deliberately not done.
-- **CLOSED 2026-09-26 (approved by the maintainer, host-tested)** WiFi connection is
+- **KNOWN LIMITATION, accepted on purpose** The web API has no authentication:
+  access control is whatever the network around the device provides. Closing it
+  means a token or basic-auth check on every handler in src/web_server.cpp plus
+  a login page in data/index.html - doable without hardware, deliberately not
+  done. MQTT is the same: access control there belongs to the broker.
+- **CLOSED 2026-09-26 (host-tested)** WiFi connection is
   non-blocking: `setup()` starts it and returns, `serviceWifi()` in `loop()`
   reports and re-kicks it, and the web UI has a network pill (see the WiFi
   section above). The host test boots with the link down and asserts that
@@ -491,7 +489,7 @@ Tagged the same way as above: what it takes, not just what is left.
   heater window, which means one skewed proportioning window per stall.
   Closing it needs a non-blocking connect (raw `WiFiClient` + state machine)
   or an MQTT library with an async connect. Separate decision, not done.
-- **CLOSED 2026-09-26 (approved by the maintainer, host-tested + ThreadSanitizer)**
+- **CLOSED 2026-09-26 (host-tested + ThreadSanitizer)**
   Concurrency: ESPAsyncWebServer callbacks and `loop()` are separated by one
   recursive mutex, see the Concurrency section above. The residual note is
   about MQTT: `mqtt_update()` stays outside the lock on purpose because it can
@@ -500,15 +498,16 @@ Tagged the same way as above: what it takes, not just what is left.
   image over the network with `ArduinoOTA`, password from `secrets.h`, no USB
   after the first flash. See the OTA section above for why that form and not
   an upload page, and for the two rules that keep it away from a live heater.
-  Open only as far as reachability goes: the roaster is on the VLAN.
+  Open only as far as reachability goes: that depends on the network the
+  roaster is installed on.
 
 ## Host-side tests
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-09-26: **265 checks, 0 failures**, exit 0, no compiler
+broker. Last run 2026-09-27: **293 checks, 0 failures**, exit 0, no compiler
 warnings (the control test is built and run a second time under
-ThreadSanitizer, so 340 checks execute in total):
+ThreadSanitizer, so 368 checks execute in total):
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks): trip on the hard limit, on sustained sensor faults and on
@@ -521,7 +520,7 @@ ThreadSanitizer, so 340 checks execute in total):
   cooling never trips, a frozen channel trips while the other one moves, and a
   stuck alarm survives a power cycle without being laundered by healthy-looking
   samples.
-- `test_mqtt_discovery` - MQTT layer (133 checks): all 9 discovery configs are
+- `test_mqtt_discovery` - MQTT layer (161 checks): all 9 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault`); every payload fits the
   PubSubClient buffer (largest 647 B against the 900 B limit); and the
