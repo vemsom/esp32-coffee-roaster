@@ -4,65 +4,71 @@
 
 namespace {
 
-// Circular buffer of per-second snapshots. 64 entries = 64 s of history, which
-// always keeps a sample at least ROR_WINDOW_MS (60 s) old plus the ~1 s that
-// 1 Hz sampling can add on either side of the mark, so a full window can never
-// be evicted before it is used.
-constexpr int ROR_HISTORY_LEN = 64;
-
+// Circular buffer of EVERY control-loop sample (250 ms). ROR_BUFFER_LEN = 128
+// holds 32 s of them - always more than ROR_WINDOW_MS - so the window can
+// never outrun the history it is fitted over.
 struct Sample {
   unsigned long t;
   float bt;
   float et;
 };
 
-Sample ring[ROR_HISTORY_LEN];
-int count = 0;                 // valid entries, 0..ROR_HISTORY_LEN
-int next = 0;                  // ring slot the next snapshot is written to
-unsigned long lastSnapshot = 0;
-bool haveSnapshot = false;
+Sample ring[ROR_BUFFER_LEN];
+int count = 0;                 // valid entries, 0..ROR_BUFFER_LEN
+int next = 0;                  // ring slot the next sample is written to
 float rorBt = 0.0f;
 float rorEt = 0.0f;
 
-// index 0 = newest snapshot. The arithmetic stays inside one buffer length so
+// index 0 = newest sample. The arithmetic stays inside one buffer length so
 // the unsigned wrap of millis() every 49.7 days does not need special casing.
-const Sample &ago(int age) { return ring[(next + ROR_HISTORY_LEN - 1 - age) % ROR_HISTORY_LEN]; }
+const Sample &ago(int age) { return ring[(next + ROR_BUFFER_LEN - 1 - age) % ROR_BUFFER_LEN]; }
+const Sample &oldest() { return ring[(next + ROR_BUFFER_LEN - count) % ROR_BUFFER_LEN]; }
 
 // Published with one decimal so /api/status and the MQTT payload show the same
 // number the web UI renders.
 float round1(float value) { return std::round(value * 10.0f) / 10.0f; }
 
-// One channel's rate. previous is carried over when there is nothing honest to
-// publish (no history yet, or a NaN at either end of the delta) - a missing
-// reading must not masquerade as a sudden 0 C/min swing.
+// Least-squares slope over every usable sample inside the window, in C/min.
+// Fitting the whole series instead of differencing two endpoints is what keeps
+// the 0.25 C ladder and MAX6675 noise from landing in the answer: the
+// stair-case of a quantised ramp averages out along the fit instead of
+// showing up as one endpoint's rounding error.
+//
+// x is milliseconds relative to now, so the newest sample sits at 0 and the
+// sums stay small; everything accumulates in double because n * x^2 reaches
+// ~1e10 over a window. previous is carried over when there is nothing honest
+// to publish - fewer than two usable samples, or all of them NaN - because a
+// missing reading must never masquerade as a measured 0 C/min swing.
 float compute(unsigned long nowMs, float Sample::*field, float nowValue, float previous) {
   if (std::isnan(nowValue)) return previous;
   if (count == 0) return 0.0f;
 
-  // Newest snapshot that is at least ROR_WINDOW_MS old.
-  int ref = -1;
+  // Below the minimum span there is nothing to fit yet - publish 0. Above it,
+  // but short of a full window, the fit runs over the span that exists: the
+  // slope is per millisecond either way, so the warm-up rate is already
+  // correct C/min rather than a scaled one.
+  if (nowMs - oldest().t < ROR_MIN_SPAN_MS) return 0.0f;
+
+  double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+  int n = 0;
   for (int age = 0; age < count; age++) {
-    if (nowMs - ago(age).t >= ROR_WINDOW_MS) {
-      ref = age;
-      break;
-    }
+    const Sample &s = ago(age);
+    if (nowMs - s.t > ROR_WINDOW_MS) continue;   // older than the window
+    float y = s.*field;
+    if (std::isnan(y)) continue;                 // a probe that has never read
+    double x = (double)s.t - (double)nowMs;
+    sx += x;
+    sy += y;
+    sxx += x * x;
+    sxy += x * y;
+    n++;
   }
 
-  if (ref < 0) {
-    // History shorter than the window: below the minimum span a rate would be
-    // mostly quantisation noise, so publish 0. Above it, measure across what
-    // there is - the normalisation below makes that a correct C/min anyway.
-    if (nowMs - ago(count - 1).t < ROR_MIN_SPAN_MS) return 0.0f;
-    ref = count - 1;
-  }
-
-  const Sample &s = ago(ref);
-  float refValue = s.*field;
-  if (std::isnan(refValue)) return previous;
-
-  unsigned long elapsed = nowMs - s.t;
-  if (elapsed == 0) return 0.0f;
-  return round1((nowValue - refValue) * 60000.0f / (float)elapsed);
+  if (n < 2) return previous;
+  double denom = n * sxx - sx * sx;
+  if (denom <= 0.0) return previous;             // every sample at one instant
+  double slopePerMs = (n * sxy - sx * sy) / denom;
+  return round1((float)(slopePerMs * 60000.0));  // C/ms -> C/min, any sign
 }
 
 }  // namespace
@@ -70,25 +76,16 @@ float compute(unsigned long nowMs, float Sample::*field, float nowValue, float p
 void ror_reset() {
   count = 0;
   next = 0;
-  lastSnapshot = 0;
-  haveSnapshot = false;
   rorBt = 0.0f;
   rorEt = 0.0f;
 }
 
-// Called at SENSOR_READ_INTERVAL_MS. The snapshot cadence is separate: history
-// is sampled once a second (1 Hz), the rate is recomputed on every sample so
-// it moves with the live reading between snapshots.
+// Called at SENSOR_READ_INTERVAL_MS: every sample is stored, and both rates
+// are refitted on each of them.
 void ror_update(unsigned long nowMs, float bt, float et) {
-  if (!haveSnapshot || nowMs - lastSnapshot >= ROR_SNAPSHOT_INTERVAL_MS) {
-    ring[next].t = nowMs;
-    ring[next].bt = bt;
-    ring[next].et = et;
-    next = (next + 1) % ROR_HISTORY_LEN;
-    if (count < ROR_HISTORY_LEN) count++;
-    lastSnapshot = nowMs;
-    haveSnapshot = true;
-  }
+  ring[next] = Sample{nowMs, bt, et};
+  next = (next + 1) % ROR_BUFFER_LEN;
+  if (count < ROR_BUFFER_LEN) count++;
   rorBt = compute(nowMs, &Sample::bt, bt, rorBt);
   rorEt = compute(nowMs, &Sample::et, et, rorEt);
 }

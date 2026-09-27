@@ -368,16 +368,15 @@ int main() {
 
   // ------------------------------------------------------- rate of rise -----
   // Through the real loop(), not against the module directly: both probes on
-  // a straight 0.25 C per 250 ms sample, i.e. exactly 60 C/min, kept up for a
-  // full window plus a little. The history is reset first - the minutes of
-  // flat readings above would otherwise still be sitting in the reference slot
-  // and the first window would measure the wrong pair of endpoints.
+  // a straight 0.25 C per 250 ms sample, i.e. exactly 60 C/min, kept up across
+  // two windows. The history is reset first - the minutes of flat readings
+  // above would otherwise sit inside the fit and drag the slope down.
   g_probeBT = 20.0f;
   g_probeET = 20.0f;
   runLoops(SAFETY_CLEAR_STREAK + 4);
   check(!safety_faulted(), "clean state before the rate-of-rise ramp");
   ror_reset();
-  const int rorSamples = 4 * 60 + 8;   // 62 s = one full window plus headroom
+  const int rorSamples = 4 * 60 + 8;   // 62 s = two 30 s windows, ring wraps
   for (int i = 1; i <= rorSamples; i++) {
     g_probeBT = 20.0f + i * 0.25f;
     g_probeET = 20.0f + i * 0.25f;

@@ -1,8 +1,8 @@
 # Firmware notes - assumptions and what is verified
 
 Status: **verified items below were re-confirmed on 2026-09-27** with a clean
-`pio run` (`pio run -t clean` then `pio run`, 48.8 s, zero warnings) and the
-host-side test suite (367 checks, 0 failures). Everything still listed as open
+`pio run` (`pio run -t clean` then `pio run`, 47.8 s, zero warnings) and the
+host-side test suite (368 checks, 0 failures). Everything still listed as open
 is untested against real hardware.
 
 Build of record (2026-09-27, clean rebuild):
@@ -12,8 +12,8 @@ platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
 Arduino core 2.0.17 (esp_arduino_version.h: ESP_ARDUINO_VERSION 2.0.17)
 ESPAsyncWebServer @ 3.12.1, AsyncTCP @ 3.5.0, ArduinoJson @ 7.4.3,
 PubSubClient @ 2.8.0, MAX6675 library @ 1.1.2, toolchain 8.4.0
-RAM:   15.7 %  (51 520 / 327 680 bytes)
-Flash: 73.3 %  (960 717 / 1 310 720 bytes)
+RAM:   16.0 %  (52 280 / 327 680 bytes)
+Flash: 73.3 %  (961 017 / 1 310 720 bytes)
 [SUCCESS] - no warnings, no errors
 FW_VERSION 0.6.0
 ```
@@ -417,30 +417,37 @@ read-only sensors in HA ("Bean temp rise" / "Environment temp rise", object ids
 chart). Unit C/min, one decimal, and a negative value passes through untouched
 - cooling and the turning point are readings, not errors.
 
-The arithmetic is an endpoint delta over a sliding window - the same thing
-Artisan calls "Delta Span": the newest reading minus the newest 1 Hz snapshot
-that is at least `ROR_WINDOW_MS` (60 s) old, divided by the *actual* time
-between the two endpoints. That normalisation is what makes a half-full window
-report a correct rate instead of a scaled one. History is a 64-entry circular
-buffer in src/ror.cpp, sampled once per second; the rate itself is recomputed
-on every sensor sample (250 ms, under the state lock) and published like every
-other value. Below `ROR_MIN_SPAN_MS` (15 s) of history nothing is published
-(reports 0), between 15 s and a full window the rate is measured across the
-span that exists.
+The estimate is a least-squares fit (linear regression), not a difference
+between two readings: every 250 ms sample inside a sliding window of
+`ROR_WINDOW_MS` (30 s) takes part, ~121 of them, and the fitted slope times
+60000 is the rate. Fitting the whole series instead of differencing two
+endpoints is deliberate - the 0.25 C ladder and the MAX6675's noise average
+out along the fit instead of landing in the answer, which is what holds a
+quantised reading to +-0.3 C/min rather than the full +-0.25 C/min a single
+endpoint difference would cost. History is a 128-entry circular buffer in
+src/ror.cpp, one entry per sample (32 s of them, always more than the window);
+the fit is redone on every sample, under the state lock, and published like
+every other value. Below `ROR_MIN_SPAN_MS` (10 s) of history nothing is
+published (reports 0); between 10 s and a full window the fit runs over the
+span that exists, which is already a correct C/min because the slope is per
+millisecond.
 
-- **CLOSED 2026-09-27 (host-tested)** The maths: `test_ror` drives the module
+- **CLOSED 2026-09-27 (host-tested)** The estimate: `test_ror` drives the module
   at the real 250 ms cadence - constant ramps hold to +-0.1 C/min over several
   windows (which wraps the ring), cooling keeps its sign, a 0.25 C-quantised
-  signal stays inside +-0.5 C/min (worst observed 0.200), warm-up measures over
-  the span it has (20 s gives the rate, 5 s gives 0), a frozen sensor reads
-  under 0.1 C/min, and NaN at either end of the delta publishes 0 rather than a
-  number. `test_control` also ramps both probes at 60 C/min through the real
-  `loop()` and sees 60 C/min out.
-- **REQUIRES HARDWARE** Both constants, explicitly: 60 s was picked from
-  MAX6675 noise (~0.3 C/min) and an assumed ~30 s of perceived probe lag, and
-  `ROR_MIN_SPAN_MS` is a guess against the 0.25 C ladder. Re-calibrate at the
-  first test roast - compare against an Artisan Delta Span reading on the same
-  roast and adjust `ROR_WINDOW_MS` / `ROR_MIN_SPAN_MS` in include/config.h.
+  signal stays inside the documented +-0.3 C/min for a 30 s fit (worst
+  observed: 0.000 at 10 C/min, 0.100 on a slow 2 C/min ramp, and the test
+  proves the simulated ladder really truncates, up to 0.208 C off the ideal
+  line), warm-up measures over the span it has (20 s gives the rate, 9.75 s
+  gives 0, 10 s - exactly ROR_MIN_SPAN_MS - gives the rate, 5 s gives 0), a
+  frozen sensor reads under 0.1 C/min, and NaN samples are left out of the fit
+  rather than fitted as zero. `test_control` also ramps both probes at 60
+  C/min through the real `loop()` and sees 60 C/min out.
+- **OPEN, decided at the first test roast** The window length. 30 s is the chosen value
+  (all samples go into the fit); 15 s was tried as the alternative at the
+  first test roast and stays on the table if the data argues for it. Revisit
+  with real numbers: compare against Artisan on the same roast and adjust
+  `ROR_WINDOW_MS` / `ROR_MIN_SPAN_MS` in include/config.h.
 - **REQUIRES HARDWARE** The two HA entities appearing at all, with unit C/min,
   no device_class and the build language's name. Nothing here has run against a
   broker yet - no OTA, no live MQTT (the device is not connected).
@@ -551,8 +558,8 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-09-27: **367 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 656 checks execute in total,
+broker. Last run 2026-09-27: **368 checks, 0 failures**, exit 0, no compiler
+warnings. That figure counts each test once; 657 checks execute in total,
 because `test_mqtt_discovery` runs once per build language and `test_control`
 also runs under ThreadSanitizer:
 
@@ -567,16 +574,17 @@ also runs under ThreadSanitizer:
   cooling never trips, a frozen channel trips while the other one moves, and a
   stuck alarm survives a power cycle without being laundered by healthy-looking
   samples.
-- `test_ror` - rate of rise (21 checks): a constant 10 C/min and 6.5 C/min ramp
+- `test_ror` - rate of rise (22 checks): a constant 10 C/min and 6.5 C/min ramp
   holds its value to +-0.1 C/min across several windows (which wraps the
-  64-entry history ring three times); cooling keeps its sign (-5 stays -5); a
-  signal quantised to the MAX6675's 0.25 C ladder stays inside the documented
-  +-0.5 C/min - worst observed 0.200, which is twice what the ladder can
-  contribute; warm-up measures across the span it has (20 s of history gives
-  the right rate, 14.75 s gives 0, 15 s - exactly ROR_MIN_SPAN_MS - gives the
-  rate, 5 s gives 0); a frozen sensor reads below 0.1 C/min after a window; and
-  NaN readings at either end of the delta publish 0 instead of a number, until
-  the reference is a real reading again.
+  128-entry sample ring); cooling keeps its sign (-5 stays -5); a signal
+  quantised to the MAX6675's 0.25 C ladder stays inside the documented
+  +-0.3 C/min for the 30 s fit - worst observed 0.000 at 10 C/min and 0.100 on
+  a slow 2 C/min ramp, and the test first proves the simulated ladder really
+  truncates (0.208 C off the ideal line) so the tolerance means something;
+  warm-up measures across the span it has (20 s of history gives the right
+  rate, 9.75 s gives 0, 10 s - exactly ROR_MIN_SPAN_MS - gives the rate, 5 s
+  gives 0); a frozen sensor reads below 0.1 C/min after a window; and NaN
+  samples are left out of the fit instead of being fitted as zero.
 - `test_mqtt_discovery` - MQTT layer (210 checks): all 11 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault` and the signed `rorBt` /

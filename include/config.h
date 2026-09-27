@@ -50,24 +50,26 @@
 
 // ---- Rate of Rise (RoR) ----
 // Temperaturändringen per minutt, rapporterad som rorBt/rorEt i /api/status
-// och som två läsbara sensorer i Home Assistant. Endpoint delta över ett
-// glidande fönster - samma aritmetik som Artisan kallar Delta Span: den
-// senaste avläsningen minus avläsningen ROR_WINDOW_MS tidigare, omvandlad till
-// C/min över den faktiska tiden mellan de två punkterna så att även ett
-// ofullständigt fönster ger rätt hastighet. Negativt värde är legitimt
-// (kylning/turning point) och klemmes aldrig.
+// och som två läsbara sensorer i Home Assistant. Skattas med LINJÄR
+// REGRESSION (least squares) över alla prover som ryms i fönstret - varje
+// 250 ms-sample, inte endpoint-delta och inte per-sekund-snapshots. Slopen
+// gånger 60000 ger C/min. Negativt värde är legitimt (kylning/turning point)
+// och klemmes aldrig; kvantisering och brus hamnar i anpassningen i stället
+// för i svaret.
 //
-// 60 s valdes för MAX6675-bruset (cirka 0,3 C/min, som ett minuts endpoint
-// delta jämnar ut) och för den upplevda sondtrögheten på cirka 30 s - ett
-// kortare fönster skulle följa lagret i stället för rostningen. Båda talen
-// okalibreras vid första testrosten (docs/firmware-notes.md).
-#define ROR_WINDOW_MS             60000
-// Under så här mycket historia publiceras inget alls: en diff över några
-// sekunder säger mer om 0,25 C-kvantiseringen än om rostningen.
-#define ROR_MIN_SPAN_MS           15000
-// Historikläsningen - ett snapshot per sekund i den cirkulära buffern i
-// src/ror.cpp. Själva hastigheten räknas om vid SENSOR_READ_INTERVAL_MS.
-#define ROR_SNAPSHOT_INTERVAL_MS  1000
+// 30 s är bestämt vid första testrosten, och alla prover går in i
+// skattningen. 15 s testades som alternativ och ligger kvar som
+// alternativ om data talar för det (docs/firmware-notes.md).
+#define ROR_WINDOW_MS             30000
+// Under så här mycket historia publiceras inget alls: en anpassning över
+// några sekunder säger mer om 0,25 C-kvantiseringen än om rostningen. Mellan
+// det och fönstret skattas det över de prover som finns - en korrekt C/min,
+// bara på kortare underlag.
+#define ROR_MIN_SPAN_MS           10000
+// Cirkulär buffer med ETT PROV PER SAMPLE (SENSOR_READ_INTERVAL_MS). 128
+// poster = 32 s, alltid mer än fönstret, så historiken kan aldrig vara kortare
+// än vad regressionen frågar efter. ~2 kB RAM.
+#define ROR_BUFFER_LEN            128
 
 // ---- WiFi ----
 // Anslutningen startas i setup() utan att vänta, och serviceWifi() i loop()
