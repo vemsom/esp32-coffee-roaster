@@ -50,6 +50,8 @@ WiFiClass WiFi;
 // ---- fake state for the status getters ----
 static float gb() { return 187.5f; }
 static float ge() { return 231.25f; }
+static float grb() { return 8.5f; }    // rate of rise, C/min
+static float gre() { return -2.5f; }   // negative is a legitimate reading
 static float gh() { return 42.0f; }
 static int gf() { return 65; }
 static const char *gm() { return "profile"; }
@@ -111,7 +113,7 @@ static std::string haSlug(const std::string &name) {
 // this binary once per build language and diffs the two dumps: identical
 // unique_ids across languages is exactly the promise include/strings.h makes.
 int main(int argc, char **argv) {
-  MqttCallbacks cb = {gb, ge, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
+  MqttCallbacks cb = {gb, ge, grb, gre, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
 
   mqtt_init(cb);
 
@@ -152,6 +154,7 @@ int main(int argc, char **argv) {
   bool profileSensorSeen = false;
   bool topicsInsideNamespace = true;
   int namesChecked = 0;
+  int rorEntityCount = 0;
 
   // object-suffix -> { friendly name of THIS build, entity_id slug HA derives
   // from it }. Keyed on the part of the discovery topic after <device>_, i.e.
@@ -166,6 +169,8 @@ int main(int argc, char **argv) {
   const std::map<std::string, std::pair<std::string, std::string>> expectedNames = {
       {"bt", {STR_NAME_BT, "bean_temperature"}},
       {"et", {STR_NAME_ET, "environment_temperature"}},
+      {"ror_bt", {STR_NAME_ROR_BT, "bean_temp_rise"}},
+      {"ror_et", {STR_NAME_ROR_ET, "environment_temp_rise"}},
       {"heater", {STR_NAME_HEATER, "heater"}},
       {"fan", {STR_NAME_FAN, "fan"}},
       {"mode", {STR_NAME_MODE, "mode"}},
@@ -178,6 +183,8 @@ int main(int argc, char **argv) {
   const std::map<std::string, std::pair<std::string, std::string>> expectedNames = {
       {"bt", {STR_NAME_BT, "bontemperatur"}},
       {"et", {STR_NAME_ET, "miljotemperatur"}},
+      {"ror_bt", {STR_NAME_ROR_BT, "bontemperaturokning"}},
+      {"ror_et", {STR_NAME_ROR_ET, "miljotemperaturokning"}},
       {"heater", {STR_NAME_HEATER, "varmelement"}},
       {"fan", {STR_NAME_FAN, "flakt"}},
       {"mode", {STR_NAME_MODE, "lage"}},
@@ -291,13 +298,29 @@ int main(int argc, char **argv) {
     if (objectId == std::string(MQTT_DEVICE_ID) + "_profile") {
       profileSensorSeen = true;
     }
+    // The rate-of-rise pair: unit C/min, state_class measurement, and NO
+    // device_class - HA's device_class 'temperature' only accepts a plain
+    // temperature unit, so a rate would have to misdescribe itself. Same
+    // shape as the "%" sensors, which carry unit + state_class + an icon.
+    if (objectId == std::string(MQTT_DEVICE_ID) + "_ror_bt" ||
+        objectId == std::string(MQTT_DEVICE_ID) + "_ror_et") {
+      rorEntityCount++;
+      check(!doc["device_class"].is<const char *>(), "rate-of-rise entity carries no device_class");
+      check(doc["unit_of_measurement"].is<const char *>() &&
+                std::string(doc["unit_of_measurement"].as<const char *>()) == "C/min",
+            "rate-of-rise entity unit is C/min");
+      check(doc["state_class"].is<const char *>() &&
+                std::string(doc["state_class"].as<const char *>()) == "measurement",
+            "rate-of-rise entity state_class is measurement");
+    }
   }
 
   check(topicsInsideNamespace, "every topic lives under coffee_roaster/ or homeassistant/");
   check(!commandTopicsFound, "no entity has a command_topic");
-  check(discoveryCount == 9, "9 discovery configs published");
-  check(sensorCount == 7, "7 read-only sensors (bt, et, heater, fan, mode, elapsed, profile)");
+  check(discoveryCount == 11, "11 discovery configs published");
+  check(sensorCount == 9, "9 read-only sensors (bt, et, ror_bt, ror_et, heater, fan, mode, elapsed, profile)");
   check(binarySensorCount == 2, "2 binary_sensors (safety + fan interlock)");
+  check(rorEntityCount == 2, "2 rate-of-rise sensors (ror_bt + ror_et)");
   check(components.size() == 2, "only sensor and binary_sensor components");
   check(components.count("number") == 0 && components.count("select") == 0 &&
             components.count("button") == 0 && components.count("switch") == 0,
@@ -305,7 +328,7 @@ int main(int argc, char **argv) {
   check(safetySeen, "safety alarm entity published");
   check(fanFaultSeen, "fan interlock entity published");
   check(profileSensorSeen, "profile reported as a sensor");
-  check(namesChecked == 9, "all 9 entities carry an expected friendly name");
+  check(namesChecked == 11, "all 11 entities carry an expected friendly name");
 
   // ---------------------------------------------------------- status JSON ---
   const CapturedPublish *statusPub = findPublish(status);
@@ -315,6 +338,8 @@ int main(int argc, char **argv) {
     check(!deserializeJson(doc, statusPub->payload), "status payload is valid JSON");
     check(doc["bt"].as<float>() == 187.5f, "status carries bt");
     check(doc["et"].as<float>() == 231.25f, "status carries et");
+    check(doc["rorBt"].as<float>() == 8.5f, "status carries rorBt");
+    check(doc["rorEt"].as<float>() == -2.5f, "status carries rorEt, sign included");
     check(doc["heater"].as<float>() == 42.0f, "status carries heater");
     check(doc["fan"].as<int>() == 65, "status carries fan");
     check(std::string(doc["mode"].as<const char *>()) == "profile", "status carries mode");

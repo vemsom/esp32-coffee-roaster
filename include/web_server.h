@@ -7,6 +7,8 @@ struct WebServerCallbacks {
   // Status getters
   float (*getBT)();
   float (*getET)();
+  float (*getRorBt)();    // rate of rise, C/min (see include/ror.h)
+  float (*getRorEt)();    // rate of rise, C/min, negative while cooling
   float (*getHeaterDuty)();
   int   (*getFanSpeed)();
   bool  (*getRoastActive)();

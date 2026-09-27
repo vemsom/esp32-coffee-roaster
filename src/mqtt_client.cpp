@@ -86,6 +86,33 @@ static void publishDiscovery() {
     doc["value_template"] = "{{ value_json.et }}";
     publishDiscoveryEntity("sensor", "et", doc);
   }
+  // Rate of rise, C/min. Deliberately NO device_class: HA's device_class
+  // 'temperature' only accepts a plain temperature unit (C, F, K), so a rate
+  // would have to lie about what it is. Same pattern as the "%" sensors below
+  // - unit + state_class + an icon - which is what HA does with a unit that no
+  // device class claims.
+  {
+    JsonDocument doc;
+    snprintf(uniqueId, sizeof(uniqueId), "%s_ror_bt", MQTT_DEVICE_ID);
+    addDeviceBlock(doc, uniqueId, STR_NAME_ROR_BT);
+    doc["unit_of_measurement"] = "C/min";
+    doc["state_class"] = "measurement";
+    doc["state_topic"] = STATUS_TOPIC;
+    doc["value_template"] = "{{ value_json.rorBt }}";
+    doc["icon"] = "mdi:trending-up";
+    publishDiscoveryEntity("sensor", "ror_bt", doc);
+  }
+  {
+    JsonDocument doc;
+    snprintf(uniqueId, sizeof(uniqueId), "%s_ror_et", MQTT_DEVICE_ID);
+    addDeviceBlock(doc, uniqueId, STR_NAME_ROR_ET);
+    doc["unit_of_measurement"] = "C/min";
+    doc["state_class"] = "measurement";
+    doc["state_topic"] = STATUS_TOPIC;
+    doc["value_template"] = "{{ value_json.rorEt }}";
+    doc["icon"] = "mdi:trending-up";
+    publishDiscoveryEntity("sensor", "ror_et", doc);
+  }
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_heater", MQTT_DEVICE_ID);
@@ -186,6 +213,8 @@ void mqtt_publish_status() {
     StateLockGuard guard;
     doc["bt"] = cb.getBT();
     doc["et"] = cb.getET();
+    doc["rorBt"] = cb.getRorBt();
+    doc["rorEt"] = cb.getRorEt();
     doc["heater"] = cb.getHeaterDuty();
     doc["fan"] = cb.getFanSpeed();
     doc["mode"] = cb.getMode();

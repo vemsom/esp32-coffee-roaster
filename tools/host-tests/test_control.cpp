@@ -27,6 +27,7 @@
 
 #include "config.h"
 #include "safety.h"
+#include "ror.h"
 #include "heater_control.h"
 #include "web_server.h"
 #include "mqtt_client.h"
@@ -297,9 +298,10 @@ int main() {
   // test the acquisition counter is the only way to see that.
   const unsigned long lockBefore = state_lock_acquisitions();
   (void)web.getBT();
+  (void)web.getRorBt();
   (void)web.getFanSpeed();
   (void)web.getSafetyFault();
-  check(state_lock_acquisitions() == lockBefore + 3,
+  check(state_lock_acquisitions() == lockBefore + 4,
         "every status getter takes the state lock");
 
   const unsigned long cmdBefore = state_lock_acquisitions();
@@ -327,6 +329,8 @@ int main() {
       (void)web.getCoolRemainingSeconds();
       (void)web.getBT();
       (void)web.getET();
+      (void)web.getRorBt();
+      (void)web.getRorEt();
       (void)web.getHeaterDuty();
       (void)web.getSafetyFault();
       (void)web.getFanFault();
@@ -361,6 +365,30 @@ int main() {
   web.setFanSpeed(100);
   runLoops(4);
   check(web.getFanSpeed() == 100, "commands still take effect after the stress");
+
+  // ------------------------------------------------------- rate of rise -----
+  // Through the real loop(), not against the module directly: both probes on
+  // a straight 0.25 C per 250 ms sample, i.e. exactly 60 C/min, kept up for a
+  // full window plus a little. The history is reset first - the minutes of
+  // flat readings above would otherwise still be sitting in the reference slot
+  // and the first window would measure the wrong pair of endpoints.
+  g_probeBT = 20.0f;
+  g_probeET = 20.0f;
+  runLoops(SAFETY_CLEAR_STREAK + 4);
+  check(!safety_faulted(), "clean state before the rate-of-rise ramp");
+  ror_reset();
+  const int rorSamples = 4 * 60 + 8;   // 62 s = one full window plus headroom
+  for (int i = 1; i <= rorSamples; i++) {
+    g_probeBT = 20.0f + i * 0.25f;
+    g_probeET = 20.0f + i * 0.25f;
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    loop();
+  }
+  check(web.getRorBt() > 59.5f && web.getRorBt() < 60.5f,
+        "rate of rise follows a 60 C/min ramp through loop()");
+  check(web.getRorEt() > 59.5f && web.getRorEt() < 60.5f,
+        "rate of rise reports the environment channel too");
+  check(statusHas("\"rorBt\":"), "mqtt status carries rorBt");
 
   // ------------------------------------------------------------------ OTA ---
   // The update path has to be up as soon as the link is, must refuse to run

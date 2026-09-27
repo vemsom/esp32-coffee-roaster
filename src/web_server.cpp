@@ -34,6 +34,10 @@ static void handleStatus(AsyncWebServerRequest *request) {
     StateLockGuard guard;
     doc["bt"] = cb.getBT();
     doc["et"] = cb.getET();
+    // Rate of rise, C/min, one decimal. Negative is a real value (cooling or
+    // past the turning point), so it is passed straight through.
+    doc["rorBt"] = cb.getRorBt();
+    doc["rorEt"] = cb.getRorEt();
     doc["heaterDuty"] = cb.getHeaterDuty();
     doc["fanSpeed"] = cb.getFanSpeed();
     doc["roastActive"] = cb.getRoastActive();

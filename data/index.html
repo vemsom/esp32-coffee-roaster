@@ -19,8 +19,12 @@
   .view.active { display: block; }
   .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; flex: 1; min-width: 120px; }
-  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+    overflow-wrap: anywhere; }
   .card .value { font-size: 24px; font-weight: 600; margin-top: 4px; }
+  /* Rate of rise reads as "10.0 C/min" - longer than the plain temperatures,
+     so it gets a smaller size to stay inside the card. */
+  .card .value.sm { font-size: 16px; }
   canvas { width: 100%; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; display: block; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 16px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -80,6 +84,8 @@
     <div class="row">
       <div class="card"><div class="label" data-i18n="labelBeanTemp">Böntemp (BT)</div><div class="value" id="valBT">--</div></div>
       <div class="card"><div class="label" data-i18n="labelEnvTemp">Lufttemp (ET)</div><div class="value" id="valET">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelRorBt">Böntemperaturökning</div><div class="value sm" id="valRorBt">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelRorEt">Miljötemperaturökning</div><div class="value sm" id="valRorEt">--</div></div>
       <div class="card"><div class="label" data-i18n="labelHeater">Värme</div><div class="value" id="valHeater">--</div></div>
       <div class="card"><div class="label" data-i18n="labelFan">Fläkt</div><div class="value" id="valFan">--</div></div>
       <div class="card"><div class="label" data-i18n="labelTime">Tid</div><div class="value" id="valTime">--</div></div>
@@ -272,6 +278,7 @@ const I18N = {
     sensorFault: 'sensorfel', fanWord: 'fläkt', networkWord: 'nätverk',
     tabRoast: 'Rostning', tabManual: 'Manuell', tabProfiles: 'Profiler', tabLog: 'Logg',
     labelBeanTemp: 'Böntemp (BT)', labelEnvTemp: 'Lufttemp (ET)',
+    labelRorBt: 'Böntemperaturökning', labelRorEt: 'Miljötemperaturökning',
     labelHeater: 'Värme', labelFan: 'Fläkt', labelTime: 'Tid',
     labelTarget: 'Målvärde', labelProfile: 'Profil',
     labelTargetTemp: 'Måltemperatur (°C)', labelMinutes: 'Tid (minuter)',
@@ -320,6 +327,7 @@ const I18N = {
     sensorFault: 'sensor fault', fanWord: 'fan', networkWord: 'network',
     tabRoast: 'Roast', tabManual: 'Manual', tabProfiles: 'Profiles', tabLog: 'Log',
     labelBeanTemp: 'Bean temp (BT)', labelEnvTemp: 'Env temp (ET)',
+    labelRorBt: 'Bean temp rise', labelRorEt: 'Environment temp rise',
     labelHeater: 'Heat', labelFan: 'Fan', labelTime: 'Time',
     labelTarget: 'Target', labelProfile: 'Profile',
     labelTargetTemp: 'Target temperature (°C)', labelMinutes: 'Time (minutes)',
@@ -500,6 +508,11 @@ async function pollStatus() {
   const bt = num(s.bt), et = num(s.et);
   $('valBT').textContent = bt === null ? '--' : bt.toFixed(1) + '°C';
   $('valET').textContent = et === null ? '--' : et.toFixed(1) + '°C';
+  // Rate of rise, text only - no chart. One decimal, C/min, and a negative
+  // value is a real reading (cooling, or past the turning point), not an error.
+  const rorBt = num(s.rorBt), rorEt = num(s.rorEt);
+  $('valRorBt').textContent = rorBt === null ? '--' : rorBt.toFixed(1) + ' C/min';
+  $('valRorEt').textContent = rorEt === null ? '--' : rorEt.toFixed(1) + ' C/min';
   $('valHeater').textContent = Math.round(s.heaterDuty) + '%';
   $('valFan').textContent = s.fanSpeed + '%';
   $('valTime').textContent = fmtClock(s.elapsedSeconds);

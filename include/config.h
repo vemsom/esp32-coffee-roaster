@@ -48,6 +48,27 @@
 #define SENSOR_FAULT_MAX_JUMP_C   20.0
 #define SENSOR_FAULT_MAX_COUNT    5
 
+// ---- Rate of Rise (RoR) ----
+// Temperaturändringen per minutt, rapporterad som rorBt/rorEt i /api/status
+// och som två läsbara sensorer i Home Assistant. Endpoint delta över ett
+// glidande fönster - samma aritmetik som Artisan kallar Delta Span: den
+// senaste avläsningen minus avläsningen ROR_WINDOW_MS tidigare, omvandlad till
+// C/min över den faktiska tiden mellan de två punkterna så att även ett
+// ofullständigt fönster ger rätt hastighet. Negativt värde är legitimt
+// (kylning/turning point) och klemmes aldrig.
+//
+// 60 s valdes för MAX6675-bruset (cirka 0,3 C/min, som ett minuts endpoint
+// delta jämnar ut) och för den upplevda sondtrögheten på cirka 30 s - ett
+// kortare fönster skulle följa lagret i stället för rostningen. Båda talen
+// okalibreras vid första testrosten (docs/firmware-notes.md).
+#define ROR_WINDOW_MS             60000
+// Under så här mycket historia publiceras inget alls: en diff över några
+// sekunder säger mer om 0,25 C-kvantiseringen än om rostningen.
+#define ROR_MIN_SPAN_MS           15000
+// Historikläsningen - ett snapshot per sekund i den cirkulära buffern i
+// src/ror.cpp. Själva hastigheten räknas om vid SENSOR_READ_INTERVAL_MS.
+#define ROR_SNAPSHOT_INTERVAL_MS  1000
+
 // ---- WiFi ----
 // Anslutningen startas i setup() utan att vänta, och serviceWifi() i loop()
 // kickar om den med sa har mellanrum om den inte ar uppe. Kontrollloopen far
@@ -189,7 +210,9 @@
 // ---- Firmware-version (rapporteras till Home Assistant) ----
 // 0.4.0 = de fyra godkanda andringarna. 0.5.0 = OTA tillkommer, sa att de tva
 // byggena gar att skillja aven i HA (sw_version ar annars identiskt).
-#define FW_VERSION "0.5.0"
+// 0.6.0 = rate of rise (rorBt/rorEt) - nya sensorer i HA, sa ska byggena
+// garna att skilja pa igen nar enheten flashas om.
+#define FW_VERSION "0.6.0"
 
 // ---- PID-standardvarden ----
 #define PID_KP  4.0

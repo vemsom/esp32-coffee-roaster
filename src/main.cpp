@@ -6,6 +6,7 @@
 #include "config.h"
 #include "pid.h"
 #include "sensors.h"
+#include "ror.h"
 #include "safety.h"
 #include "heater_control.h"
 #include "fan_control.h"
@@ -97,6 +98,19 @@ static float cbGetBT() {
 static float cbGetET() {
   StateLockGuard guard;
   return currentET;
+}
+
+// Rate of rise, computed in the control loop at the sensor sample rate. The
+// lock matters here just as much as for the temperatures: ror_update() rewrites
+// the history the AsyncTCP task reads through these getters.
+static float cbGetRorBt() {
+  StateLockGuard guard;
+  return ror_get_bt();
+}
+
+static float cbGetRorEt() {
+  StateLockGuard guard;
+  return ror_get_et();
 }
 
 static float cbGetHeaterDuty() {
@@ -510,6 +524,7 @@ void setup() {
 
   safety_init();
   sensors_init();
+  ror_reset();
 
   // A latch restored from NVS has to reach the heater before the first sensor
   // sample, not 250 ms after it: the SSR pin is already low from heater_init(),
@@ -537,6 +552,8 @@ void setup() {
   WebServerCallbacks callbacks = {
     cbGetBT,
     cbGetET,
+    cbGetRorBt,
+    cbGetRorEt,
     cbGetHeaterDuty,
     cbGetFanSpeed,
     cbGetRoastActive,
@@ -568,6 +585,8 @@ void setup() {
   MqttCallbacks mqttCallbacks = {
     cbGetBT,
     cbGetET,
+    cbGetRorBt,
+    cbGetRorEt,
     cbGetHeaterDuty,
     cbGetFanSpeed,
     cbGetModeName,
@@ -598,6 +617,11 @@ void loop() {
     StateLockGuard stateLock;
     currentBT = r.bt;
     currentET = r.et;
+
+    // Rate of rise: same cadence as the sample itself (250 ms), history is
+    // snapshotted at 1 Hz inside the module. Under the lock, so the web and
+    // MQTT getters never see a half-written history.
+    ror_update(now, r.bt, r.et);
 
     // The stuck-probe check is armed by the heater actually asking for
     // power, not by "heat recently" - see include/config.h for why that is

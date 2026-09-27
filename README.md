@@ -80,8 +80,8 @@ language and diffing the two `unique_id` dumps.
 
 1. Power the roaster and wait for it to join your WiFi, then open the device
    address in a browser (any phone or laptop on the same network works).
-2. The page shows bean temperature, air temperature, heater power, fan power
-   and a live graph. There are three modes:
+2. The page shows bean temperature, air temperature, the rate of rise for both,
+   heater power, fan power and a live graph. There are three modes:
    - **Profile** - the roaster follows a saved ramp/hold schedule, with a
      fan percentage per step. Profiles are stored as JSON on the device.
    - **Manual** - you set the heater and fan yourself.
@@ -90,9 +90,9 @@ language and diffing the two `unique_id` dumps.
 4. Stop at any time from the same page. The safety alarm (below) also stops it.
 
 Everything is controlled from the web page. MQTT is **report-only**: the
-firmware publishes temperatures, heater and fan, mode, elapsed time and the
-alarm states, and it subscribes to nothing. There is no MQTT command that can
-start, stop or change a roast.
+firmware publishes temperatures, rate of rise, heater and fan, mode, elapsed
+time and the alarm states, and it subscribes to nothing. There is no MQTT
+command that can start, stop or change a roast.
 
 The web UI has no external dependencies (no CDN), so it works without internet
 access on the device that views it.
@@ -131,12 +131,13 @@ and runs it on your computer. No ESP32 and no broker needed, only `g++` (plus
 tools/host-tests/run.sh
 ```
 
-Three binaries: `test_safety` (the alarm, the interlock and the stuck-probe
-detector), `test_mqtt_discovery` (discovery payloads and the report-only
-guarantees) and `test_control` (the real `src/main.cpp` driven through
-`setup()`/`loop()`, including a second thread in the role of the AsyncTCP
-task). `test_control` also runs a second time under ThreadSanitizer - that pass
-is what found a data race in the profile name.
+Four binaries: `test_safety` (the alarm, the interlock and the stuck-probe
+detector), `test_ror` (the rate-of-rise maths: window, warm-up, sign and the
+quantised tolerance), `test_mqtt_discovery` (discovery payloads and the
+report-only guarantees) and `test_control` (the real `src/main.cpp` driven
+through `setup()`/`loop()`, including a second thread in the role of the
+AsyncTCP task). `test_control` also runs a second time under ThreadSanitizer -
+that pass is what found a data race in the profile name.
 
 Two guards sit next to them: `test_mqtt_discovery` is built once per build
 language and the two `unique_id` dumps are diffed (identical, or the language
@@ -147,7 +148,7 @@ hard-coded outside it.
 ## Project status
 
 Early development. The firmware builds clean and the host test suite is green
-(RAM 15.5 %, Flash 73.1 %, FW 0.5.0, Arduino core 2.0.17, espressif32 7.1.3).
+(RAM 15.7 %, Flash 73.3 %, FW 0.6.0, Arduino core 2.0.17, espressif32 7.1.3).
 The hardware is not finished: the temperature modules were still in transit and
 the GPIO assignment has never been checked against a physical board.
 `docs/firmware-notes.md` lists what is verified and what is still an

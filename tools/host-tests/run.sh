@@ -4,6 +4,8 @@
 #   check_web_i18n       the language table in data/index.html: both languages
 #                         carry every key and nothing is hard-coded (node)
 #   test_safety          safety latch + heater interlock, stubbed Arduino
+#   test_ror             rate of rise: window, warm-up, sign and the quantised
+#                         tolerance, fed at the real 250 ms sample cadence
 #   test_mqtt_discovery  MQTT discovery payloads + command handling, using a
 #                        recording PubSubClient stub (no broker needed).
 #                        Built twice - English and Swedish - and the unique_id
@@ -49,6 +51,13 @@ g++ -std=c++17 -Wall -Wextra \
     "$here/test_safety.cpp" "$root/src/safety.cpp" "$root/src/heater_control.cpp" \
     -o "$out/test_safety"
 
+# The rate-of-rise test is pure maths over a stubbed clock - no Arduino stub,
+# no hardware: ror.cpp only includes include/config.h for its constants.
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" \
+    "$here/test_ror.cpp" "$root/src/ror.cpp" \
+    -o "$out/test_ror"
+
 # The MQTT discovery test is built ONCE PER BUILD LANGUAGE (FW_LANG_EN): it
 # pins the friendly name of the language it was built with, and it dumps the
 # set of unique_ids. The two dumps are diffed further down - byte-identical
@@ -72,7 +81,7 @@ g++ -std=c++17 -Wall -Wextra -pthread \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
-    "$root/src/fan_control.cpp" "$root/src/mqtt_client.cpp" \
+    "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_control"
 
 # Same test under ThreadSanitizer: it is the only way to see a shared field
@@ -82,10 +91,11 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
-    "$root/src/fan_control.cpp" "$root/src/mqtt_client.cpp" \
+    "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_control_tsan"
 
 "$out/test_safety"
+"$out/test_ror"
 "$out/test_mqtt_en" "$out/unique_ids_en"
 "$out/test_mqtt_sv" "$out/unique_ids_sv"
 # The whole point of the two builds above: the same entities, in the same
