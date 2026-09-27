@@ -3,6 +3,8 @@
 #   test_safety          safety latch + heater interlock, stubbed Arduino
 #   test_mqtt_discovery  MQTT discovery payloads + command handling, using a
 #                        recording PubSubClient stub (no broker needed)
+#   test_sensors         the calibration offset: raw + offset is what gets
+#                        judged, built with non-zero offsets on both TUs
 #   test_control         the real setup()/loop(), including a second thread in
 #                        the role of the AsyncTCP task; the same source is
 #                        built a second time under ThreadSanitizer
@@ -38,6 +40,16 @@ g++ -std=c++17 -Wall -Wextra \
     "$here/test_mqtt_discovery.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_mqtt"
 
+# The calibration offset is a compile-time constant in config.h, so the
+# overrides have to reach BOTH translation units - the test file and
+# sensors.cpp - because macros do not cross between them (the same reason the
+# MQTT defines above are passed to both TUs).
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" \
+    -DSENSOR_BT_OFFSET_C=-1.2 -DSENSOR_ET_OFFSET_C=1.6 \
+    "$here/test_sensors.cpp" "$root/src/sensors.cpp" \
+    -o "$out/test_sensors"
+
 # The control test links the real main.cpp with stubbed hardware, so it can
 # drive setup()/loop() and the callbacks the web server calls. roast_profile.cpp
 # is deliberately NOT linked - the test supplies its own canned profile.
@@ -62,6 +74,7 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
 
 "$out/test_safety"
 "$out/test_mqtt"
+"$out/test_sensors"
 "$out/test_control"
 # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
 # aborts with "unexpected memory mapping"), so the sanitized binary runs with

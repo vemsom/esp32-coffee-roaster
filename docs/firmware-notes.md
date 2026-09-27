@@ -2,7 +2,7 @@
 
 Status: **verified items below were re-confirmed on 2026-09-27** with a clean
 `pio run` (`pio run -t clean` then `pio run`, 48.4 s, zero warnings) and the
-host-side test suite (293 checks, 0 failures). Everything still listed as open
+host-side test suite (306 checks, 0 failures). Everything still listed as open
 is untested against real hardware.
 
 Build of record (2026-09-27, clean rebuild):
@@ -454,6 +454,47 @@ judgement call is whether 2 C is the right floor - if this machine ever stands
 somewhere that cold, move the floor using the numbers from step 2, and confirm
 in step 6 that a genuinely floating input lands below it.
 
+## Calibrating the probe offset (implemented 2026-09-27)
+
+`SENSOR_BT_OFFSET_C` and `SENSOR_ET_OFFSET_C` in include/config.h, default
+0.0 = "no adjustment, assume the probes are right". Each probe gets its own.
+
+The offset is added to the raw reading *before anything judges it*: the
+plausibility window (2..400 C) and the jump check both see the corrected
+number, and `lastGood` holds corrected values too. That ordering is the whole
+point - judged the other way, an offset could drag a healthy reading out of
+the window or smuggle a dead one into it, while the rest of the firmware only
+ever sees the corrected value and would never know. NaN survives the
+addition, so a detached probe still reads as NaN.
+
+Procedure, per probe:
+
+1. Put the probe against a thermometer you trust, at room temperature.
+2. Record both numbers: the roaster's `raw` (`bt`/`et` in `/api/status` or in
+   the MQTT status payload - before the offset, i.e. with the current build)
+   and the reference `ref`.
+3. `offset = ref - raw`. Example: ref 23.1, raw 24.3 -> `SENSOR_BT_OFFSET_C
+   -1.2`. One decimal is what a MAX6675 can support (0.25 C per LSB).
+4. `pio run`, then `sh tools/ota-upload.sh <ip>` - a config.h change is a
+   firmware change, so it rides the normal app OTA path, no USB.
+5. Read the corrected value back and confirm it now matches the reference.
+
+**Two points, not one.** Repeat at a second temperature - ice water (~0 C) or
+boiling water (~100 C, and note what the kitchen's own thermometer says,
+since boiling point drops with altitude) - and check that the *same* offset
+holds there. One point forces a straight line through the origin: an
+acceptable first guess, but not something to trust in the 260 C range until
+the second point confirms it. If the two points disagree by more than the
+baseline noise from calibration step 2, the error is not linear: record both
+pairs before changing anything, and say so rather than averaging them away.
+
+Host-tested in `test_sensors` (13 checks, built with a non-zero offset on
+each channel - the overrides go to both translation units because macros do
+not cross between them): raw 24.3 with offset -1.2 reports 23.1; a reading
+that is only invalid *after* the offset trips; a reading that is only valid
+after the offset is accepted; NaN still trips; every fault holds the last
+corrected value, never the raw one.
+
 ## Still open, not done
 
 Tagged the same way as above: what it takes, not just what is left.
@@ -505,10 +546,18 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-09-27: **293 checks, 0 failures**, exit 0, no compiler
+broker. Last run 2026-09-27: **306 checks, 0 failures**, exit 0, no compiler
 warnings (the control test is built and run a second time under
-ThreadSanitizer, so 368 checks execute in total):
+ThreadSanitizer, so 381 checks execute in total):
 
+- `test_sensors` - the calibration offset (13 checks): built with
+  `-DSENSOR_BT_OFFSET_C=-1.2 -DSENSOR_ET_OFFSET_C=1.6` on BOTH translation
+  units, since macros do not cross between them. Proves raw 24.3 with offset
+  -1.2 reports 23.1; that a reading invalid only *after* the offset trips; one
+  valid only after it passes; that NaN still trips through the addition; and
+  that every fault holds the corrected value. Readings are stepped rather than
+  jumped so the jump detector does not fire on the way between scenarios -
+  the first version of this test got exactly that wrong.
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks): trip on the hard limit, on sustained sensor faults and on
   BT/ET disagreement while cold; commands refused while latched; clear only

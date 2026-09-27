@@ -47,6 +47,33 @@
 // sensorlarmet i safety.cpp). Galler bade manuellt och auto-lage.
 #define FAN_MIN_FOR_HEATER_PCT    10
 
+// ---- Kalibrering: offset per probe ----
+// Referenstermometern mot raw-vardet: sensorernas egna fel ligger kvar i
+// lasningen (en MAX6675 ar inte kalibrerad mot nagot), sa ratt varden ar
+// raw + offset. Offset = referens - rawt, matpunkt for matpunkt.
+//
+//    #define SENSOR_BT_OFFSET_C   -1.2    // referens 23,1 => raw 24,3
+//
+// Noll innebar "ingen justering" - lasts som att proberna stammer av sig.
+//
+// Viktigt: den rattigade varlden ar den som bedoms. Fonetstret (SENSOR_MIN/
+// MAX_VALID_C) och hoppkontrollen korrigerar forst och granskar sedan,
+// for en offset ska inte kunna dra en frisk lasning utanfor fonstret eller
+// goma ett trasigt varde in i det. Se src/sensors.cpp.
+//
+// Matning: minst tva punkter - rumstemperatur och isvatten (~0 C) eller
+// kokande vatten (~100 C). En enda punkt ger en rak linje genom originet,
+// en korrekt forsta approximation men inte nagot att lita pa i 260 C-radden;
+// stam av mot den andra punkten innan vardet fas tillit. Proceduren star i
+// docs/firmware-notes.md. #ifndef sa att host-testet kan overskrida bada
+// (makron passerar inte mellan translation units).
+#ifndef SENSOR_BT_OFFSET_C
+#define SENSOR_BT_OFFSET_C    0.0
+#endif
+#ifndef SENSOR_ET_OFFSET_C
+#define SENSOR_ET_OFFSET_C    0.0
+#endif
+
 // ---- Sakerhetsgranser (hardkodade skydd, oberoende av PID och profil) ----
 // Hard grans for bontemperaturen. Nar den nas slas varmet av och ett larm
 // last i safety.cpp - larmet kan inte tystas, det sjalper forst nar
