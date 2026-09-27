@@ -62,6 +62,20 @@ WiFi and MQTT credentials go in `include/secrets.h`, which is gitignored:
 You can skip this file entirely. The firmware still builds and runs: it stays
 offline and reports MQTT as disabled in the serial log.
 
+### Language
+
+`FW_LANG_EN` in `include/config.h` picks the language of every user-visible
+text: `1` (the default) is English, `0` is Swedish. It decides the Home
+Assistant discovery names (`include/strings.h`) and the web page, which reads
+the language from `/api/status` and follows it - the browser's own language
+never decides, so the page and the entity names always agree. It also works as
+a build flag: `PLATFORMIO_BUILD_FLAGS="-DFW_LANG_EN=0" pio run`.
+
+Whichever language you pick, `unique_id`, `object_id` and the topics do not
+change, so switching never moves an entity that already exists in Home
+Assistant. The host suite proves that by building the discovery test once per
+language and diffing the two `unique_id` dumps.
+
 ## Use it
 
 1. Power the roaster and wait for it to join your WiFi, then open the device
@@ -110,7 +124,8 @@ hardware.
 ## Tests
 
 `tools/host-tests/run.sh` compiles the firmware logic against a stub Arduino
-and runs it on your computer. No ESP32 and no broker needed, only `g++`:
+and runs it on your computer. No ESP32 and no broker needed, only `g++` (plus
+`node` for the web UI check, which is skipped when node is absent):
 
 ```sh
 tools/host-tests/run.sh
@@ -122,6 +137,12 @@ guarantees) and `test_control` (the real `src/main.cpp` driven through
 `setup()`/`loop()`, including a second thread in the role of the AsyncTCP
 task). `test_control` also runs a second time under ThreadSanitizer - that pass
 is what found a data race in the profile name.
+
+Two guards sit next to them: `test_mqtt_discovery` is built once per build
+language and the two `unique_id` dumps are diffed (identical, or the language
+switch would move entities in Home Assistant), and `check_web_i18n.js` checks
+the language table in `data/index.html` - every key in both languages, nothing
+hard-coded outside it.
 
 ## Project status
 

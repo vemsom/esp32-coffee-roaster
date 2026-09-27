@@ -66,34 +66,34 @@
 </style>
 </head>
 <body>
-  <h1>Kafferostaren <span id="modePill" class="pill">idle</span> <span id="faultPill" class="pill fault" style="display:none">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none">fläkt</span> <span id="netPill" class="pill warn" style="display:none">nätverk</span></h1>
+  <h1><span data-i18n="title">Kafferostaren</span> <span id="modePill" class="pill" data-i18n="modeIdle">idle</span> <span id="faultPill" class="pill fault" style="display:none" data-i18n="sensorFault">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none" data-i18n="fanWord">fläkt</span> <span id="netPill" class="pill warn" style="display:none" data-i18n="networkWord">nätverk</span></h1>
 
   <div class="tabs">
-    <div class="tab active" data-view="roast">Rostning</div>
-    <div class="tab" data-view="manual">Manuell</div>
-    <div class="tab" data-view="profiles">Profiler</div>
-    <div class="tab" data-view="log">Logg</div>
+    <div class="tab active" data-view="roast" data-i18n="tabRoast">Rostning</div>
+    <div class="tab" data-view="manual" data-i18n="tabManual">Manuell</div>
+    <div class="tab" data-view="profiles" data-i18n="tabProfiles">Profiler</div>
+    <div class="tab" data-view="log" data-i18n="tabLog">Logg</div>
   </div>
 
   <!-- ============================ ROAST ============================ -->
   <div class="view active" id="view-roast">
     <div class="row">
-      <div class="card"><div class="label">Böntemp (BT)</div><div class="value" id="valBT">--</div></div>
-      <div class="card"><div class="label">Lufttemp (ET)</div><div class="value" id="valET">--</div></div>
-      <div class="card"><div class="label">Värme</div><div class="value" id="valHeater">--</div></div>
-      <div class="card"><div class="label">Fläkt</div><div class="value" id="valFan">--</div></div>
-      <div class="card"><div class="label">Tid</div><div class="value" id="valTime">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelBeanTemp">Böntemp (BT)</div><div class="value" id="valBT">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelEnvTemp">Lufttemp (ET)</div><div class="value" id="valET">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelHeater">Värme</div><div class="value" id="valHeater">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelFan">Fläkt</div><div class="value" id="valFan">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelTime">Tid</div><div class="value" id="valTime">--</div></div>
     </div>
 
     <div class="panel">
       <div class="controls">
         <div style="flex:2; min-width:180px;">
-          <label>Profil</label>
+          <label data-i18n="labelProfile">Profil</label>
           <select id="profileSelect"></select>
         </div>
-        <button class="primary" id="startBtn">Starta rostning</button>
-        <button id="pauseBtn" style="display:none;">Pausa</button>
-        <button class="danger" id="stopBtn">Stopp</button>
+        <button class="primary" id="startBtn" data-i18n="btnStartRoast">Starta rostning</button>
+        <button id="pauseBtn" style="display:none;" data-i18n="btnPause">Pausa</button>
+        <button class="danger" id="stopBtn" data-i18n="btnStop">Stopp</button>
       </div>
     </div>
 
@@ -103,60 +103,60 @@
   <!-- ============================ MANUAL ============================ -->
   <div class="view" id="view-manual">
     <div class="row">
-      <div class="card"><div class="label">Böntemp (BT)</div><div class="value" id="mValBT">--</div></div>
-      <div class="card"><div class="label">Lufttemp (ET)</div><div class="value" id="mValET">--</div></div>
-      <div class="card"><div class="label">Målvärde</div><div class="value" id="mValTarget">--</div></div>
-      <div class="card"><div class="label">Värme</div><div class="value" id="mValHeater">--</div></div>
-      <div class="card"><div class="label">Fläkt</div><div class="value" id="mValFan">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelBeanTemp">Böntemp (BT)</div><div class="value" id="mValBT">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelEnvTemp">Lufttemp (ET)</div><div class="value" id="mValET">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelTarget">Målvärde</div><div class="value" id="mValTarget">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelHeater">Värme</div><div class="value" id="mValHeater">--</div></div>
+      <div class="card"><div class="label" data-i18n="labelFan">Fläkt</div><div class="value" id="mValFan">--</div></div>
     </div>
 
     <div class="panel">
       <div class="controls">
         <div style="min-width:120px;">
-          <label>Måltemperatur (°C)</label>
+          <label data-i18n="labelTargetTemp">Måltemperatur (°C)</label>
           <input type="number" id="manualTemp" value="200" min="1" max="300" step="1">
         </div>
         <div style="min-width:120px;">
-          <label>Tid (minuter)</label>
+          <label data-i18n="labelMinutes">Tid (minuter)</label>
           <input type="number" id="manualMinutes" value="10" min="0.5" max="120" step="0.5">
         </div>
         <div style="min-width:120px;">
-          <label>Fläkt (%)</label>
+          <label data-i18n="labelFanPct">Fläkt (%)</label>
           <input type="number" id="manualFan" value="100" min="0" max="100" step="5">
         </div>
-        <button id="manualFanBtn">Sätt fläkt</button>
-        <button class="primary" id="manualStartBtn">Starta</button>
-        <button class="danger" id="manualStopBtn">Stopp</button>
+        <button id="manualFanBtn" data-i18n="btnSetFan">Sätt fläkt</button>
+        <button class="primary" id="manualStartBtn" data-i18n="btnStart">Starta</button>
+        <button class="danger" id="manualStopBtn" data-i18n="btnStop">Stopp</button>
       </div>
-      <div class="hint">PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Elementet kräver minst 10 % fläkt: sätt fläkten först, start nekas annars och värmen klipps om fläkten faller under.</div>
+      <div class="hint" data-i18n-html="hintManual">PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Elementet kräver minst 10 % fläkt: sätt fläkten först, start nekas annars och värmen klipps om fläkten faller under.</div>
     </div>
 
     <canvas id="chartManual" height="600"></canvas>
 
     <div class="panel">
-      <div class="panel-heading">Återstår</div>
+      <div class="panel-heading" data-i18n="headingRemaining">Återstår</div>
       <div class="big" id="manualRemaining">--:--</div>
       <div class="status-line" id="manualStatus">Inaktiv</div>
     </div>
 
     <div class="panel">
-      <div class="panel-heading">Kylning (endast fläkt)</div>
+      <div class="panel-heading" data-i18n="headingCooling">Kylning (endast fläkt)</div>
       <div class="controls">
         <div style="min-width:120px;">
-          <label>Fläkt (%)</label>
+          <label data-i18n="labelFanPct">Fläkt (%)</label>
           <input type="number" id="coolSpeed" value="100" min="1" max="100" step="5">
         </div>
         <div style="min-width:120px;">
-          <label>Tid (minuter)</label>
+          <label data-i18n="labelMinutes">Tid (minuter)</label>
           <input type="number" id="coolMinutes" value="5" min="0.5" max="120" step="0.5">
         </div>
-        <button class="primary" id="coolStartBtn">Starta kylning</button>
-        <button class="danger" id="coolStopBtn">Stopp</button>
+        <button class="primary" id="coolStartBtn" data-i18n="btnStartCool">Starta kylning</button>
+        <button class="danger" id="coolStopBtn" data-i18n="btnStop">Stopp</button>
       </div>
-      <div class="hint">Kör fläkten på valt varvtal i vald tid, oberoende av värme och manuellt läge.</div>
+      <div class="hint" data-i18n="hintCooling">Kör fläkten på valt varvtal i vald tid, oberoende av värme och manuellt läge.</div>
       <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-size:13px; color:var(--text);">
         <input type="checkbox" id="autoCool" style="width:auto;">
-        Starta kylning automatiskt när manuella körningen är klar
+        <span data-i18n="autoCoolLabel">Starta kylning automatiskt när manuella körningen är klar</span>
       </label>
       <div class="big" id="coolRemaining" style="margin-top:10px;">--:--</div>
       <div class="status-line" id="coolStatus">Inaktiv</div>
@@ -167,25 +167,25 @@
   <div class="view" id="view-profiles">
     <div class="grid2">
       <div class="panel">
-        <div class="panel-heading">Sparade profiler</div>
+        <div class="panel-heading" data-i18n="headingSavedProfiles">Sparade profiler</div>
         <div id="profileList"></div>
-        <button class="small" id="newProfileBtn" style="margin-top:10px;">Ny profil</button>
+        <button class="small" id="newProfileBtn" style="margin-top:10px;" data-i18n="btnNewProfile">Ny profil</button>
         <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="small" id="exportProfilesBtn">Exportera alla</button>
-          <button class="small" id="importProfilesBtn">Importera</button>
+          <button class="small" id="exportProfilesBtn" data-i18n="btnExportAll">Exportera alla</button>
+          <button class="small" id="importProfilesBtn" data-i18n="btnImport">Importera</button>
           <input type="file" id="importFile" accept="application/json,.json" style="display:none">
         </div>
-        <div class="hint">Export ger en JSON-fil med alla profiler. Import läser en sådan fil (skriver över profiler med samma namn).</div>
+        <div class="hint" data-i18n="hintExportImport">Export ger en JSON-fil med alla profiler. Import läser en sådan fil (skriver över profiler med samma namn).</div>
       </div>
 
       <div class="panel">
-        <div class="panel-heading">Namn</div>
-        <input type="text" id="editName" placeholder="t.ex. espresso-1">
+        <div class="panel-heading" data-i18n="headingName">Namn</div>
+        <input type="text" id="editName" placeholder="t.ex. espresso-1" data-i18n-placeholder="namePlaceholder">
         <div class="controls" style="margin-top:12px;">
-          <button class="primary" id="saveProfileBtn">Spara profil</button>
-          <button id="clearProfileBtn">Rensa profil</button>
+          <button class="primary" id="saveProfileBtn" data-i18n="btnSaveProfile">Spara profil</button>
+          <button id="clearProfileBtn" data-i18n="btnClearProfile">Rensa profil</button>
         </div>
-        <div class="hint">Varje rad är ett steg med <b>ramp</b> (linjär uppvärmning) och <b>håll</b> (konstant temperatur), båda i minuter. Rostningen startar på 20 °C vid 0 min. Steg 1: ramp 8 + håll 2 @ 190° = 8 min uppvärmning 20→190°, sedan 2 min på 190°. Klicka i grafen för att lägga till ett steg, dra en grön punkt för att ändra temperaturen.</div>
+        <div class="hint" data-i18n-html="hintEditor">Varje rad är ett steg med <b>ramp</b> (linjär uppvärmning) och <b>håll</b> (konstant temperatur), båda i minuter. Rostningen startar på 20 °C vid 0 min. Steg 1: ramp 8 + håll 2 @ 190° = 8 min uppvärmning 20→190°, sedan 2 min på 190°. Klicka i grafen för att lägga till ett steg, dra en grön punkt för att ändra temperaturen.</div>
       </div>
     </div>
 
@@ -194,13 +194,13 @@
         <canvas id="editor" height="600"></canvas>
       </div>
       <div class="panel editor-steps">
-        <div class="panel-heading">Steg</div>
+        <div class="panel-heading" data-i18n="headingSteps">Steg</div>
         <div class="editor-steps-scroll">
           <table id="pointsTable">
-            <thead><tr><th>Ramp (min)</th><th>Håll (min)</th><th>Temp (°C)</th><th>Fläkt (%)</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="thRamp">Ramp (min)</th><th data-i18n="thHold">Håll (min)</th><th data-i18n="thTemp">Temp (°C)</th><th data-i18n="labelFanPct">Fläkt (%)</th><th></th></tr></thead>
             <tbody></tbody>
           </table>
-          <button class="small" id="addPointBtn" style="margin-top:10px;">Lägg till steg</button>
+          <button class="small" id="addPointBtn" style="margin-top:10px;" data-i18n="btnAddStep">Lägg till steg</button>
         </div>
       </div>
     </div>
@@ -210,14 +210,14 @@
   <div class="view" id="view-log">
     <div class="panel">
       <div class="controls">
-        <button id="exportBtn">Exportera CSV</button>
-        <button id="clearLogBtn">Rensa</button>
+        <button id="exportBtn" data-i18n="btnExportCsv">Exportera CSV</button>
+        <button id="clearLogBtn" data-i18n="btnClear">Rensa</button>
         <span class="status-line" id="logCount" style="margin:0;"></span>
       </div>
     </div>
     <div class="panel" style="max-height:60vh; overflow:auto;">
       <table id="logTable">
-        <thead><tr><th>Tid (s)</th><th>BT (°C)</th><th>ET (°C)</th><th>Värme (%)</th><th>Fläkt (%)</th></tr></thead>
+        <thead><tr><th data-i18n="thTime">Tid (s)</th><th data-i18n="thBt">BT (°C)</th><th data-i18n="thEt">ET (°C)</th><th data-i18n="labelHeaterPct">Värme (%)</th><th data-i18n="labelFanPct">Fläkt (%)</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -243,6 +243,8 @@ const state = {
   status: {},
   history: [],
   profileNames: [],
+  lang: 'sv',            // build language of the firmware; the markup below is
+                         // Swedish, so nothing flips before the first /api/status
   activeProfile: null,   // { name, startTemp, steps:[{ramp,hold,temp,fan}] } (seconds)
   editSteps: [],         // [{ ramp, hold, temp, fan }] all times in seconds
   loadedProfileName: '', // name of the profile currently open in the editor
@@ -252,6 +254,138 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+
+// ----------------------------------------------------------- language -----
+// The build language of the firmware (FW_LANG_EN in include/config.h) arrives
+// with the first /api/status as `lang`, and the page follows it. The browser's
+// own language must NOT decide: the UI and the Home Assistant entity names
+// have to agree, and only the firmware knows which one it was built with.
+//
+// Static text carries a data-i18n key in the markup and is rewritten by
+// applyLang(); anything built after load goes through t(). The keys live here,
+// in the page, because a LittleFS file cannot include include/strings.h - but
+// FW_LANG_CODE is the single source for WHICH language, so the two tables can
+// never disagree about that.
+const I18N = {
+  sv: {
+    title: 'Kafferostaren',
+    sensorFault: 'sensorfel', fanWord: 'fläkt', networkWord: 'nätverk',
+    tabRoast: 'Rostning', tabManual: 'Manuell', tabProfiles: 'Profiler', tabLog: 'Logg',
+    labelBeanTemp: 'Böntemp (BT)', labelEnvTemp: 'Lufttemp (ET)',
+    labelHeater: 'Värme', labelFan: 'Fläkt', labelTime: 'Tid',
+    labelTarget: 'Målvärde', labelProfile: 'Profil',
+    labelTargetTemp: 'Måltemperatur (°C)', labelMinutes: 'Tid (minuter)',
+    labelFanPct: 'Fläkt (%)', labelHeaterPct: 'Värme (%)',
+    thRamp: 'Ramp (min)', thHold: 'Håll (min)', thTemp: 'Temp (°C)',
+    thTime: 'Tid (s)', thBt: 'BT (°C)', thEt: 'ET (°C)',
+    btnStartRoast: 'Starta rostning', btnPause: 'Pausa', btnResume: 'Återuppta',
+    btnStop: 'Stopp', btnStart: 'Starta', btnSetFan: 'Sätt fläkt',
+    btnStartCool: 'Starta kylning', btnNewProfile: 'Ny profil',
+    btnExportAll: 'Exportera alla', btnImport: 'Importera',
+    btnSaveProfile: 'Spara profil', btnClearProfile: 'Rensa profil',
+    btnAddStep: 'Lägg till steg', btnExportCsv: 'Exportera CSV', btnClear: 'Rensa',
+    btnDeleteProfile: 'Radera profil',
+    headingRemaining: 'Återstår', headingCooling: 'Kylning (endast fläkt)',
+    headingSavedProfiles: 'Sparade profiler', headingName: 'Namn', headingSteps: 'Steg',
+    namePlaceholder: 't.ex. espresso-1',
+    hintManual: 'PID-reglering håller BT vid måltemperaturen och stänger av värmen automatiskt när tiden är ute. Elementet kräver minst 10 % fläkt: sätt fläkten först, start nekas annars och värmen klipps om fläkten faller under.',
+    hintCooling: 'Kör fläkten på valt varvtal i vald tid, oberoende av värme och manuellt läge.',
+    autoCoolLabel: 'Starta kylning automatiskt när manuella körningen är klar',
+    hintExportImport: 'Export ger en JSON-fil med alla profiler. Import läser en sådan fil (skriver över profiler med samma namn).',
+    hintEditor: 'Varje rad är ett steg med <b>ramp</b> (linjär uppvärmning) och <b>håll</b> (konstant temperatur), båda i minuter. Rostningen startar på 20 °C vid 0 min. Steg 1: ramp 8 + håll 2 @ 190° = 8 min uppvärmning 20→190°, sedan 2 min på 190°. Klicka i grafen för att lägga till ett steg, dra en grön punkt för att ändra temperaturen.',
+    noContact: 'INGEN KONTAKT', noContactAge: 'INGEN KONTAKT {age} s', wifiMissing: 'WIFI SAKNAS',
+    modeIdle: 'idle', modeAlarm: 'larm', modePaused: 'pausad', modeRoasting: 'rostning',
+    modeManual: 'manuell', modeCooling: 'kylning',
+    faultReasonFallback: 'fel', faultLine: 'LARM: {reason} – värmen av',
+    fanFaultLine: 'FLÄKT <10 % – värmen av',
+    statusInactive: 'Inaktiv',
+    manualActive: 'Aktiv – mål {t}°C', coolActive: 'Aktiv – fläkt {p}%',
+    chartTarget: 'mål {t}°',
+    noProfiles: 'Inga profiler sparade än.',
+    confirmDelete: 'Radera profilen "{name}"?',
+    errDelete: 'Kunde inte radera: {msg}', errLoadProfile: 'Kunde inte ladda profil: {msg}',
+    pickProfile: 'Välj en profil först',
+    errStart: 'Kunde inte starta: {msg}', errSetFan: 'Kunde inte sätta fläkt: {msg}',
+    errStartCool: 'Kunde inte starta kylning: {msg}', errSave: 'Kunde inte spara: {msg}',
+    noProfilesExport: 'Inga profiler att exportera',
+    badJson: 'Ogiltig JSON: {msg}', noProfilesInFile: 'Hittade inga profiler i filen',
+    imported: 'Importerade {ok} profiler', importFailed: ', {n} misslyckades',
+    enterName: 'Ange ett namn',
+    confirmOverwrite: 'Det finns redan en profil som heter "{name}". Vill du skriva över den?',
+    dataPoints: '{n} mätpunkter',
+    exportFilePrefix: 'kaffeprofiler',
+  },
+  en: {
+    title: 'Coffee roaster',
+    sensorFault: 'sensor fault', fanWord: 'fan', networkWord: 'network',
+    tabRoast: 'Roast', tabManual: 'Manual', tabProfiles: 'Profiles', tabLog: 'Log',
+    labelBeanTemp: 'Bean temp (BT)', labelEnvTemp: 'Env temp (ET)',
+    labelHeater: 'Heat', labelFan: 'Fan', labelTime: 'Time',
+    labelTarget: 'Target', labelProfile: 'Profile',
+    labelTargetTemp: 'Target temperature (°C)', labelMinutes: 'Time (minutes)',
+    labelFanPct: 'Fan (%)', labelHeaterPct: 'Heat (%)',
+    thRamp: 'Ramp (min)', thHold: 'Hold (min)', thTemp: 'Temp (°C)',
+    thTime: 'Time (s)', thBt: 'BT (°C)', thEt: 'ET (°C)',
+    btnStartRoast: 'Start roast', btnPause: 'Pause', btnResume: 'Resume',
+    btnStop: 'Stop', btnStart: 'Start', btnSetFan: 'Set fan',
+    btnStartCool: 'Start cooling', btnNewProfile: 'New profile',
+    btnExportAll: 'Export all', btnImport: 'Import',
+    btnSaveProfile: 'Save profile', btnClearProfile: 'Clear profile',
+    btnAddStep: 'Add step', btnExportCsv: 'Export CSV', btnClear: 'Clear',
+    btnDeleteProfile: 'Delete profile',
+    headingRemaining: 'Remaining', headingCooling: 'Cooling (fan only)',
+    headingSavedProfiles: 'Saved profiles', headingName: 'Name', headingSteps: 'Steps',
+    namePlaceholder: 'e.g. espresso-1',
+    hintManual: 'The PID holds BT at the target temperature and turns the heat off by itself when the time runs out. The element needs at least 10 % fan: set the fan first, otherwise the start is refused, and the heat is cut if the fan drops below.',
+    hintCooling: 'Runs the fan at the chosen speed for the chosen time, independent of the heat and of manual mode.',
+    autoCoolLabel: 'Start cooling automatically when the manual run is over',
+    hintExportImport: 'Export writes a JSON file with every profile. Import reads such a file (profiles with the same name are overwritten).',
+    hintEditor: 'Each row is a step with <b>ramp</b> (linear heat-up) and <b>hold</b> (constant temperature), both in minutes. The roast starts at 20 °C at 0 min. Step 1: ramp 8 + hold 2 @ 190° = 8 min of heat-up 20→190°, then 2 min at 190°. Click the graph to add a step, drag a green dot to change the temperature.',
+    noContact: 'NO CONTACT', noContactAge: 'NO CONTACT {age} s', wifiMissing: 'WIFI DOWN',
+    modeIdle: 'idle', modeAlarm: 'alarm', modePaused: 'paused', modeRoasting: 'roasting',
+    modeManual: 'manual', modeCooling: 'cooling',
+    faultReasonFallback: 'fault', faultLine: 'ALARM: {reason} – heat off',
+    fanFaultLine: 'FAN <10 % – heat off',
+    statusInactive: 'Inactive',
+    manualActive: 'Active – target {t}°C', coolActive: 'Active – fan {p}%',
+    chartTarget: 'target {t}°',
+    noProfiles: 'No profiles saved yet.',
+    confirmDelete: 'Delete the profile "{name}"?',
+    errDelete: 'Could not delete: {msg}', errLoadProfile: 'Could not load profile: {msg}',
+    pickProfile: 'Choose a profile first',
+    errStart: 'Could not start: {msg}', errSetFan: 'Could not set the fan: {msg}',
+    errStartCool: 'Could not start cooling: {msg}', errSave: 'Could not save: {msg}',
+    noProfilesExport: 'No profiles to export',
+    badJson: 'Invalid JSON: {msg}', noProfilesInFile: 'No profiles found in that file',
+    imported: 'Imported {ok} profiles', importFailed: ', {n} failed',
+    enterName: 'Enter a name',
+    confirmOverwrite: 'A profile called "{name}" already exists. Overwrite it?',
+    dataPoints: '{n} data points',
+    exportFilePrefix: 'coffee-profiles',
+  },
+};
+
+// Look up a key in the current language. {placeholders} are substituted, a
+// missing key is a loud console warning rather than an empty button.
+function t(key, vars) {
+  const table = I18N[state.lang] || I18N.sv;
+  let s = table[key];
+  if (s === undefined) {
+    console.warn('i18n key missing in ' + state.lang + ': ' + key);
+    return key;
+  }
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(String(vars[k]));
+  return s;
+}
+
+// Rewrite every element that carries a translation key.
+function applyLang() {
+  document.documentElement.lang = state.lang;
+  document.title = t('title');
+  document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.dataset.i18nHtml); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.dataset.i18nPlaceholder); });
+}
 
 async function api(path, options) {
   const res = await fetch(path, options);
@@ -324,12 +458,12 @@ function renderNet() {
   if (state.contactLost) {
     const age = state.lastContact ? Math.round((Date.now() - state.lastContact) / 1000) : null;
     netPill.style.display = '';
-    netPill.textContent = age === null ? 'INGEN KONTAKT' : 'INGEN KONTAKT ' + age + ' s';
+    netPill.textContent = age === null ? t('noContact') : t('noContactAge', { age });
     return;
   }
   if (state.status.wifiConnected === false) {
     netPill.style.display = '';
-    netPill.textContent = 'WIFI SAKNAS';
+    netPill.textContent = t('wifiMissing');
     return;
   }
   netPill.style.display = 'none';
@@ -350,6 +484,16 @@ async function pollStatus() {
   state.lastContact = Date.now();
   const s = state.status;
 
+  // The firmware reports its build language; follow it. Everything below this
+  // point writes text, so it all lands in the right language in the same pass,
+  // and the static markup is rewritten by applyLang(). loadProfiles() is
+  // re-run because the saved-profile list carries text of its own.
+  if (s.lang && s.lang !== state.lang) {
+    state.lang = s.lang;
+    applyLang();
+    loadProfiles();
+  }
+
   // NaN serialises as null over the API, so check the type instead of
   // isFinite() - isFinite(null) is true and would show up as 0.0 C.
   const num = (v) => (typeof v === 'number' && isFinite(v)) ? v : null;
@@ -369,17 +513,19 @@ async function pollStatus() {
   $('mValFan').textContent = s.fanSpeed + '%';
 
   const pill = $('modePill');
-  if (s.safetyFault) { pill.textContent = 'larm'; pill.className = 'pill fault'; }
-  else if (s.roastActive && s.roastPaused) { pill.textContent = 'pausad'; pill.className = 'pill paused'; }
-  else if (s.roastActive) { pill.textContent = 'rostning'; pill.className = 'pill on'; }
-  else if (s.manualActive) { pill.textContent = 'manuell'; pill.className = 'pill manual'; }
-  else if (s.coolActive) { pill.textContent = 'kylning'; pill.className = 'pill cool'; }
-  else { pill.textContent = 'idle'; pill.className = 'pill'; }
+  if (s.safetyFault) { pill.textContent = t('modeAlarm'); pill.className = 'pill fault'; }
+  else if (s.roastActive && s.roastPaused) { pill.textContent = t('modePaused'); pill.className = 'pill paused'; }
+  else if (s.roastActive) { pill.textContent = t('modeRoasting'); pill.className = 'pill on'; }
+  else if (s.manualActive) { pill.textContent = t('modeManual'); pill.className = 'pill manual'; }
+  else if (s.coolActive) { pill.textContent = t('modeCooling'); pill.className = 'pill cool'; }
+  else { pill.textContent = t('modeIdle'); pill.className = 'pill'; }
 
   const faultPill = $('faultPill');
   if (s.safetyFault) {
     faultPill.style.display = '';
-    faultPill.textContent = 'LARM: ' + (s.safetyReason || 'fel') + ' – värmen av';
+    // The reason itself is a firmware code ("bt over temp") - developer text,
+    // the same in both languages, like the serial log.
+    faultPill.textContent = t('faultLine', { reason: s.safetyReason || t('faultReasonFallback') });
   } else {
     faultPill.style.display = 'none';
   }
@@ -389,7 +535,7 @@ async function pollStatus() {
   const fanPill = $('fanPill');
   if (s.fanFault) {
     fanPill.style.display = '';
-    fanPill.textContent = 'FLÄKT <10 % – värmen av';
+    fanPill.textContent = t('fanFaultLine');
   } else {
     fanPill.style.display = 'none';
   }
@@ -399,20 +545,20 @@ async function pollStatus() {
   const pauseBtn = $('pauseBtn');
   if (s.roastActive) {
     pauseBtn.style.display = '';
-    pauseBtn.textContent = s.roastPaused ? 'Återuppta' : 'Pausa';
+    pauseBtn.textContent = s.roastPaused ? t('btnResume') : t('btnPause');
   } else {
     pauseBtn.style.display = 'none';
   }
 
   $('manualRemaining').textContent = s.manualActive ? fmtClock(s.manualRemainingSeconds) : '--:--';
   $('manualStatus').textContent = s.manualActive
-    ? 'Aktiv – mål ' + s.manualTargetTemp.toFixed(0) + '°C'
-    : 'Inaktiv';
+    ? t('manualActive', { t: s.manualTargetTemp.toFixed(0) })
+    : t('statusInactive');
 
   $('coolRemaining').textContent = s.coolActive ? fmtClock(s.coolRemainingSeconds) : '--:--';
   $('coolStatus').textContent = s.coolActive
-    ? 'Aktiv – fläkt ' + s.coolSpeed + '%'
-    : 'Inaktiv';
+    ? t('coolActive', { p: s.coolSpeed })
+    : t('statusInactive');
 
   state.history.push({ t: s.elapsedSeconds, bt: s.bt, et: s.et, heater: s.heaterDuty, fan: s.fanSpeed });
   if (state.history.length > 4000) state.history.shift();
@@ -474,7 +620,7 @@ function drawRoastChart(canvas, manual) {
       ctx.moveTo(0, y(target)); ctx.lineTo(w, y(target));
       ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = COLOR_TARGET_MARK;
-      ctx.fillText('mål ' + Math.round(target) + '°', 4, y(target) - 4);
+      ctx.fillText(t('chartTarget', { t: Math.round(target) }), 4, y(target) - 4);
     }
   }
 
@@ -516,7 +662,7 @@ async function loadProfiles() {
 
   const list = $('profileList');
   list.innerHTML = '';
-  if (!state.profileNames.length) list.innerHTML = '<div class="status-line">Inga profiler sparade än.</div>';
+  if (!state.profileNames.length) list.innerHTML = '<div class="status-line">' + t('noProfiles') + '</div>';
   for (const name of state.profileNames) {
     const div = document.createElement('div');
     div.className = 'profile-item' + ($('editName').value.trim() === name ? ' selected' : '');
@@ -529,14 +675,14 @@ async function loadProfiles() {
     const del = document.createElement('button');
     del.className = 'small danger';
     del.textContent = '×';
-    del.title = 'Radera profil';
+    del.title = t('btnDeleteProfile');
     del.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (!confirm('Radera profilen "' + name + '"?')) return;
+      if (!confirm(t('confirmDelete', { name }))) return;
       try {
         await api('/api/profile?name=' + encodeURIComponent(name), { method: 'DELETE' });
         await loadProfiles();
-      } catch (err) { alert('Kunde inte radera: ' + err.message); }
+      } catch (err) { alert(t('errDelete', { msg: err.message })); }
     });
 
     div.appendChild(span);
@@ -557,7 +703,7 @@ async function loadProfileIntoEditor(name) {
     state.loadedProfileName = name;
     $('editName').value = name;
     drawEditor(); renderPoints(); loadProfiles();
-  } catch (e) { alert('Kunde inte ladda profil: ' + e.message); }
+  } catch (e) { alert(t('errLoadProfile', { msg: e.message })); }
 }
 
 function renderPoints() {
@@ -707,7 +853,7 @@ async function loadActiveProfile() {
 
 $('startBtn').addEventListener('click', async () => {
   const profile = $('profileSelect').value;
-  if (!profile) { alert('Välj en profil först'); return; }
+  if (!profile) { alert(t('pickProfile')); return; }
   state.history = [];
   await api('/api/roast/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -733,7 +879,7 @@ $('manualStartBtn').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ temp, minutes, autoCool, coolSpeed, coolMinutes }),
     });
-  } catch (e) { alert('Kunde inte starta: ' + e.message); }
+  } catch (e) { alert(t('errStart', { msg: e.message })); }
 });
 
 $('manualFanBtn').addEventListener('click', () => {
@@ -741,7 +887,7 @@ $('manualFanBtn').addEventListener('click', () => {
   api('/api/fan', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ speed }),
-  }).catch((e) => alert('Kunde inte sätta fläkt: ' + e.message));
+  }).catch((e) => alert(t('errSetFan', { msg: e.message })));
 });
 
 $('manualStopBtn').addEventListener('click', () => api('/api/manual/stop', { method: 'POST' }));
@@ -754,7 +900,7 @@ $('coolStartBtn').addEventListener('click', async () => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ speed, minutes }),
     });
-  } catch (e) { alert('Kunde inte starta kylning: ' + e.message); }
+  } catch (e) { alert(t('errStartCool', { msg: e.message })); }
 });
 
 $('coolStopBtn').addEventListener('click', () => api('/api/cool/stop', { method: 'POST' }));
@@ -770,7 +916,7 @@ $('newProfileBtn').addEventListener('click', () => {
 });
 
 async function exportProfiles() {
-  if (!state.profileNames.length) { alert('Inga profiler att exportera'); return; }
+  if (!state.profileNames.length) { alert(t('noProfilesExport')); return; }
   const profiles = [];
   for (const name of state.profileNames) {
     try {
@@ -782,7 +928,7 @@ async function exportProfiles() {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'kaffeprofiler-' + new Date().toISOString().slice(0, 10) + '.json';
+  a.download = t('exportFilePrefix') + '-' + new Date().toISOString().slice(0, 10) + '.json';
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -791,10 +937,10 @@ async function importProfiles(file) {
   let data;
   try {
     data = JSON.parse(await file.text());
-  } catch (e) { alert('Ogiltig JSON: ' + e.message); return; }
+  } catch (e) { alert(t('badJson', { msg: e.message })); return; }
 
   const profiles = data.profiles || (Array.isArray(data) ? data : null);
-  if (!profiles || !profiles.length) { alert('Hittade inga profiler i filen'); return; }
+  if (!profiles || !profiles.length) { alert(t('noProfilesInFile')); return; }
 
   let ok = 0, fail = 0;
   for (const p of profiles) {
@@ -808,7 +954,7 @@ async function importProfiles(file) {
     } catch (e) { fail++; }
   }
   await loadProfiles(); await loadActiveProfile();
-  alert('Importerade ' + ok + ' profiler' + (fail ? ', ' + fail + ' misslyckades' : ''));
+  alert(t('imported', { ok }) + (fail ? t('importFailed', { n: fail }) : ''));
 }
 
 $('exportProfilesBtn').addEventListener('click', exportProfiles);
@@ -826,7 +972,7 @@ $('addPointBtn').addEventListener('click', () => {
 
 $('saveProfileBtn').addEventListener('click', async () => {
   const name = $('editName').value.trim();
-  if (!name) { alert('Ange ett namn'); return; }
+  if (!name) { alert(t('enterName')); return; }
   const steps = state.editSteps.map((s) => ({
     ramp: Math.round(s.ramp), hold: Math.round(s.hold), temp: s.temp, fan: s.fan,
   }));
@@ -834,7 +980,7 @@ $('saveProfileBtn').addEventListener('click', async () => {
   // Warn before overwriting an existing profile, unless it is the one already
   // open in the editor.
   if (state.profileNames.includes(name) && name !== state.loadedProfileName) {
-    if (!confirm('Det finns redan en profil som heter "' + name + '". Vill du skriva över den?')) return;
+    if (!confirm(t('confirmOverwrite', { name }))) return;
   }
 
   try {
@@ -846,7 +992,7 @@ $('saveProfileBtn').addEventListener('click', async () => {
     await loadProfiles();
     $('profileSelect').value = name;
     await loadActiveProfile();
-  } catch (e) { alert('Kunde inte spara: ' + e.message); }
+  } catch (e) { alert(t('errSave', { msg: e.message })); }
 });
 
 // Clears the editor only - the saved profile is untouched (delete it with the
@@ -873,7 +1019,7 @@ function renderLog() {
       '<td>' + r.fan + '</td>';
     tbody.appendChild(tr);
   }
-  $('logCount').textContent = state.history.length + ' mätpunkter';
+  $('logCount').textContent = t('dataPoints', { n: state.history.length });
 }
 
 $('clearLogBtn').addEventListener('click', () => { state.history = []; renderLog(); });

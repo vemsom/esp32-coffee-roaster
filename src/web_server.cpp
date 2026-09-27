@@ -1,5 +1,6 @@
 #include "web_server.h"
 #include "config.h"
+#include "strings.h"
 #include "state_lock.h"
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
@@ -53,6 +54,10 @@ static void handleStatus(AsyncWebServerRequest *request) {
     // the fetch failing, which the UI shows separately), so it is a secondary
     // signal, useful for cached pages and for anything else reading the API.
     doc["wifiConnected"] = cb.getWifiConnected();
+    // Build language (FW_LANG_EN in include/config.h), reported so the page
+    // can follow the firmware. The browser's own language must not decide:
+    // the UI and the Home Assistant names have to agree.
+    doc["lang"] = FW_LANG_CODE;
   }
 
   String out;

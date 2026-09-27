@@ -1,8 +1,14 @@
 #!/bin/sh
-# Host-side tests (no ESP32 and no PlatformIO toolchain needed - just g++):
+# Host-side tests (no ESP32 and no PlatformIO toolchain needed - just g++, plus
+# node for the web check which is skipped when node is absent):
+#   check_web_i18n       the language table in data/index.html: both languages
+#                         carry every key and nothing is hard-coded (node)
 #   test_safety          safety latch + heater interlock, stubbed Arduino
 #   test_mqtt_discovery  MQTT discovery payloads + command handling, using a
-#                        recording PubSubClient stub (no broker needed)
+#                        recording PubSubClient stub (no broker needed).
+#                        Built twice - English and Swedish - and the unique_id
+#                        dumps of the two are diffed, so a language switch can
+#                        never move an entity in Home Assistant.
 #   test_control         the real setup()/loop(), including a second thread in
 #                        the role of the AsyncTCP task; the same source is
 #                        built a second time under ThreadSanitizer
@@ -28,15 +34,34 @@ if [ ! -d "$json_inc" ]; then
   exit 2
 fi
 
+# The web UI keeps its own translation table (a LittleFS file cannot include
+# include/strings.h), so it gets its own guard: a key that exists in only one
+# of the two languages, or a Swedish string hard-coded outside the table,
+# fails here. Needs nothing but node, and is skipped when node is absent.
+if command -v node >/dev/null 2>&1; then
+  node "$here/check_web_i18n.js" "$root/data/index.html"
+else
+  echo "skip web UI i18n check (no node on this machine)"
+fi
+
 g++ -std=c++17 -Wall -Wextra \
     -I "$here/stub" -I "$root/include" \
     "$here/test_safety.cpp" "$root/src/safety.cpp" "$root/src/heater_control.cpp" \
     -o "$out/test_safety"
 
+# The MQTT discovery test is built ONCE PER BUILD LANGUAGE (FW_LANG_EN): it
+# pins the friendly name of the language it was built with, and it dumps the
+# set of unique_ids. The two dumps are diffed further down - byte-identical
+# across languages is exactly the promise include/strings.h makes: a language
+# switch may move the pretty name, never where the entity lives.
 g++ -std=c++17 -Wall -Wextra \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
     "$here/test_mqtt_discovery.cpp" "$root/src/mqtt_client.cpp" \
-    -o "$out/test_mqtt"
+    -o "$out/test_mqtt_en"
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs -DFW_LANG_EN=0 \
+    "$here/test_mqtt_discovery.cpp" "$root/src/mqtt_client.cpp" \
+    -o "$out/test_mqtt_sv"
 
 # The control test links the real main.cpp with stubbed hardware, so it can
 # drive setup()/loop() and the callbacks the web server calls. roast_profile.cpp
@@ -61,7 +86,17 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
     -o "$out/test_control_tsan"
 
 "$out/test_safety"
-"$out/test_mqtt"
+"$out/test_mqtt_en" "$out/unique_ids_en"
+"$out/test_mqtt_sv" "$out/unique_ids_sv"
+# The whole point of the two builds above: the same entities, in the same
+# place, whichever language the firmware was built with.
+if diff -u "$out/unique_ids_en" "$out/unique_ids_sv"; then
+  echo "ok   unique_ids are identical in both build languages"
+else
+  echo "FAIL unique_ids differ between build languages - a language switch" >&2
+  echo "     would move existing entities in Home Assistant" >&2
+  exit 1
+fi
 "$out/test_control"
 # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
 # aborts with "unexpected memory mapping"), so the sanitized binary runs with

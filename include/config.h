@@ -13,6 +13,20 @@
 #define WIFI_PASSWORD "TBD"
 #endif
 
+// ---- Språk i användartext ----
+// 1 = engelskt (default: den som bygger projektet utan att läsa något får
+// engelska i Home Assistant och i webb-UI:t), 0 = svenskt. Byt värdet här -
+// det är hela valet. Det styr discovery-namnen (include/strings.h) och
+// webbsidan: /api/status rapporterar FW_LANG_CODE och sidan byter text efter
+// det (tabellen står i data/index.html, en LittleFS-fil kan inte inkludera
+// en .h). Fungerar också som kommandoradsflagga -DFW_LANG_EN=0 (därför
+// #ifndef). unique_id/object_id påverkas aldrig av språket - testet i
+// tools/host-tests/run.sh kör discovery-testet en gång per språk och jämför
+// unique_id-mängderna.
+#ifndef FW_LANG_EN
+#define FW_LANG_EN 1
+#endif
+
 // ---- Sensor-pinnar (SPI, MAX6675 x2) ----
 // Delade CLK/MISO, separata CS. Verifiera/andra nar layouten ar klar.
 #define PIN_MAX6675_CLK   18

@@ -1,5 +1,6 @@
 #include "mqtt_client.h"
 #include "config.h"
+#include "strings.h"
 #include "state_lock.h"
 #include <WiFi.h>
 #include <PubSubClient.h>
@@ -41,7 +42,7 @@ static void addDeviceBlock(JsonDocument &doc, const char *uniqueId, const char *
 
   JsonObject device = doc["device"].to<JsonObject>();
   device["identifiers"][0] = MQTT_DEVICE_ID;
-  device["name"] = "Kafferostaren";
+  device["name"] = STR_DEVICE_NAME;
   device["manufacturer"] = "vemsom";
   device["model"] = "ESP32 coffee roaster";
   device["sw_version"] = FW_VERSION;
@@ -56,6 +57,9 @@ static void publishDiscoveryEntity(const char *component, const char *objectId, 
   }
 }
 
+// The names come from include/strings.h and follow FW_LANG_EN. The topics,
+// unique_id and object_id below do NOT: Home Assistant keys the entity on
+// them, so a language switch may only change the display name.
 static void publishDiscovery() {
   char uniqueId[64];
 
@@ -63,7 +67,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_bt", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Böntemperatur");
+    addDeviceBlock(doc, uniqueId, STR_NAME_BT);
     doc["device_class"] = "temperature";
     doc["unit_of_measurement"] = "\xC2\xB0" "C";
     doc["state_class"] = "measurement";
@@ -74,7 +78,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_et", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Miljötemperatur");
+    addDeviceBlock(doc, uniqueId, STR_NAME_ET);
     doc["device_class"] = "temperature";
     doc["unit_of_measurement"] = "\xC2\xB0" "C";
     doc["state_class"] = "measurement";
@@ -85,7 +89,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_heater", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Värmelement");
+    addDeviceBlock(doc, uniqueId, STR_NAME_HEATER);
     doc["unit_of_measurement"] = "%";
     doc["state_class"] = "measurement";
     doc["state_topic"] = STATUS_TOPIC;
@@ -96,7 +100,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_fan", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Fläkt");
+    addDeviceBlock(doc, uniqueId, STR_NAME_FAN);
     doc["unit_of_measurement"] = "%";
     doc["state_class"] = "measurement";
     doc["state_topic"] = STATUS_TOPIC;
@@ -107,7 +111,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_mode", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Läge");
+    addDeviceBlock(doc, uniqueId, STR_NAME_MODE);
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ value_json.mode }}";
     doc["icon"] = "mdi:state-machine";
@@ -116,7 +120,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_elapsed", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Rosttid");
+    addDeviceBlock(doc, uniqueId, STR_NAME_ELAPSED);
     doc["device_class"] = "duration";
     doc["unit_of_measurement"] = "s";
     doc["state_topic"] = STATUS_TOPIC;
@@ -127,7 +131,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_safety", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Säkerhetslarm");
+    addDeviceBlock(doc, uniqueId, STR_NAME_SAFETY);
     doc["device_class"] = "problem";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ 'ON' if value_json.safetyFault else 'OFF' }}";
@@ -143,7 +147,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_fan_fault", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Fläktspärr");
+    addDeviceBlock(doc, uniqueId, STR_NAME_FAN_FAULT);
     doc["device_class"] = "problem";
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ 'ON' if value_json.fanFault else 'OFF' }}";
@@ -158,7 +162,7 @@ static void publishDiscovery() {
   {
     JsonDocument doc;
     snprintf(uniqueId, sizeof(uniqueId), "%s_profile", MQTT_DEVICE_ID);
-    addDeviceBlock(doc, uniqueId, "Profil");
+    addDeviceBlock(doc, uniqueId, STR_NAME_PROFILE);
     doc["state_topic"] = STATUS_TOPIC;
     doc["value_template"] = "{{ value_json.profile }}";
     doc["icon"] = "mdi:coffee-maker";

@@ -16,6 +16,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <set>
 #include <string>
@@ -23,6 +24,7 @@
 
 #include "mqtt_client.h"
 #include "config.h"
+#include "strings.h"   // STR_NAME_* / STR_DEVICE_NAME - the names under test
 
 // ---- globals required by the stubs ----
 std::vector<CapturedPublish> g_published;
@@ -85,9 +87,10 @@ static bool startsWith(const std::string &s, const std::string &prefix) {
 
 // Home Assistant derives entity_id from the discovery `name`: slugify() folds
 // the Latin-1 letters this firmware uses down to ASCII (a-umlaut and
-// a-ring -> 'a', o-umlaut -> 'o') and lowercases. Reproduce that here so a
-// friendly-name rename that would mint a NEW entity_id fails the test -
-// the point of the Swedish names is that only the friendly name changes.
+// a-ring -> 'a', o-umlaut -> 'o'), turns spaces into underscores and
+// lowercases. Reproduce that here so a friendly-name rename that would mint a
+// NEW entity_id fails the test - the name is the only language-dependent part
+// of a discovery config, so it is the only thing a language switch may move.
 static std::string haSlug(const std::string &name) {
   std::string out;
   for (size_t i = 0; i < name.size(); i++) {
@@ -98,12 +101,16 @@ static std::string haSlug(const std::string &name) {
       if (d == 0xB6) { out += 'o'; i++; continue; }               // ö
     }
     if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+    if (c == ' ') c = '_';
     out += (char)c;
   }
   return out;
 }
 
-int main() {
+// argv[1], if given, is a path the unique_id set is written to. run.sh runs
+// this binary once per build language and diffs the two dumps: identical
+// unique_ids across languages is exactly the promise include/strings.h makes.
+int main(int argc, char **argv) {
   MqttCallbacks cb = {gb, ge, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
 
   mqtt_init(cb);
@@ -146,20 +153,41 @@ int main() {
   bool topicsInsideNamespace = true;
   int namesChecked = 0;
 
-  // object-suffix -> { friendly name (real Swedish), entity_id slug HA must
-  // derive from it = the original ASCII name }. Keyed on the part of the
-  // discovery topic after <device>_, i.e. the object_id that must not change.
+  // object-suffix -> { friendly name of THIS build, entity_id slug HA derives
+  // from it }. Keyed on the part of the discovery topic after <device>_, i.e.
+  // the object_id that must not change. The name is taken from the macro in
+  // include/strings.h, so this fails if the language switch does not reach the
+  // payload; the slug is pinned per language, so it fails if the name a fresh
+  // Home Assistant would mint is not the one intended. What proves the switch
+  // is SAFE is the other half: object_id and unique_id are byte-identical in
+  // both languages, which run.sh checks by running this binary once per
+  // language and diffing the unique_id dumps.
+#if FW_LANG_EN
   const std::map<std::string, std::pair<std::string, std::string>> expectedNames = {
-      {"bt", {"Böntemperatur", "bontemperatur"}},
-      {"et", {"Miljötemperatur", "miljotemperatur"}},
-      {"heater", {"Värmelement", "varmelement"}},
-      {"fan", {"Fläkt", "flakt"}},
-      {"mode", {"Läge", "lage"}},
-      {"elapsed", {"Rosttid", "rosttid"}},
-      {"safety", {"Säkerhetslarm", "sakerhetslarm"}},
-      {"fan_fault", {"Fläktspärr", "flaktsparr"}},
-      {"profile", {"Profil", "profil"}},
+      {"bt", {STR_NAME_BT, "bean_temperature"}},
+      {"et", {STR_NAME_ET, "environment_temperature"}},
+      {"heater", {STR_NAME_HEATER, "heater"}},
+      {"fan", {STR_NAME_FAN, "fan"}},
+      {"mode", {STR_NAME_MODE, "mode"}},
+      {"elapsed", {STR_NAME_ELAPSED, "roast_time"}},
+      {"safety", {STR_NAME_SAFETY, "safety_alarm"}},
+      {"fan_fault", {STR_NAME_FAN_FAULT, "fan_interlock"}},
+      {"profile", {STR_NAME_PROFILE, "profile"}},
   };
+#else
+  const std::map<std::string, std::pair<std::string, std::string>> expectedNames = {
+      {"bt", {STR_NAME_BT, "bontemperatur"}},
+      {"et", {STR_NAME_ET, "miljotemperatur"}},
+      {"heater", {STR_NAME_HEATER, "varmelement"}},
+      {"fan", {STR_NAME_FAN, "flakt"}},
+      {"mode", {STR_NAME_MODE, "lage"}},
+      {"elapsed", {STR_NAME_ELAPSED, "rosttid"}},
+      {"safety", {STR_NAME_SAFETY, "sakerhetslarm"}},
+      {"fan_fault", {STR_NAME_FAN_FAULT, "flaktsparr"}},
+      {"profile", {STR_NAME_PROFILE, "profil"}},
+  };
+#endif
+  printf("build language: %s\n", FW_LANG_CODE);
 
   const std::string discoveryPrefix = std::string(MQTT_DISCOVERY_PREFIX) + "/";
   for (const auto &p : g_published) {
@@ -199,6 +227,13 @@ int main() {
     check(doc["unique_id"].is<const char *>(), "has unique_id");
     check(doc["availability_topic"].is<const char *>(), "has availability_topic");
     check(doc["device"]["identifiers"][0].is<const char *>(), "has device identifiers");
+    // The device block name follows the build language too (STR_DEVICE_NAME).
+    {
+      std::string wantDevice = std::string("device block name is ") + STR_DEVICE_NAME;
+      bool ok = doc["device"]["name"].is<const char *>() &&
+                std::string(doc["device"]["name"].as<const char *>()) == STR_DEVICE_NAME;
+      check(ok, wantDevice.c_str());
+    }
     if (doc["unique_id"].is<const char *>()) {
       bool fresh = uniqueIds.insert(doc["unique_id"].as<const char *>()).second;
       check(fresh, "unique_id is unique across entities");
@@ -219,7 +254,7 @@ int main() {
         std::string friendly = doc["name"].as<const char *>();
         std::string wantName = "name of " + suffix + " is " + expected->second.first;
         check(friendly == expected->second.first, wantName.c_str());
-        std::string wantSlug = "slug of " + suffix + " stays " + expected->second.second;
+        std::string wantSlug = "slug of " + suffix + " in this build is " + expected->second.second;
         check(haSlug(friendly) == expected->second.second, wantSlug.c_str());
       }
       // unique_id and object_id are what HA keys the entity on - they may not
@@ -320,6 +355,14 @@ int main() {
   int beforeTick = (int)g_published.size();
   mqtt_update();
   check((int)g_published.size() == beforeTick + 1, "status is republished on the interval");
+
+  // ---------------------------------------------------- unique_id dump ---
+  // Sorted, one per line, so the two language builds diff byte for byte.
+  if (argc > 1) {
+    std::ofstream dump(argv[1]);
+    check(dump.good(), "unique_id dump can be written");
+    for (const auto &id : uniqueIds) dump << id << "\n";
+  }
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;
