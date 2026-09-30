@@ -11,6 +11,10 @@
 #                        Built twice - English and Swedish - and the unique_id
 #                        dumps of the two are diffed, so a language switch can
 #                        never move an entity in Home Assistant.
+#   test_web_server      the profile HTTP API: the real handlers dispatched
+#                        through a stubbed ESPAsyncWebServer onto an in-memory
+#                        LittleFS that logs every operation, so a refused
+#                        name= traversal provably never reaches the filesystem
 #   test_control         the real setup()/loop(), including a second thread in
 #                        the role of the AsyncTCP task; the same source is
 #                        built a second time under ThreadSanitizer
@@ -72,6 +76,21 @@ g++ -std=c++17 -Wall -Wextra \
     "$here/test_mqtt_discovery.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_mqtt_sv"
 
+# The profile-API test links the REAL web_server.cpp - and the real
+# roast_profile.cpp behind it - against a stubbed ESPAsyncWebServer and an
+# in-memory LittleFS, so the handlers run exactly as they ship. The LittleFS
+# stub logs every operation, which is the point: the path-traversal cases
+# (name=../config and friends) assert not just a 400 but that no filesystem
+# operation happened at all, with a honeytoken file outside /profiles proving
+# the traversal would otherwise have found something. -Wno-unused-parameter:
+# web_server.cpp's body handlers have to mirror the library's chunked-upload
+# signature (index/total) whether they use it or not, and -Wextra would print
+# that on every run without saying anything new.
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+    -I "$here/stub" -I "$root/include" -I "$json_inc" \
+    "$here/test_web_server.cpp" "$root/src/web_server.cpp" "$root/src/roast_profile.cpp" \
+    -o "$out/test_web_server"
+
 # The control test links the real main.cpp with stubbed hardware, so it can
 # drive setup()/loop() and the callbacks the web server calls. roast_profile.cpp
 # is deliberately NOT linked - the test supplies its own canned profile.
@@ -107,6 +126,7 @@ else
   echo "     would move existing entities in Home Assistant" >&2
   exit 1
 fi
+"$out/test_web_server"
 "$out/test_control"
 # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
 # aborts with "unexpected memory mapping"), so the sanitized binary runs with

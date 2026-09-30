@@ -1,9 +1,12 @@
 #pragma once
 // Minimal Arduino stub so safety.cpp, heater_control.cpp and mqtt_client.cpp can
 // be compiled and exercised on the host (no ESP32 needed).
-// Note: this String is deliberately NOT registered with ArduinoJson - the
-// production code only hands ArduinoJson plain char pointers and numbers, so a
-// host build that breaks that rule fails to compile here too.
+// Note on ArduinoJson: this String is not a registered ArduinoJson type - it
+// does not need to be. ArduinoJson's generic string adapter accepts anything
+// with c_str() and length(), so doc["x"] = someString works the same way the
+// real Arduino String does. What it cannot do on its own is be a serializeJson
+// DESTINATION, so String carries the two write() entry points that
+// ArduinoJson's generic Writer drives - see below.
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -65,12 +68,33 @@ class String {
 
   void reserve(size_t n) { _s.reserve(n); }
   size_t length() const { return _s.size(); }
+  bool isEmpty() const { return _s.empty(); }
   const char *c_str() const { return _s.c_str(); }
+
+  // ArduinoJson's generic Writer serialises through these two, the same way
+  // it drives a Print on the real target - without them serializeJson(doc,
+  // out) has no destination (the real Arduino String is served by a
+  // dedicated writer that host builds do not enable).
+  size_t write(uint8_t c) { _s += (char)c; return 1; }
+  size_t write(const uint8_t *buf, size_t n) {
+    _s.append(reinterpret_cast<const char *>(buf), n);
+    return n;
+  }
 
   String &operator+=(char c) { _s += c; return *this; }
   String &operator+=(const char *s) { _s += (s ? s : ""); return *this; }
   String operator+(const char *s) const { return String(_s + (s ? s : "")); }
   String operator+(const String &o) const { return String(_s + o._s); }
+
+  // Replaces every occurrence, like the Arduino original.
+  void replace(const String &find, const String &repl) {
+    if (find._s.empty()) return;
+    size_t pos = 0;
+    while ((pos = _s.find(find._s, pos)) != std::string::npos) {
+      _s.replace(pos, find._s.size(), repl._s);
+      pos += repl._s.size();
+    }
+  }
 
   long toInt() const { return strtol(_s.c_str(), nullptr, 10); }
   float toFloat() const { return strtof(_s.c_str(), nullptr); }

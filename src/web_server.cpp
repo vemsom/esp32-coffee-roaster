@@ -153,6 +153,27 @@ static void handleCoolStop(AsyncWebServerRequest *request) {
 
 // -------------------------------------------------------------- profiles ---
 
+// A profile name doubles as its file name under PROFILES_DIR, so an
+// unchecked name is a path: "name=../config" would be appended as
+// /profiles/../config.json, which the filesystem resolves OUTSIDE the
+// directory - readable over GET, deletable over DELETE, writable over POST.
+// Accepted is only ^[A-Za-z0-9_-]{1,32}$ - letters, digits, underscore and
+// hyphen, 1 to 32 characters - checked before the path is built, in every
+// handler that takes a name, never after.
+static bool validProfileName(const String &name) {
+  size_t len = name.length();
+  if (len < 1 || len > 32) return false;
+  const char *s = name.c_str();
+  for (size_t i = 0; i < len; i++) {
+    char c = s[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '_' || c == '-')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static void handleProfilesList(AsyncWebServerRequest *request) {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
@@ -178,6 +199,10 @@ static void handleProfileGet(AsyncWebServerRequest *request) {
     return;
   }
   String name = request->getParam("name")->value();
+  if (!validProfileName(name)) {
+    sendError(request, 400, "invalid name");
+    return;
+  }
   String path = String(PROFILES_DIR) + "/" + name + ".json";
 
   RoastProfile p;
@@ -215,6 +240,10 @@ static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, s
     sendError(request, 400, "missing name");
     return;
   }
+  if (!validProfileName(name)) {
+    sendError(request, 400, "invalid name");
+    return;
+  }
 
   RoastProfile p;
   p.setStartTemp(doc["startTemp"] | 20.0f);
@@ -236,6 +265,10 @@ static void handleProfileDelete(AsyncWebServerRequest *request) {
     return;
   }
   String name = request->getParam("name")->value();
+  if (!validProfileName(name)) {
+    sendError(request, 400, "invalid name");
+    return;
+  }
   String path = String(PROFILES_DIR) + "/" + name + ".json";
   if (!LittleFS.exists(path)) {
     sendError(request, 404, "profile not found");

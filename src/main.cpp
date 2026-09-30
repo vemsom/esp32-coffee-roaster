@@ -618,9 +618,10 @@ void loop() {
     currentBT = r.bt;
     currentET = r.et;
 
-    // Rate of rise: same cadence as the sample itself (250 ms), history is
-    // snapshotted at 1 Hz inside the module. Under the lock, so the web and
-    // MQTT getters never see a half-written history.
+    // Rate of rise: same cadence as the sample itself (250 ms) - and the
+    // module stores EVERY one of those samples in its ring (ROR_BUFFER_LEN,
+    // 128 entries = 32 s) and refits both rates on each of them. Under the
+    // lock, so the web and MQTT getters never see a half-written history.
     ror_update(now, r.bt, r.et);
 
     // The stuck-probe check is armed by the heater actually asking for
