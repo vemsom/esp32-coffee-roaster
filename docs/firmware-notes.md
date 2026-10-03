@@ -736,10 +736,10 @@ Tagged the same way as above: what it takes, not just what is left.
 
 - **ASSIGNED, REQUIRES HARDWARE CONFIRMATION** GPIO pins in include/config.h.
   These are no longer TBD placeholders - the current assignment is CLK 18,
-  SO-BT 19, SO-ET 21, CS-BT 13, CS-ET 17, SSR 26, fan PWM 27, written down and
+  SO-BT 19, SO-ET 21, CS-BT 4, CS-ET 17, SSR 26, fan PWM 27, written down and
   cross-checked against the code in docs/wiring.md (revised 2026-10-03 for the
   custom board: only the clock is shared, each module has its own SO and CS,
-  and CS-BT moved off the strapping pin GPIO5 to GPIO13). What has *not*
+  and CS-BT moved off the strapping pin GPIO5 to GPIO4 via GPIO13). What has *not*
   happened is the physical check: the board does not exist yet. Re-check on
   wiring that nothing sits on a strapping pin (0, 2, 5, 12, 15) - GPIO5 and
   GPIO2 are deliberately unused now, so the old GPIO5-high-at-reset question

@@ -12,7 +12,7 @@ nu avsedda för **det egna kretskortet**.
 | MAX6675 CLK (delad) | 18   | Delad SCLK — ingång på båda modulerna, kan inte kollidera |
 | MAX6675 SO — BT     | 19   | Egen SO (retur) för bön-modulen |
 | MAX6675 SO — ET     | 21   | Egen SO (retur) för miljö-modulen |
-| MAX6675 CS — BT     | 13   | Egen CS för bön-modulen (flyttad från GPIO5) |
+| MAX6675 CS — BT     | 4    | Egen CS för bön-modulen (flyttad från GPIO5 → GPIO13 → GPIO4) |
 | MAX6675 CS — ET     | 17   | Egen CS för miljö-modulen |
 | SSR värmestyre      | 26   | Time-proportioning, 2 s fönster |
 | Fläkt PWM           | 27   | 20 kHz, 8-bit (0–255 = 0–100 %) |
@@ -27,8 +27,11 @@ Strapping-pinnar på ESP32 och vad de gör vid reset: **0 och 2** styr bootläge
 **12** styr spänningen på flash-minnet (den farligaste att hålla fel), **15**
 styr boot-logg och **5** styr SDIO-slav-timing. Ingen av dem används av oss:
 CS-BT flyttades från GPIO5 till **GPIO13** när pinnarna lades för kretskortet,
-så strömningsfrågan om GPIO5 är borta. GPIO2 undviks också (strapping + inbyggd
-lysdiod på många kort).
+och sedan till **GPIO4** 2026-10-03 för att alla sensorkablar ska sitta på samma
+sida av ESP32-kortet. GPIO13 ligger på andra sidan än 16/17/18/19/21; GPIO4 sitter
+på samma sida. GPIO4 är varken strapping eller ADC2-konflikt (ledig i config.h),
+så strömningsfrågan om GPIO5 är borta och flytten ändrar inget elektriskt. GPIO2
+undviks också (strapping + inbyggd lysdiod på många kort).
 
 ## Driftträd (strömkällor)
 
@@ -62,7 +65,7 @@ VCC    →          3,3 V                 VCC    →          3,3 V
 GND    →          GND                   GND    →          GND
 SCK    →          GPIO18  (delad)       SCK    →          GPIO18  (delad)
 SO     →          GPIO19                SO     →          GPIO21
-CS     →          GPIO13                CS     →          GPIO17
+CS     →          GPIO4                 CS     →          GPIO17
 ```
 
 - 3,3 V och GND går till **båda** modulerna (gemensam matning och jord).

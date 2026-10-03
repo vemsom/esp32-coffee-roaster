@@ -40,7 +40,7 @@
 #define PIN_MAX6675_CLK     18  // delad SCLK, ingång på båda modulerna
 #define PIN_MAX6675_MISO_BT 19  // egen SO, bön-modulen
 #define PIN_MAX6675_MISO_ET 21  // egen SO, miljö-modulen
-#define PIN_MAX6675_CS_BT   13  // egen CS, bön-modulen (flyttad från GPIO5)
+#define PIN_MAX6675_CS_BT    4  // egen CS, bön-modulen (flyttad från GPIO5 -> GPIO13 -> GPIO4; nu på samma kortsida som CLK/SO/SSR/fan; GPIO4 är ledig och varken strapping eller ADC2)
 #define PIN_MAX6675_CS_ET   17  // egen CS, miljö-modulen
 
 // ---- Varme-SSR ----
