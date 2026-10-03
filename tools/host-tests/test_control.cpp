@@ -21,6 +21,7 @@
 #include <max6675.h>
 #include <PubSubClient.h>
 #include <Update.h>
+#include <mbedtls/sha256.h>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -36,9 +37,31 @@
 #include "mqtt_client.h"
 #include "roast_profile.h"
 #include "state_lock.h"
+#include "ota_push.h"
 
 void setup();
 void loop();
+
+// ---- push-OTA helpers (same route-search the OTA test uses) -----------------
+static const AsyncWebServer::Route *findRoute(const char *uri,
+                                              WebRequestMethodComposite method) {
+  for (AsyncWebServer *server : asyncWebServers())
+    for (const AsyncWebServer::Route &r : server->routes())
+      if (r.uri == uri && r.method == method) return &r;
+  return nullptr;
+}
+
+static std::string sha256hex(const uint8_t *data, size_t len) {
+  mbedtls_sha256_context ctx;
+  uint8_t digest[32];
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+  mbedtls_sha256_update(&ctx, data, len);
+  mbedtls_sha256_finish(&ctx, digest);
+  char out[65];
+  for (size_t i = 0; i < sizeof(digest); i++) snprintf(out + i * 2, 3, "%02x", digest[i]);
+  return std::string(out, 64);
+}
 
 // ---- Arduino / runtime stubs ------------------------------------------------
 // The clock is atomic because the concurrency stress test runs loop() on this
@@ -411,6 +434,61 @@ int main() {
   check(web.getRorEt() > 59.5f && web.getRorEt() < 60.5f,
         "rate of rise reports the environment channel too");
   check(statusHas("\"rorBt\":"), "mqtt status carries rorBt");
+
+  // ------------------------------------------- push OTA mutual exclusion ----
+  // Do this before the ArduinoOTA tests so the heater emergency latch and the
+  // Update state are still clean.
+  {
+    // A push OTA transfer owns Update while it runs; serviceOta() must not call
+    // ArduinoOTA.handle() then, and the transfer must latch the element off.
+    const AsyncWebServer::Route *update = findRoute("/api/update", HTTP_POST);
+    check(update != nullptr, "POST /api/update is registered in the control test");
+
+    std::vector<uint8_t> image(64 * 1024, 0x42);
+    image[0] = 0xE9;
+    const std::string hash = sha256hex(image.data(), image.size());
+
+    // A push is refused while a run is active, and must not disturb that run.
+    check(web.startManual(200, 600, false, 100, 0), "manual run starts for the push-exclusion test");
+    runLoops(4);
+    check(ssrState == HIGH, "element is conducting before the refused push");
+
+    AsyncWebServerRequest refused;
+    refused.client()->setRemoteIP(String("192.168.1.x"));
+    refused.addHeader("X-OTA-Token", String("host-test-push-token"));
+    refused.addHeader("X-OTA-SHA256", String(hash.c_str()));
+    update->onBody(&refused, image.data(), image.size(), 0, image.size());
+    check(refused.responseCode() == 409, "push is refused while a run is active");
+    check(ssrState == HIGH, "the refused push did not turn the element off");
+    web.stopManual();
+    runLoops(2);
+
+    // Now the push is accepted; the first chunk starts the transfer and keeps
+    // it in progress.
+    AsyncWebServerRequest push;
+    push.client()->setRemoteIP(String("192.168.1.x"));
+    push.addHeader("X-OTA-Token", String("host-test-push-token"));
+    push.addHeader("X-OTA-SHA256", String(hash.c_str()));
+    update->onBody(&push, image.data(), 4096, 0, image.size());
+    check(!push.sent(), "the first chunk does not answer yet");
+    check(ota_push_in_progress(), "a push transfer is in progress");
+    check(ssrState == LOW, "push start latches the element off");
+    check(!web.getManualActive(), "push start aborts any session");
+
+    const int handlesDuringPush = ArduinoOTA.handleCount;
+    runLoops(4);
+    check(ArduinoOTA.handleCount == handlesDuringPush,
+          "ArduinoOTA.handle() is not called while a push transfer owns Update");
+
+    // Abort the push so the rest of the test sees a clean Update state.
+    ota_push_finished(false);
+    Update.reset();
+    // The push latched the heater off for safety; clear that latch so the
+    // ArduinoOTA test below can observe the element conducting before transfer.
+    heater_clear_emergency();
+    runLoops(2);
+    check(!heater_emergency_active(), "heater emergency latch cleared after push abort");
+  }
 
   // ------------------------------------------------------------------ OTA ---
   // The update path has to be up as soon as the link is, must refuse to run

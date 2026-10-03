@@ -368,10 +368,7 @@ static void handleRoastResume(AsyncWebServerRequest *request) {
 // actually succeeded.
 static volatile bool pushOtaReboot = false;
 
-// Set when the first chunk of a body was refused. The library keeps handing the
-// remaining chunks of the same body to the handler after the response is sent,
-// and those must not reach Update.write() with no transfer started.
-static volatile bool otaPushRefused = false;
+
 
 static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decision) {
   int code = 400;
@@ -448,17 +445,24 @@ static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_
     if (decision != OtaPushOk) {
       // The library keeps calling this handler for the remaining chunks of the
       // same body even after the response is sent, so the refusal has to be
-      // remembered: without this, chunk two would fall through to
-      // ota_push_write() with no transfer started, Update.write() would fail
+      // remembered for this request: without this, chunk two would fall through
+      // to ota_push_write() with no transfer started, Update.write() would fail
       // and the client would see 500 "write failed" instead of the 404 that
-      // deliberately hides the route.
-      otaPushRefused = true;
+      // deliberately hides the route. The flag is per-request, not global: a
+      // rejected request must never be able to drop chunks from a legitimate
+      // transfer that arrives at the same time.
+      request->setAttribute("otaPushRefused", true);
       sendOtaError(request, decision);
       return;
     }
-    otaPushRefused = false;
+    // A transfer that is accepted can still be torn off mid-body. Register the
+    // disconnect callback now, on the first chunk, so the state machine is reset
+    // if the TCP connection disappears before the last chunk. Without this the
+    // endpoint would stay stuck (inProgress=true) and every later push would be
+    // rejected with "already running" until the device rebooted.
+    request->onDisconnect([]() { ota_push_finished(false); });
   }
-  if (otaPushRefused) return;  // rest of a body already refused
+  if (request->getAttribute("otaPushRefused", false)) return;  // rest of a body already refused
 
   size_t accepted = ota_push_write(data, len);
   if (accepted != len) {
@@ -467,9 +471,9 @@ static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_
     return;
   }
 
-  // The library sends final=true on the last chunk; index+len == total is the
-  // same moment, and a body handler that sees neither (connection died) falls
-  // through to the abort in ota_push_finished(false) on the next request.
+  // The last chunk is the normal end of the transfer. A connection that dies
+  // before this is handled by onDisconnect(), which aborts Update and clears
+  // inProgress so the next request can start fresh.
   if (index + len >= total) {
     // ota_push_finished() hashes what arrived and compares it with the header.
     // A mismatch discards the written data here, before any reboot is asked

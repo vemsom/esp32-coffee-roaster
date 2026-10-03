@@ -170,7 +170,12 @@ int main() {
   const char *profileJson = "{\"startTemp\":180,\"steps\":[]}";
   littlefs_stub::files()[profilePath] = profileJson;
 
-  ota_push_init(OtaPushCallbacks{isRunActive, isHeaterAsking, nullptr});
+  static bool heaterOff = false;
+  static bool runAborted = false;
+  auto latchHeaterOff = []() { heaterOff = true; };
+  auto abortRun = []() { runAborted = true; };
+  ota_push_init(OtaPushCallbacks{isRunActive, isHeaterAsking, nullptr,
+                                 latchHeaterOff, abortRun});
 
   WebServerCallbacks callbacks = {};
   callbacks.isRunActive = isRunActive;
@@ -384,6 +389,84 @@ int main() {
     check(littlefs_stub::files()[profilePath] == profileJson,
           "the stored profile is byte-identical after a transfer");
     check(web_ota_reboot_pending(), "a finished transfer asks for a restart");
+  }
+
+  // ---------------------------------- interrupted transfer ----------------
+  {
+    // The TCP connection dies after the first chunk. onDisconnect() must reset
+    // the state machine so the endpoint is usable again without a reboot.
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), image);
+    const size_t chunkSize = 4096;
+    update->onBody(&request, image.data(), chunkSize, 0, image.size());
+    check(!request.sent(), "an interrupted transfer has not answered yet");
+    check(ota_push_in_progress(), "a transfer is in progress after the first chunk");
+    request.disconnect();  // ESPAsyncWebServer calls this on TCP close
+    check(!ota_push_in_progress(), "disconnect clears the in-progress flag");
+    check(Update.abortCalls == 1, "disconnect discards the partial image");
+
+    // The next legitimate push must succeed, not get "already running".
+    Update.reset();
+    AsyncWebServerRequest r2 = dispatch(*update, image, PushOptions(), 4096);
+    check(isStatus(r2, 200), "the push after a disconnect answers 200");
+    check(Update.beginCalls == 1, "Update.begin() works again after the disconnect");
+  }
+
+  // --------------------- refused request during a legitimate transfer ------
+  {
+    // A rejected request (wrong token) sent while a real push is underway must
+    // not poison the real transfer. The per-request refusal flag guarantees
+    // that the rejected body's own chunks are dropped while the legitimate
+    // transfer's chunks keep flowing.
+    Update.reset();
+    AsyncWebServerRequest legit = makeRequest(PushOptions(), image);
+    PushOptions bad;
+    bad.token = "not-the-token";
+    AsyncWebServerRequest poison = makeRequest(bad, image);
+
+    const size_t chunk = 4096;
+    size_t off = 0;
+    bool legitDone = false, poisonDone = false;
+    while (!legitDone || !poisonDone) {
+      if (!poisonDone && off < image.size()) {
+        const size_t len = (off + chunk > image.size()) ? image.size() - off : chunk;
+        update->onBody(&poison, const_cast<uint8_t *>(image.data() + off), len, off, image.size());
+        if (poison.sent()) poisonDone = true;
+      }
+      if (!legitDone && off < image.size()) {
+        const size_t len = (off + chunk > image.size()) ? image.size() - off : chunk;
+        update->onBody(&legit, const_cast<uint8_t *>(image.data() + off), len, off, image.size());
+        if (off + len >= image.size()) legitDone = true;
+      }
+      if (!poisonDone && poison.getAttribute("otaPushRefused", false)) {
+        // The poison body is short-circuited once refused; mark done so we do
+        // not keep feeding it after it answered.
+        poisonDone = true;
+      }
+      off += chunk;
+      if (off >= image.size()) {
+        legitDone = true;
+        poisonDone = true;
+      }
+    }
+    check(isStatus(poison, 404), "the interleaved bad request answers 404");
+    check(isStatus(legit, 200), "the legitimate transfer still finishes with 200");
+    check(Update.bytes == image, "the legitimate image is written intact");
+  }
+
+  // ---------------------------------- element latched off at transfer start -
+  {
+    // The push path must enforce the same safety invariants as ArduinoOTA:
+    // before the first byte lands the heater is emergency-off'd and any run is
+    // aborted. The transfer below is accepted (runActive is false), but the
+    // callbacks are still fired so a running roast cannot slip through.
+    Update.reset();
+    heaterOff = false;
+    runAborted = false;
+    AsyncWebServerRequest r = dispatch(*update, image, PushOptions(), 4096);
+    check(isStatus(r, 200), "a transfer is accepted when the machine is idle");
+    check(heaterOff, "push start latches the heater off");
+    check(runAborted, "push start aborts any active run");
   }
 
   // ---------------------------------- Update refuses ----------------------

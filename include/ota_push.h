@@ -80,6 +80,8 @@ struct OtaPushCallbacks {
   bool (*isRunActive)();      // roast / manual / cooling
   bool (*isHeaterAsking)();   // the element is asking for power right now
   uint32_t (*checksumMs)();   // how long hashing may take, before the body is read
+  void (*latchHeaterOff)();   // emergency-off the element before bytes land
+  void (*abortRunForSafety)(); // stop any run before the transfer starts
 };
 
 void ota_push_init(OtaPushCallbacks callbacks);

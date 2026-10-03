@@ -124,6 +124,14 @@ OtaPushDecision ota_push_begin(const char *allowedClient, const char *token,
 
   if (!Update.begin(total)) return OtaPushUpdateBeginFailed;
 
+  // Update now owns the inactive OTA slot. The same invariants that
+  // ArduinoOTA.onStart() enforces must hold here: the element must be latched
+  // off and any active run aborted before the first byte of the image lands.
+  // A windowed heater left conducting would stay on for the whole transfer,
+  // because no control cycle runs while the body is being written.
+  if (cb.latchHeaterOff) cb.latchHeaterOff();
+  if (cb.abortRunForSafety) cb.abortRunForSafety();
+
   authorized = true;
   inProgress = true;
   lastTransferRejected = false;

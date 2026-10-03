@@ -597,11 +597,16 @@ static void serviceOta() {
 
   const bool busy =
       cbGetRoastActive() || cbGetManualActive() || cbGetCoolActive();
-  if (busy) {
+  if (busy || ota_push_in_progress()) {
     if (!otaSuppressed) {
       otaSuppressed = true;
-      Serial.println(
-          "[OTA] paused: a session is running, transfers are not accepted");
+      if (ota_push_in_progress()) {
+        Serial.println(
+            "[OTA] paused: a push OTA transfer is in progress, ArduinoOTA is not served");
+      } else {
+        Serial.println(
+            "[OTA] paused: a session is running, transfers are not accepted");
+      }
     }
     return;
   }
@@ -627,6 +632,16 @@ static void startOta() {
   ArduinoOTA.setPassword(OTA_PASSWORD);
 
   ArduinoOTA.onStart([]() {
+    // A push OTA transfer already owns Update; starting ArduinoOTA now would
+    // abort that transfer and reboot the device. This should not be reachable
+    // because serviceOta() refuses to call handle() while a push is in
+    // progress, but the guard here makes the invariant robust against any path
+    // that manages to fire onStart.
+    if (ota_push_in_progress()) {
+      Serial.println("[OTA] ArduinoOTA start refused: a push OTA transfer is already in progress");
+      return;
+    }
+
     // What is being written decides what has to get out of the way.
     //
     // Update.begin() is called by the library BEFORE this callback, and for
@@ -659,6 +674,16 @@ static void startOta() {
   });
   ArduinoOTA.onEnd([]() { otaReboot = true; });
   ArduinoOTA.onError([](ota_error_t err) {
+    // If a push OTA transfer owns Update, onStart() refused to set up the
+    // ArduinoOTA transfer. Any error that arrives in that state must not
+    // reboot the device out from under the legitimate push.
+    if (ota_push_in_progress()) {
+      Serial.print("[OTA] ArduinoOTA error ignored: a push OTA transfer is in progress (code ");
+      Serial.print((int)err);
+      Serial.println(")");
+      return;
+    }
+
     // Restart as well: the latch set by onStart() must never outlive the
     // attempt, and the old image is still the boot target when a transfer
     // fails (otadata only flips after a successful end).
@@ -792,7 +817,8 @@ void setup() {
   if (test_web_server_cb_captured) test_web_server_cb_captured(callbacks);
 
   OtaPushCallbacks otaCallbacks = { cbIsRunActive, cbIsHeaterAsking,
-                                    []() -> uint32_t { return millis(); } };
+                                    []() -> uint32_t { return millis(); },
+                                    heater_emergency_off, abortRunForSafety };
   ota_push_init(otaCallbacks);
   g_otaCallbacks = otaCallbacks;
 

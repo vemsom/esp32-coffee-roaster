@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <WiFi.h>  // IPAddress: request->client()->remoteIP() returns one
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -131,6 +132,24 @@ class AsyncWebServerRequest {
     _response = content;
   }
 
+  // ESPAsyncWebServer calls this when the TCP connection is closed before the
+  // body is complete. The firmware registers it so an interrupted OTA push can
+  // abort Update and clear inProgress; the test calls disconnect() to exercise
+  // the same path. The real handler type has no request argument.
+  void onDisconnect(std::function<void()> fn) { _onDisconnect = fn; }
+  void disconnect() { if (_onDisconnect) _onDisconnect(); }
+
+  // Per-request attributes, mirroring the real library's setAttribute /
+  // getAttribute. The push-OTA handler stores the refusal flag here so a
+  // rejected request cannot poison a legitimate transfer that arrives in
+  // parallel.
+  void setAttribute(const char *name, bool value) { _attributes[std::string(name)] = value ? "1" : ""; }
+  bool getAttribute(const char *name, bool defaultValue) const {
+    auto it = _attributes.find(std::string(name));
+    if (it == _attributes.end()) return defaultValue;
+    return it->second == "1";
+  }
+
   // ---- what the test reads back ----
   bool sent() const { return _sent; }
   int responseCode() const { return _code; }
@@ -145,6 +164,8 @@ class AsyncWebServerRequest {
   int _code = 0;
   String _contentType;
   String _response;
+  std::function<void()> _onDisconnect;
+  std::map<std::string, std::string> _attributes;
 };
 
 // Every live server, so a test can find the routes web_server.cpp registered
