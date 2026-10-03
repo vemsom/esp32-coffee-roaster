@@ -10,6 +10,24 @@ The project is open source hardware plus firmware. You buy the parts, wire
 them, build the firmware with PlatformIO, flash it once over USB, and update it
 over the network from then on.
 
+> **Safety first - this project switches mains voltage.**
+>
+> The build puts a **230-240 V** heating element behind a solid-state relay that
+> the ESP32 controls. Mains voltage can kill you.
+>
+> - Isolate the mains before you touch anything. Never wire the heater live.
+> - The stock fan circuit inside the popper is **not** galvanically isolated
+>   from the mains. Do not reuse it - the fan runs from its own isolated 24 V
+>   supply.
+> - Fit a heatsink to the SSR, and add a 10-47 kOhm pull-down between SSR IN+
+>   and GND.
+> - The firmware's latched alarm and fan interlock are a backstop, not a licence
+>   to leave a roast unattended.
+> - Read `docs/hardware.md` and `docs/wiring.md` in full before you cut or
+>   connect anything. The full list is in `SAFETY.md`.
+>
+> You build and operate this at your own risk.
+
 ## What you need
 
 - A hot-air popcorn popper (the heating element and the fan you reuse)
@@ -188,5 +206,4 @@ assumption; `docs/hardware.md` records the hardware decisions.
 
 ## License
 
-Not decided yet (open source - MIT or similar, to be finalized before the first
-release).
+Released under the MIT License. See [LICENSE](LICENSE).
