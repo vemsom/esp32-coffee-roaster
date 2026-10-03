@@ -726,9 +726,17 @@ judgement call is whether 2 C is the right floor - if this machine ever stands
 somewhere that cold, move the floor using the numbers from step 2, and confirm
 in step 6 that a genuinely floating input lands below it.
 
-- **POSTPONED 2026-09-27 - probe calibration (offset):** measured at the
-  boiling point 2026-09-27, matched; at room temperature +1.2 C against the
-  reference, cause not established.
+- **INLAGD 2026-10-03 - ET-offset mot BT:** mätning 2026-10-03, båda proberna
+  intill varandra i rumstemperatur, elementet av. BT läste 24,25-24,75 C
+  (median 24,75), ET läste 29,5-32 C (median 30,75). Median-skillnad ET-BT =
+  6,0 C. Offseten `SENSOR_OFFSET_ET_C -6.0f` är inlagd i include/config.h och
+  tillämpas i src/sensors.cpp efter plausibilitetskontrollen. BT lämnas
+  oförändrad (`SENSOR_OFFSET_BT_C 0.0f`). Orsaken till ET:s avvikelse är inte
+  utredd (kandidater: modulens cold-junction, klonchip, probe/placering).
+  Offseten är bara giltig kring rumstemperatur och måste omprövas vid
+  rostningstemperatur. Den gamla mätningen 2026-09-27 (+1,2 C) gjordes inte på
+  samma hårdvara/koppling och stämmer inte med dagens värden - använd inte båda
+  samtidigt.
 
 ## Still open, not done
 

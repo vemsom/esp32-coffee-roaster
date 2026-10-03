@@ -48,5 +48,13 @@ SensorReading sensors_read() {
   SensorReading r;
   r.bt = readWithSanityCheck(thermoBT, lastGoodBT, consecutiveFaultsBT, r.btFault);
   r.et = readWithSanityCheck(thermoET, lastGoodET, consecutiveFaultsET, r.etFault);
+
+  // Offset applies AFTER the plausibility/jump checks, never before: an open
+  // probe (NaN or 0 C) must stay a fault. The offset is applied exactly once
+  // here, so everything downstream sees the same number: safety limits, the
+  // BT/ET cross-check, RoR, MQTT/HA and the web UI.
+  if (!r.btFault) r.bt += SENSOR_OFFSET_BT_C;
+  if (!r.etFault) r.et += SENSOR_OFFSET_ET_C;
+
   return r;
 }

@@ -57,6 +57,14 @@ g++ -std=c++17 -Wall -Wextra \
     "$here/test_safety.cpp" "$root/src/safety.cpp" "$root/src/heater_control.cpp" \
     -o "$out/test_safety"
 
+# Sensor offset test: the offset must be applied exactly once, after the
+# plausibility check, so an open/floating probe stays a fault and calibrated
+# values reach the cross-check.
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" \
+    "$here/test_sensors.cpp" "$root/src/sensors.cpp" \
+    -o "$out/test_sensors"
+
 # The rate-of-rise test is pure maths over a stubbed clock - no Arduino stub,
 # no hardware: ror.cpp only includes include/config.h for its constants.
 g++ -std=c++17 -Wall -Wextra \
@@ -151,6 +159,7 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
     -o "$out/test_control_tsan"
 
 "$out/test_safety"
+"$out/test_sensors"
 "$out/test_ror"
 "$out/test_mqtt_en" "$out/unique_ids_en"
 "$out/test_mqtt_sv" "$out/unique_ids_sv"

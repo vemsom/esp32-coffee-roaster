@@ -57,6 +57,21 @@
 #define SENSOR_FAULT_MAX_JUMP_C   20.0
 #define SENSOR_FAULT_MAX_COUNT    5
 
+// ---- Sensor-kalibrering (enkel offset, tillämpas efter plausibilitetskontrollen) ----
+// Mätt 2026-10-03 med båda proberna intill varandra i rumstemperatur (~22-23 C),
+// inget element igång. Referens = BT (Fredriks rummetermometer visade 22-23 C).
+// BT läste 24,25-24,75 C (median 24,75), ET läste 29,5-32 C (median 30,75).
+// Median-skillnad ET-BT = 6,0 C. BT behölls oförändrad; ET justeras ned med 6 C.
+//
+// Orsaken till ET:s avvikelse är INTE utredd (kandidater: modulens cold-junction,
+// klonchip, probe/placering). Offseten är bara giltig kring rumstemperatur tills
+// någon mätt den mot en referens vid rostningstemperatur.
+//
+// Om du ändrar en av dessa, uppdatera tools/host-tests/test_sensors.cpp och
+// docs/firmware-notes.md.
+#define SENSOR_OFFSET_BT_C   0.0f
+#define SENSOR_OFFSET_ET_C  -6.0f
+
 // ---- Rate of Rise (RoR) ----
 // Temperaturändringen per minutt, rapporterad som rorBt/rorEt i /api/status
 // och som två läsbara sensorer i Home Assistant. Skattas med LINJÄR
