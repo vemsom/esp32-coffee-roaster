@@ -3,8 +3,9 @@
 #include <Arduino.h>
 #include <max6675.h>
 
-MAX6675 thermoBT(PIN_MAX6675_CLK, PIN_MAX6675_CS_BT, PIN_MAX6675_MISO);
-MAX6675 thermoET(PIN_MAX6675_CLK, PIN_MAX6675_CS_ET, PIN_MAX6675_MISO);
+// Each module now has its own SO and its own CS; only SCLK is shared.
+MAX6675 thermoBT(PIN_MAX6675_CLK, PIN_MAX6675_CS_BT, PIN_MAX6675_MISO_BT);
+MAX6675 thermoET(PIN_MAX6675_CLK, PIN_MAX6675_CS_ET, PIN_MAX6675_MISO_ET);
 
 static float lastGoodBT = NAN;
 static float lastGoodET = NAN;

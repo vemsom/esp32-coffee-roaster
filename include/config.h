@@ -28,11 +28,20 @@
 #endif
 
 // ---- Sensor-pinnar (SPI, MAX6675 x2) ----
-// Delade CLK/MISO, separata CS. Verifiera/andra nar layouten ar klar.
-#define PIN_MAX6675_CLK   18
-#define PIN_MAX6675_MISO  19
-#define PIN_MAX6675_CS_BT 5
-#define PIN_MAX6675_CS_ET 17
+// Avsedda för det egna kretskortet.
+//
+// Bara KLOCKAN delas: SCLK är ingång på båda modulerna, så den kan inte
+// kollidera. SO och CS är privata per modul - en delad SO skulle vila på att
+// den oselekterade modulens SO går i tre läge, vilket vi inte kunde bekräfta
+// i databladet, och på ett kort kostar den egna returlinjen ingenting.
+//
+// GPIO5 lämnas helt (strapping-pinne) och GPIO2 undviks (strapping + inbyggd
+// lysdiod). 3,3 V och GND delas fortfarande av båda modulerna.
+#define PIN_MAX6675_CLK     18  // delad SCLK, ingång på båda modulerna
+#define PIN_MAX6675_MISO_BT 19  // egen SO, bön-modulen
+#define PIN_MAX6675_MISO_ET 21  // egen SO, miljö-modulen
+#define PIN_MAX6675_CS_BT   13  // egen CS, bön-modulen (flyttad från GPIO5)
+#define PIN_MAX6675_CS_ET   17  // egen CS, miljö-modulen
 
 // ---- Varme-SSR ----
 #define PIN_SSR_HEATER    26

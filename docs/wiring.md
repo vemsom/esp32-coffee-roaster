@@ -1,34 +1,34 @@
 # Kopplingschema — ESP32-kaffrostaren
 
 Ställning: ESP32 drivs initialt över **USB** (5 V). Allt annat kopplas i den ordning
-som står längst ner. Pinnarna är hämtade ur `include/config.h` (FW 0.4.0) och måste
-stämma mot koden före strömsättning — `git diff` om config.h ändrats.
+som står längst ner. Pinnarna är hämtade ur `include/config.h` (FW 0.7.0) och måste
+stämma mot koden före strömsättning — `git diff` om config.h ändrats. Pinnarna är
+nu avsedda för **det egna kretskortet**.
 
 ## Pinout
 
 | Funktion            | GPIO | Anmärkning |
 |---------------------|------|------------|
-| MAX6675 CLK (delad) | 18   | Delad SCK mellan båda modulerna |
-| MAX6675 MISO (delad)| 19   | Delad SO mellan båda modulerna |
-| MAX6675 CS — BT     | 5    | Bean temp, egen CS på modul 1 |
-| MAX6675 CS — ET     | 17   | Environment temp, egen CS på modul 2 |
+| MAX6675 CLK (delad) | 18   | Delad SCLK — ingång på båda modulerna, kan inte kollidera |
+| MAX6675 SO — BT     | 19   | Egen SO (retur) för bön-modulen |
+| MAX6675 SO — ET     | 21   | Egen SO (retur) för miljö-modulen |
+| MAX6675 CS — BT     | 13   | Egen CS för bön-modulen (flyttad från GPIO5) |
+| MAX6675 CS — ET     | 17   | Egen CS för miljö-modulen |
 | SSR värmestyre      | 26   | Time-proportioning, 2 s fönster |
 | Fläkt PWM           | 27   | 20 kHz, 8-bit (0–255 = 0–100 %) |
 
+Bara klockan delas mellan de två MAX6675-modulerna. SO och CS är privata per
+modul: en delad SO skulle vila på att den oselekterade modulens SO går i tre
+läge, vilket databladet inte bekräftar — egna returlinjer tar bort frågan helt,
+och på ett kort kostar det ingenting. 3,3 V och GND delas fortfarande av båda
+modulerna.
+
 Strapping-pinnar på ESP32 och vad de gör vid reset: **0 och 2** styr bootläge,
 **12** styr spänningen på flash-minnet (den farligaste att hålla fel), **15**
-styr boot-logg och **5** styr SDIO-slav-timing. Endast GPIO5 används av oss,
-som CS för BT — och den strappen gäller bara när chipet startar som SDIO-slav
-(boot från SD-kort). Vi startar intern flash, och GPIO5 har intern pull-up vid
-reset, så CS ligger hög om modulen inte aktivt drar den låg. En låg GPIO5 vid
-reset stoppar alltså **inte** booten.
-
-Vad som inte går att avgöra utan modulen i handen: om just din MAX6675-modul
-har drag på CS. Vid strömning: mät GPIO5 med båda modulerna inkopplade och
-ström på — ska ligga hög. Ligger den låg, eller vill du slippa osäkerheten:
-flytta CS-BT till **GPIO13** (ingen strapping-funktion, ledig) och ändra
-`PIN_MAX6675_CS_BT` i config.h. En rad plus omkoplning — gör det innan någon
-kabel skärs, inte efter.
+styr boot-logg och **5** styr SDIO-slav-timing. Ingen av dem används av oss:
+CS-BT flyttades från GPIO5 till **GPIO13** när pinnarna lades för kretskortet,
+så strömningsfrågan om GPIO5 är borta. GPIO2 undviks också (strapping + inbyggd
+lysdiod på många kort).
 
 ## Driftträd (strömkällor)
 
@@ -47,16 +47,26 @@ USB (dator/5 V-laddare) ──> ESP32                     <── initialt, inga
 
 ## 1. MAX6675-modul ×2 (temperatur)
 
+Varje modul har **tre ledare till egna ESP32-pinnar**: CS, SO och SCK. Bara SCK
+(klockan) delas — den är ingång på båda modulerna och kan inte kollidera. SO och
+CS är privata per modul, så inget läser en oselekterad moduls returlinje. 3,3 V
+och GND delas fortfarande av båda modulerna.
+
+Delningen (3,3 V, GND och SCK) kräver i dag en **skarv** — plint, breadboard
+eller lödning — och det är hela poängen med det egna kretskortet: där blir
+delningen koppartråd i stället för en skarv.
+
 ```
-Modulens   ESP32
-VCC    →   3,3 V          (INTE 5 V — annars går MISO i 5 V mot ESP:s pinnar)
-GND    →   GND
-SCK    →   GPIO18         (delad)
-SO     →   GPIO19         (delad)
-CS  #1 →   GPIO5          (BT)
-CS  #2 →   GPIO17         (ET)
+Modul BT          ESP32                 Modul ET          ESP32
+VCC    →          3,3 V                 VCC    →          3,3 V
+GND    →          GND                   GND    →          GND
+SCK    →          GPIO18  (delad)       SCK    →          GPIO18  (delad)
+SO     →          GPIO19                SO     →          GPIO21
+CS     →          GPIO13                CS     →          GPIO17
 ```
 
+- 3,3 V och GND går till **båda** modulerna (gemensam matning och jord).
+- Matningen är **3,3 V**, aldrig 5 V — annars går SO i 5 V mot ESP:s pinnar.
 - Termokopplingskabel: `+` till T+/märkt klemm, `−` till T−. K-typ.
 - Skruva fast skärmad/plastskruv på termokopplingsklemmen; kabeln ska inte böjas
   skarpt eller dras i klemmen.
