@@ -8,15 +8,19 @@
 # ansluter TILL enheten och behöver ingen anslutning tillbaka. Det här skriptet
 # finns kvar för filsystemet (fs) och för nät där dial-back faktiskt fungerar.
 #
-# TVÅ FALLGROPAR, båda lösta här, värda att känna till:
+# ETT STORT FEL, och två små, värda att känna till:
 #
-#   1. ArduinoOTA kräver att ENHETEN ansluter tillbaka till uppladdaren på TCP.
-#      espota måste därför lyssna på en adress enheten kan nå: serverns LAN-IP.
-#      Utan -I gissar espota sin egen adress, lyssnaren hamnar fel och
-#      överföringen dör efter "Authenticating...OK" med "No response from
-#      device" - utan att brandväggen har något med saken att göra.
-#   2. Returporten måste vara fast (-P 32320) för att en smal brandväggsregel
-#      ska kunna matcha; espota slumpar den annars mellan 10000 och 60000.
+#   1. FS-ÖVERFÖRINGEN MÅSTE AVMONTERA LITTLEFS. Det var det som gjorde att
+#      överföringen dog en bit in ("[ERROR]: Error Uploading"), och felet såg ut
+#      som ett nätverk. Se src/main.cpp onStart(): U_SPIFFS -> LittleFS.end()
+#      före första byten, U_FLASH lämnar filsystemet ifred.
+#   2. Returporten pinnas (-P 32320) för att trafiken ska vara förutsägbar.
+#      OBS: en dödad körning kan ligga kvar på porten (espota sätter inget
+#      SO_REUSEADDR) och nästa bind blir "[ERROR]: Listen Failed" - byt port då.
+#   3. -I <serverns LAN-IP> är HYGIEN, inte orsak: den gör lyssnaren entydig i
+#      en LXC med virtuella interface. Mätt: en full överföring går igenom både
+#      med och utan -I, så den förklarar inte det gamla "No response from
+#      device". Behåll den för enkelhetens skull, men skriv den inte som orsak.
 #
 # VARFÖR SKRIPTET ANROPAR ESPOTA DIREKT i stället för `pio run`:
 # PlatformIO:s `upload_flags` sätts ihop till en enda sträng, och den flerradiga

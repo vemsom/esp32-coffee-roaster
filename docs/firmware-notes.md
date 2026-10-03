@@ -405,25 +405,32 @@ Still in the firmware, harmless, and it may well work on a flat network where
 the device can dial back. With a password it is not a liability, so it stays
 as a second option - but the documented way in is the push above.
 
-**It does work here, and the reason it looked blocked for hours was not the
-firewall.** Three things had to line up, in this order:
+**It does work here, and there was never a firewall rule involved.** What
+actually had to be in place, in the order it was found:
 
-1. **`-I 192.168.1.x` - the listener has to bind the server's LAN address.**
-   Without it `espota` binds whatever address it guesses, the device's
-   dial-back reaches nothing, and the upload dies after
-   `Authenticating...OK` with `No response from device`. That message is the
-   fixed signature of a mis-bound listener, not of a firewall rule.
+1. **`U_SPIFFS` handling for filesystem transfers.** See the section above: the
+   transfer died part-way because LittleFS stayed mounted on the partition
+   being rewritten. This, not the network, is what killed the upload.
 2. **No stray whitespace in the flag.** PlatformIO's `upload_flags` can pass an
    `-I` value with a leading space, and `espota` then fails with
-   `[ERROR]: Listen Failed`.
+   `[ERROR]: Listen Failed`. That reads like a network fault and is a blank.
 3. **`-P 32320`** pins the return port (espota otherwise picks a random one
-   between 10000 and 60000) so a narrow rule *could* match it. Now that no
-   rule is needed, this is hygiene - but it costs nothing and it is what makes
-   the traffic predictable.
+   between 10000 and 60000) so the traffic is predictable. Hygiene, not a
+   requirement: no firewall rule is needed either way. A killed run can leave
+   the port occupied (espota sets no `SO_REUSEADDR`), and the next bind then
+   fails with `[ERROR]: Listen Failed` - pick another port.
+4. **`-I 192.168.1.x`** is in the command as **hygiene, not as a cause**: it
+   makes the listener unambiguous in an LXC with virtual interfaces. Measured
+   2026-10-03: a full transfer goes through **both with and without** `-I`
+   (without it espota binds `0.0.0.0:<random port>` and everything works), so
+   it does not explain the old `No response from device` - that disappeared
+   when the `U_SPIFFS` handling went in. Do not write it in as a cause.
 
-All three live in `platformio.ini` (env `esp32-ota`), and `tools/ota-upload.sh`
-documents them: **do not call `espota` by hand without both flags**, and put
-them in `platformio.ini` rather than assembling them in a variable.
+All of them live in `tools/ota-upload.sh`, which sets the arguments itself, and
+`platformio.ini` keeps its `upload_flags` for a hand-run `pio` with the traps
+documented beside it. **Do not call `espota` by hand without reading that
+script first** - the whitespace trap is invisible in the command line and shows
+up as a network-sounding error.
 
 **Chosen approach: ArduinoOTA with a password**, not an upload page. In order
 of weight: it ships with the ESP32 Arduino core (no new entry in `lib_deps`),
