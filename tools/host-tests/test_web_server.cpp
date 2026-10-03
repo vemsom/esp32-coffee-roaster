@@ -129,12 +129,43 @@ int main() {
   const char *honeyRootConfig = "{\"startTemp\":999,\"steps\":[]}";
   const char *honeyPasswd = "root:x:0:0";
 
-  // The endpoints are registered by web_server_init(); no callbacks are
-  // needed, because nothing under test reads status.
+  // The endpoints are registered by web_server_init(). The callbacks are not
+  // optional: an empty function pointer is a null call, not a default value,
+  // and the status handler reads twenty-four of them. Every getter it touches
+  // therefore needs a real function or the /api/status dispatch below jumps
+  // through null. The values are deliberately dull - this test is about
+  // whether the fields are present and well-formed, not about what they say
+  // (test_control drives the real values end to end).
   WebServerCallbacks callbacks = {};
+  callbacks.getBT = []() { return 23.0f; };
+  callbacks.getET = []() { return 21.0f; };
+  callbacks.getRorBt = []() { return 0.0f; };
+  callbacks.getRorEt = []() { return 0.0f; };
+  callbacks.getHeaterDuty = []() { return 0.0f; };
+  callbacks.getFanSpeed = []() { return 0; };
+  callbacks.getRoastActive = []() { return false; };
+  callbacks.getElapsedSeconds = []() { return 0UL; };
+  callbacks.getRoastPaused = []() { return false; };
+  callbacks.getManualActive = []() { return false; };
+  callbacks.getManualTargetTemp = []() { return 0.0f; };
+  callbacks.getManualRemainingSeconds = []() { return 0UL; };
+  callbacks.getManualAutoCool = []() { return false; };
+  callbacks.getCoolActive = []() { return false; };
+  callbacks.getCoolSpeed = []() { return 0; };
+  callbacks.getCoolRemainingSeconds = []() { return 0UL; };
+  callbacks.getSafetyFault = []() { return false; };
+  callbacks.getSafetyReason = []() { return "none"; };
+  callbacks.getFanFault = []() { return false; };
+  callbacks.getWifiConnected = []() { return true; };
+  callbacks.getRorGuidance = []() { return -1; };
+  callbacks.getRorTarget = []() { return 0.0f; };
+  callbacks.getRorError = []() { return 0.0f; };
+  callbacks.getRorActive = []() { return false; };
   web_server_init(callbacks);
   check(asyncWebServers().size() == 1 && asyncWebServers()[0]->begun(),
         "web_server_init starts the server");
+  check(asyncWebServers().size() == 1,
+        "the file-static server is registered once, so every route is unique");
 
   const AsyncWebServer::Route *getProfile = findRoute("/api/profile", HTTP_GET);
   const AsyncWebServer::Route *deleteProfile = findRoute("/api/profile", HTTP_DELETE);
@@ -260,6 +291,53 @@ int main() {
   AsyncWebServerRequest noNameDelete = dispatchQuery(*deleteProfile, nullptr, String());
   check(isStatus(noNameDelete, 400) && bodyHas(noNameDelete, "missing name"),
         "DELETE without a name keeps answering 'missing name'");
+
+  // ------------------------------------------- build identity in /api/status --
+  // The reason this exists: after an OTA push the question is "did the image I
+  // sent actually land?", and a version number that did not change cannot
+  // answer it. The status handler must therefore carry the release, the git sha
+  // of the build and the build time - with values a push can be checked
+  // against.
+  //
+  // Note: web_server_init() must NOT be called a second time here. The server
+  // in web_server.cpp is file-static, so a second init registers the same
+  // object in the stub registry again and every route appears twice - and the
+  // callbacks would be replaced with the empty set below. The handler is
+  // reached through the route this test already has.
+  {
+    const AsyncWebServer::Route *status = findRoute("/api/status", HTTP_GET);
+    check(status != nullptr, "GET /api/status is registered");
+    if (status) {
+      check(status->onRequest != nullptr,
+            "the /api/status route has a handler (a route without one is a null call)");
+      AsyncWebServerRequest r;
+      status->onRequest(&r);
+      check(isStatus(r, 200), "GET /api/status answers 200 with the callbacks this test set");
+      const std::string body = r.responseBody().c_str();
+
+      // FW_VERSION first: it is what Home Assistant shows as sw_version, so the
+      // two must never drift apart.
+      check(body.find(std::string("\"fw\":\"") + FW_VERSION + "\"") != std::string::npos,
+            "status reports the release as fw, and it is FW_VERSION");
+      check(body.find("\"build\":\"") != std::string::npos,
+            "status reports the build id");
+      check(body.find("\"built\":\"") != std::string::npos,
+            "status reports when the build was made");
+
+      // The build id has to be usable as a comparison, so it may not be empty
+      // and may not contain a quote or a backslash (it goes into JSON and into
+      // a shell comparison by hand).
+      const size_t key = body.find("\"build\":\"");
+      const size_t start = key + strlen("\"build\":\"");
+      const size_t end = body.find('"', start);
+      const std::string buildId = body.substr(start, end - start);
+      check(!buildId.empty(), "the build id is not empty");
+      check(buildId.find('\\') == std::string::npos && buildId.find('"') == std::string::npos,
+            "the build id has no character that breaks JSON or a comparison");
+      check(body.find(std::string("\"lang\":\"") + FW_LANG_CODE + "\"") != std::string::npos,
+            "status still reports the build language (unchanged by this)");
+    }
+  }
 
   return finish();
 }

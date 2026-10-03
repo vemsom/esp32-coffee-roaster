@@ -70,6 +70,15 @@ static void handleStatus(AsyncWebServerRequest *request) {
     // can follow the firmware. The browser's own language must not decide:
     // the UI and the Home Assistant names have to agree.
     doc["lang"] = FW_LANG_CODE;
+    // Build identity. fw is the release (same as HA's sw_version), build is
+    // the git sha of the build and built is when it was compiled - the three
+    // together are what makes a push provable: compare "build" with
+    //   git rev-parse --short HEAD
+    // on the machine that sent it. Without them an OTA push that landed and
+    // one that silently failed look identical from the outside.
+    doc["fw"] = FW_VERSION;
+    doc["build"] = FW_BUILD_SHA;
+    doc["built"] = FW_BUILD_TIME;
   }
 
   String out;

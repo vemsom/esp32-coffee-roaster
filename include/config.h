@@ -229,6 +229,22 @@
 // 0.7.0 = optional RoR guidance per profile step (rorTarget); off by default.
 #define FW_VERSION "0.7.0"
 
+// ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
+// FW_VERSION says which release this is; it cannot say WHICH build of it is
+// running. After an OTA push the only honest question is "did the image I just
+// sent actually land?", and a version number that did not change answers
+// nothing. tools/fw_build_id.py stamps the git sha and the build time into
+// build_flags at build time, so /api/status can answer it in one request.
+//
+// Host tests and any build that skips the stamp still compile: the values fall
+// back to "unknown" rather than breaking the build.
+#ifndef FW_BUILD_SHA
+#define FW_BUILD_SHA "unknown"
+#endif
+#ifndef FW_BUILD_TIME
+#define FW_BUILD_TIME "unknown"
+#endif
+
 // ---- PID-standardvarden ----
 #define PID_KP  4.0
 #define PID_KI  0.05
