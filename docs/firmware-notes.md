@@ -513,12 +513,14 @@ Tagged the same way as above: what it takes, not just what is left.
 
 - **ASSIGNED, REQUIRES HARDWARE CONFIRMATION** GPIO pins in include/config.h.
   These are no longer TBD placeholders - the current assignment is CLK 18,
-  MISO 19, CS-BT 5, CS-ET 17, SSR 26, fan PWM 27, written down and cross-checked
-  against the code in docs/wiring.md (2026-09-26). What has *not* happened is
-  the physical check: the board does not exist yet. Re-check on wiring that
-  nothing sits on a strapping pin (0, 2, 12, 15), and specifically measure
-  GPIO5 high at reset with both MAX6675 modules powered - wiring.md has the
-  fallback (move CS-BT to GPIO13) if it is not.
+  SO-BT 19, SO-ET 21, CS-BT 13, CS-ET 17, SSR 26, fan PWM 27, written down and
+  cross-checked against the code in docs/wiring.md (revised 2026-10-03 for the
+  custom board: only the clock is shared, each module has its own SO and CS,
+  and CS-BT moved off the strapping pin GPIO5 to GPIO13). What has *not*
+  happened is the physical check: the board does not exist yet. Re-check on
+  wiring that nothing sits on a strapping pin (0, 2, 5, 12, 15) - GPIO5 and
+  GPIO2 are deliberately unused now, so the old GPIO5-high-at-reset question
+  is gone.
 - **REQUIRES HARDWARE** PID values (PID_KP/KI/KD in config.h): unguessed
   starting values. Will need tuning against the real thermal response once the
   machine is testable.
