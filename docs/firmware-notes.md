@@ -1,7 +1,7 @@
 # Firmware notes - assumptions and what is verified
 
 Status: **verified items below were re-confirmed on 2026-10-03** with a clean
-`pio run` (zero warnings) and the host-side test suite (833 checks, 0
+`pio run` (zero warnings) and the host-side test suite (843 checks, 0
 failures). Push-OTA is additionally verified against real hardware. Everything
 still listed as open is untested against real hardware.
 
@@ -289,6 +289,40 @@ Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
   and LittleFS are not part of that, so saved profiles survive a push. The
   host test asserts exactly that against the real handler.
 
+### Proving a push landed: the build identity in `/api/status`
+
+`FW_VERSION` says which *release* is running. It cannot say which *build* of
+it, and that is the question after a push: did the image I just sent actually
+take, or did the endpoint answer 200 for something else? A version number that
+did not change answers nothing.
+
+So `tools/fw_build_id.py` runs as a PlatformIO `pre` script, stamps the git sha
+and the build time into `build_flags`, and `/api/status` reports them:
+
+```sh
+curl -s http://192.168.x.x/api/status | python3 -m json.tool | grep -E 'fw|build|built'
+#   "fw":    "0.7.0"                    <- same string HA shows as sw_version
+#   "build": "82888dc"                  <- git rev-parse --short HEAD
+#   "built": "2026-10-03T11:38:27Z"
+```
+
+One request, and the check is a comparison:
+
+```sh
+git rev-parse --short HEAD        # on the machine that sent the image
+```
+
+If they differ, the push did not land and the device is still running
+something else - no guessing from entity counts. `build` carries a `+dirty`
+suffix when the working tree had uncommitted changes at build time, because
+then the image is not exactly that commit and the answer should not pretend
+otherwise. Outside a git checkout (a zip download) both fields read `unknown`
+rather than failing the build.
+
+Keeping `fw` equal to `FW_VERSION` - the same value `mqtt_client.cpp` publishes
+as HA's `sw_version` - is deliberate: the web API and Home Assistant must never
+disagree about which release is running.
+
 **Verified on hardware 2026-10-03** against the roaster at 192.168.2.x:
 
 ```text
@@ -399,9 +433,12 @@ published vectors for the empty string and `"abc"` first, so a broken hasher
 cannot make the test agree with itself and pass.
 
 **Verified against real hardware 2026-10-03** (see the OTA section): a full
-974 512-byte push answered 200 and the device rebooted into it; a wrong token
-answered 404; a wrong checksum answered 403 and the device kept running; the
-trusted client's GET probe answered 405 and a stranger's answered 404.
+974 896-byte push answered 200 and the device rebooted into it; the trusted
+client's GET probe answered 405 and a stranger's answered 404; a wrong token
+answered 404; a wrong checksum answered 403 and the device kept running. The
+device's own `/api/status` then reported `"build":"82888dc"`, matching
+`git rev-parse --short HEAD` on the machine that sent it - that is the push
+proving itself, which is the whole point of the build identity above.
 
 Known unknown: whether an upload reaches the roaster from the machine that runs
 the script depends on the network, not the firmware. Push needs LAN -> IoT only
@@ -681,8 +718,8 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-03: **441 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 833 checks execute in total,
+broker. Last run 2026-10-03: **451 checks, 0 failures**, exit 0, no compiler
+warnings. That figure counts each test once; 843 checks execute in total,
 because `test_mqtt_discovery` runs once per build language and `test_control`
 also runs under ThreadSanitizer:
 

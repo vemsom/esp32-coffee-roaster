@@ -66,6 +66,16 @@ not allow unless espota's listener is bound to the right address
 
 Replace `192.168.x.x` with the address your roaster got on your network.
 
+**Did the push land?** One request answers it:
+
+```sh
+curl -s http://192.168.x.x/api/status   # -> ..."fw":"0.7.0","build":"82888dc","built":"..."
+git rev-parse --short HEAD              # on the machine that sent the image
+```
+
+If `build` matches that sha, the image you sent is what is running. Same value
+in `fw` as Home Assistant shows as `sw_version`, so the two never disagree.
+
 ## Configuration
 
 WiFi and MQTT credentials go in `include/secrets.h`, which is gitignored:
