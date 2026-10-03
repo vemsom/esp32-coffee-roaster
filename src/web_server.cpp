@@ -1,6 +1,7 @@
 #include "web_server.h"
 #include "config.h"
 #include "strings.h"
+#include "ota_push.h"
 #include "state_lock.h"
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
@@ -328,6 +329,86 @@ static void handleRoastResume(AsyncWebServerRequest *request) {
   sendOk(request);
 }
 
+// ------------------------------------------------------------------ push OTA ---
+
+// POST /api/update with the image as the body and the token in X-OTA-Token.
+// The header is checked before a single byte of the image is read, the body is
+// only accepted while the machine is idle (see include/ota_push.h), and a
+// finished transfer restarts into the new image - but only after the response
+// has been sent, otherwise the client would see a broken connection on an
+// upload that actually succeeded.
+static volatile bool pushOtaReboot = false;
+
+static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decision) {
+  int code = 400;
+  const char *msg = "bad request";
+  switch (decision) {
+    case OtaPushDisabled:
+      code = 503;
+      msg = "push OTA disabled: OTA_TOKEN is not set on the device";
+      break;
+    case OtaPushUnauthorized:
+      code = 401;
+      msg = "unauthorized";
+      break;
+    case OtaPushBusy:
+      code = 409;
+      msg = "refused: a roast, manual run or cooling is active";
+      break;
+    case OtaPushTooLarge:
+      code = 413;
+      msg = "image too large for the OTA slot";
+      break;
+    case OtaPushUpdateBeginFailed:
+      code = 500;
+      msg = "Update.begin() failed";
+      break;
+    default:
+      code = 400;
+      msg = "missing or unusable Content-Length";
+      break;
+  }
+  sendError(request, code, msg);
+}
+
+static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                           size_t index, size_t total) {
+  // index == 0 is the first chunk of the body and the only place where the
+  // decision is made; later chunks belong to a transfer already accepted.
+  if (index == 0) {
+    const AsyncWebHeader *header = request->getHeader("X-OTA-Token");
+    OtaPushDecision decision =
+        ota_push_begin(header ? header->value().c_str() : nullptr, total);
+    if (decision != OtaPushOk) {
+      sendOtaError(request, decision);
+      return;
+    }
+  }
+
+  size_t accepted = ota_push_write(data, len);
+  if (accepted != len) {
+    sendError(request, 500, "write failed");
+    ota_push_finished(false);
+    return;
+  }
+
+  // The library sends final=true on the last chunk; index+len == total is the
+  // same moment, and a body handler that sees neither (connection died) falls
+  // through to the abort in ota_push_finished(false) on the next request.
+  if (index + len >= total) {
+    bool ok = ota_push_finished(true);
+    if (!ok) {
+      sendError(request, 500, "Update.end() failed");
+      return;
+    }
+    request->send(200, "application/json",
+                  "{\"ok\":true,\"note\":\"restarting into the new image\"}");
+    pushOtaReboot = true;
+  }
+}
+
+bool web_ota_reboot_pending() { return pushOtaReboot; }
+
 // --------------------------------------------------------------- bootstrap ---
 
 void web_server_init(WebServerCallbacks callbacks) {
@@ -351,6 +432,10 @@ void web_server_init(WebServerCallbacks callbacks) {
   server.on("/api/roast/stop", HTTP_POST, handleRoastStop);
   server.on("/api/roast/pause", HTTP_POST, handleRoastPause);
   server.on("/api/roast/resume", HTTP_POST, handleRoastResume);
+
+  // Push OTA. Deliberately not under /api/status's neighbourhood: this one
+  // replaces the running firmware, so it is its own path with its own token.
+  server.on("/api/update", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr, handleOtaUpdate);
 
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 

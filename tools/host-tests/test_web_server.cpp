@@ -28,6 +28,7 @@
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
 #include <LittleFS.h>
+#include <Update.h>
 
 #include <string>
 #include <vector>
@@ -38,6 +39,12 @@
 // web_server.cpp and roast_profile.cpp both reach the filesystem through this
 // one instance (defined here, the way the other host tests define theirs).
 LittleFSClass LittleFS;
+
+// ota_push.cpp (linked into this binary, because the real handler behind
+// /api/update calls it) reaches Update through the stub. Declaring the
+// instance here keeps the stub's own storage out of the header.
+UpdateClass Update;
+SerialStub Serial;
 
 static int failures = 0;
 static int checks = 0;

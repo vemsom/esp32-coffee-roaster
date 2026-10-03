@@ -229,18 +229,56 @@ until contact returns), and **"WIFI SAKNAS"** when the device reports
 rare on purpose: if the roaster's WiFi is down, normally nothing can be served
 at all.
 
-## OTA (implemented 2026-09-26)
+## OTA (implemented 2026-09-26, push endpoint added 2026-10-03)
 
 The first flash has to be USB - the firmware has never had an update path, and
-adding one does not retroactively make a stock ESP32 updateable. After that it
-is `sh tools/ota-upload.sh <ip>`.
+adding one does not retroactively make a stock ESP32 updateable.
+
+**Default path now: push. `sh tools/ota-push.sh <ip>`.**
+
+```sh
+pio run                        # build
+sh tools/ota-push.sh 192.168.x.x
+```
+
+The uploading machine connects **to** the roaster and POSTs `firmware.bin` to
+`/api/update`, token in the `X-OTA-Token` header. That direction is the whole
+point: the ArduinoOTA path described below needs the *device* to open a TCP
+connection back to the uploader, and in a VLAN-split home network new
+connections IoT -> LAN are blocked, so that handshake dies right after
+`Authenticating...OK` while the device is up and reachable. LAN -> IoT works,
+so the upload was turned around instead of the firewall being opened for it.
+A permanent rule for a port that only matters during an upload - where the
+espota listener is also unauthenticated, first connection wins - is the wrong
+trade.
+
+Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
+
+- **Token required.** `OTA_TOKEN` in `include/secrets.h` (32 hex characters,
+  never committed, never printed). The header is compared before
+  `Update.begin()`, so an unauthorised request writes no byte at all. **Empty
+  token disables the endpoint completely** - the same rule as MQTT (no user ->
+  disabled) and ArduinoOTA (no password -> not started): 503, not a fallback.
+- **Refused while a session runs** (roast / manual / cool-down), 409, for the
+  same reason `serviceOta()` refuses then: a flash aborts the run, and the
+  element should never be conducting during one.
+- **The restart happens after the response.** The handler writes the image,
+  answers 200, and only then does `loop()` restart - otherwise the client sees
+  a broken connection on an upload that actually succeeded.
+- **Nothing else is touched.** `Update` writes to the inactive OTA slot; NVS
+  and LittleFS are not part of that, so saved profiles survive a push. The
+  host test asserts exactly that against the real handler.
+
+### ArduinoOTA (kept, no longer the default)
+
+Still in the firmware, harmless, and it may well work on a flat network where
+the device can dial back. With a password it is not a liability, so it stays
+as a second option - but the documented way in is the push above.
 
 **Chosen approach: ArduinoOTA with a password**, not an upload page. In order
 of weight: it ships with the ESP32 Arduino core (no new entry in `lib_deps`),
 PlatformIO drives it natively (`-e esp32-ota -t upload`), and it opens no new
-HTTP endpoint that accepts binaries - an upload form would put a
-firmware-writing route in the same server that, by documented and accepted
-choice, has no authentication at all.
+HTTP endpoint that accepts binaries.
 
 Two properties make it safe to run next to a live heater:
 
@@ -282,9 +320,18 @@ idle, is *not* served while a run is active, latches the element low on
 `onStart()` while a manual heat is conducting, and requests a restart on both
 `onEnd()` and `onError()`.
 
-Known unknown: whether an OTA upload reaches the roaster from the machine that
-runs the script depends on the network it is installed on, not on the firmware
-- if it does not, run the upload from a machine that can reach the roaster.
+The push path has its own host test (`tools/host-tests/test_ota_push.cpp`,
+against the real handler and the real state machine): a wrong token, a missing
+token and a short token are refused with 401 before `Update.begin()`;
+a run in progress is refused with 409; a missing Content-Length is refused with
+400 and an oversized image with 413; a complete transfer writes exactly
+`Content-Length` bytes, ends with `Update.end()`, leaves every profile
+byte-identical and only then asks for the restart.
+
+Known unknown: whether an upload reaches the roaster from the machine that runs
+the script depends on the network, not the firmware. Push needs LAN -> IoT only
+(which works here); if the guest network is different, run it from a machine
+that can reach the roaster.
 
 ## Concurrency / state lock (implemented 2026-09-26)
 
@@ -547,10 +594,11 @@ Tagged the same way as above: what it takes, not just what is left.
   recursive mutex, see the Concurrency section above. The residual note is
   about MQTT: `mqtt_update()` stays outside the lock on purpose because it can
   block for seconds - see the known limitation above for what that costs.
-- **CLOSED 2026-09-26 (host-tested)** OTA: `tools/ota-upload.sh` pushes a new
-  image over the network with `ArduinoOTA`, password from `secrets.h`, no USB
-  after the first flash. See the OTA section above for why that form and not
-  an upload page, and for the two rules that keep it away from a live heater.
+- **CLOSED 2026-10-03 (host-tested)** OTA: `tools/ota-push.sh` POSTs the image
+  from the uploading machine to the roaster, so no connection has to come back
+  out of the IoT VLAN. Token from `secrets.h`, refused unless the machine is
+  idle, restart after the response, NVS and profiles untouched. ArduinoOTA
+  remains in the firmware as a second option. See the OTA section above.
   Open only as far as reachability goes: that depends on the network the
   roaster is installed on.
 
@@ -558,8 +606,8 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-09-27: **368 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 657 checks execute in total,
+broker. Last run 2026-10-03: **413 checks, 0 failures**, exit 0, no compiler
+warnings. That figure counts each test once; 800 checks execute in total,
 because `test_mqtt_discovery` runs once per build language and `test_control`
 also runs under ThreadSanitizer:
 
@@ -614,6 +662,18 @@ also runs under ThreadSanitizer:
   active, latches the element low on `onStart()` while a manual heat is
   conducting (and aborts that run), and asks for a restart on `onEnd()` and
   on `onError()`.
+- `test_ota_push` - the push OTA endpoint (37 checks): the real
+  `POST /api/update` handler and the real state machine, against a stubbed
+  `Update` that records every call. A wrong token, a missing token and a token
+  one character short are refused with 401 *before* `Update.begin()`, so no byte
+  of an unauthorised image is written and no file is touched; a run in progress
+  is refused with 409 with `Update.begin()` never reached; a missing
+  Content-Length is refused with 400 and an image larger than the OTA slot with
+  413; a complete transfer writes exactly `Content-Length` bytes in order, ends
+  with `Update.end()` (never `abort()`), reads back byte-identical, leaves a
+  stored profile in LittleFS untouched and only then asks for the restart; a
+  failed `Update.begin()` or `Update.end()` answers 500; and an interrupted
+  transfer aborts instead of ending, leaving the state machine idle.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder

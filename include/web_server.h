@@ -29,6 +29,7 @@ struct WebServerCallbacks {
   float (*getRorTarget)();      // RoR target in C/min
   float (*getRorError)();       // RoR target - rorEt
   bool  (*getRorActive)();      // true when correction is being applied
+  bool  (*isRunActive)();       // roast, manual or cooling - push OTA refuses then
 
   // Commands
   void (*setFanSpeed)(int percent);
@@ -44,3 +45,7 @@ struct WebServerCallbacks {
 };
 
 void web_server_init(WebServerCallbacks callbacks);
+
+// True once a push OTA upload has been written and verified: main.cpp restarts
+// on it, from loop(), so the HTTP response gets out first.
+bool web_ota_reboot_pending();

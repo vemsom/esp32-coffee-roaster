@@ -12,6 +12,7 @@
 #include "fan_control.h"
 #include "roast_profile.h"
 #include "web_server.h"
+#include "ota_push.h"
 #include "mqtt_client.h"
 #include "state_lock.h"
 
@@ -21,6 +22,17 @@ static SimplePID heaterPID(PID_KP, PID_KI, PID_KD, 0, 100);
 
 enum ControlMode { MODE_IDLE, MODE_MANUAL, MODE_PROFILE };
 static ControlMode controlMode = MODE_IDLE;
+
+// The push-OTA callbacks handed to ota_push_init() in setup(). Kept at file
+// scope so the host test can reach the predicate the endpoint will ask: the
+// test drives setup()/loop() and then has to answer "is a run active?" the
+// same way the device would.
+OtaPushCallbacks g_otaCallbacks = {};
+
+// The web callback struct is file-static, but the host test needs it to reach
+// the routes' handlers. It is handed over here, if the test provides the
+// (weak) receiver - a normal build does not, and nothing happens then.
+void test_web_server_cb_captured(WebServerCallbacks callbacks) __attribute__((weak));
 
 static float currentBT = NAN;
 static float currentET = NAN;
@@ -201,9 +213,23 @@ static unsigned long cbGetManualRemainingSeconds() {
   return manualDurationSeconds - elapsed;
 }
 
+// Whether cooling is running right now. Cooling is not a ControlMode: the
+// callbacks expose it through the remaining seconds (the same value the UI
+// shows), so "active" means coolActive with time left on it.
 static bool cbGetCoolActive() {
   StateLockGuard guard;
-  return coolActive;
+  if (!coolActive) return false;
+  unsigned long elapsed = (millis() - coolStartMillis) / 1000;
+  return elapsed < coolDurationSeconds;
+}
+
+// One predicate for "the machine is doing something": every run mode counts,
+// for the same reason serviceOta() refuses then - a flash aborts the run, and
+// the element should never be conducting during one.
+static bool cbIsRunActive() {
+  StateLockGuard guard;
+  return controlMode == MODE_PROFILE || controlMode == MODE_MANUAL ||
+         cbGetCoolActive();
 }
 
 static int cbGetCoolSpeed() {
@@ -535,6 +561,13 @@ static void serviceOta() {
     ESP.restart();
     return;  // the real restart does not return; the host stub does
   }
+  // Push OTA served itself over HTTP in the AsyncTCP task; loop() only does
+  // the restart, after that task has sent its response.
+  if (web_ota_reboot_pending()) {
+    Serial.println("[OTA] push upload verified - restarting into the new image");
+    ESP.restart();
+    return;
+  }
   if (!otaStarted) return;
 
   const bool busy =
@@ -685,6 +718,7 @@ void setup() {
     cbGetRorTarget,
     cbGetRorError,
     cbGetRorActive,
+    cbIsRunActive,
     cbSetFanSpeed,
     cbStartManual,
     cbStopManual,
@@ -696,6 +730,11 @@ void setup() {
     cbResumeRoast,
   };
   web_server_init(callbacks);
+  if (test_web_server_cb_captured) test_web_server_cb_captured(callbacks);
+
+  OtaPushCallbacks otaCallbacks = { cbIsRunActive };
+  ota_push_init(otaCallbacks);
+  g_otaCallbacks = otaCallbacks;
 
   MqttCallbacks mqttCallbacks = {
     cbGetBT,

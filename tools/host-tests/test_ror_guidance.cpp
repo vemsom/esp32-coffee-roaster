@@ -15,6 +15,7 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
+#include <Update.h>
 #include <max6675.h>
 #include <PubSubClient.h>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include "ror.h"
 #include "heater_control.h"
 #include "web_server.h"
+#include "ota_push.h"
 #include "mqtt_client.h"
 #include "roast_profile.h"
 #include "state_lock.h"
@@ -61,6 +63,7 @@ WiFiClass WiFi;
 LittleFSClass LittleFS;
 ArduinoOTAClass ArduinoOTA;
 EspClass ESP;
+UpdateClass Update;
 void EspClass::restart() { restartCount++; }
 
 // ---- probe readings injected into the MAX6675 stubs ------------------------
@@ -76,9 +79,17 @@ uint16_t g_bufferSize = 256;
 bool g_connected = false;
 
 // ---- callbacks captured from setup() ---------------------------------------
+// The real web_server.cpp is linked (main.cpp registers it), so only the
+// captured struct is needed here, and main.cpp keeps it reachable.
 static WebServerCallbacks web;
 static bool webCaptured = false;
-void web_server_init(WebServerCallbacks callbacks) {
+extern OtaPushCallbacks g_otaCallbacks;
+
+// Same hook as test_control: main.cpp hands its registered web callback struct
+// to whoever provides this weak receiver, so the test can reach the routes'
+// handlers while web_server.cpp is the real one.
+void test_web_server_cb_captured(WebServerCallbacks callbacks) __attribute__((weak));
+void test_web_server_cb_captured(WebServerCallbacks callbacks) {
   web = callbacks;
   webCaptured = true;
 }

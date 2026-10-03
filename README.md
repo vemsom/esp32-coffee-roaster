@@ -39,9 +39,15 @@ pio run --target uploadfs   # flash the web UI - without this there is no UI
 After the first flash, updates go over the network, no cable:
 
 ```sh
-sh tools/ota-upload.sh 192.168.x.x      # firmware
+sh tools/ota-push.sh 192.168.x.x        # firmware - the normal path
 sh tools/ota-upload.sh 192.168.x.x fs   # web UI only
 ```
+
+The push script connects to the roaster and POSTs the image to `/api/update`
+with the token from `include/secrets.h` (`OTA_TOKEN`). That direction is
+deliberate: the ArduinoOTA variant (`sh tools/ota-upload.sh <ip>`, still in the
+firmware) needs the *device* to connect back to your machine, which a network
+that isolates its IoT VLAN will not allow. See `docs/firmware-notes.md`.
 
 Replace `192.168.x.x` with the address your roaster got on your network.
 

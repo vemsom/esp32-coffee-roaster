@@ -19,6 +19,7 @@
 #include <LittleFS.h>
 #include <max6675.h>
 #include <PubSubClient.h>
+#include <Update.h>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -30,6 +31,7 @@
 #include "ror.h"
 #include "heater_control.h"
 #include "web_server.h"
+#include "ota_push.h"
 #include "mqtt_client.h"
 #include "roast_profile.h"
 #include "state_lock.h"
@@ -67,6 +69,7 @@ WiFiClass WiFi;
 LittleFSClass LittleFS;
 ArduinoOTAClass ArduinoOTA;
 EspClass ESP;
+UpdateClass Update;
 void EspClass::restart() { restartCount++; }
 
 // ---- probe readings injected into the MAX6675 stubs ------------------------
@@ -82,9 +85,20 @@ uint16_t g_bufferSize = 256;
 bool g_connected = false;
 
 // ---- callbacks captured from setup() ---------------------------------------
+// web_server.cpp is linked for real (main.cpp registers it), so its route table
+// lives in the real server; what this test needs is only the captured callback
+// structs, which the init functions do not expose. main.cpp therefore keeps
+// them where the test can reach them.
 static WebServerCallbacks web;
 static bool webCaptured = false;
-void web_server_init(WebServerCallbacks callbacks) {
+extern OtaPushCallbacks g_otaCallbacks;
+
+// main.cpp keeps its callback structs where the tests can reach them: it
+// exposes the one it just registered, and the test asserts that it is the
+// struct it asked for. A test-only fallback keeps a build without those hooks
+// (an older review copy of main.cpp) from failing this check.
+void test_web_server_cb_captured(WebServerCallbacks callbacks) __attribute__((weak));
+void test_web_server_cb_captured(WebServerCallbacks callbacks) {
   web = callbacks;
   webCaptured = true;
 }

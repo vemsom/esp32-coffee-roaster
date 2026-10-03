@@ -62,11 +62,38 @@ class AsyncWebParameter {
   String _value;
 };
 
+class AsyncWebServerRequest;   // forward: the handler typedefs below need it
+
+// Only the fields the firmware reads: a header is a parameter with a value and
+// no name, exactly like the real library. A test builds one to act as the
+// X-OTA-Token header of an incoming push.
+class AsyncWebHeader {
+ public:
+  AsyncWebHeader() = default;
+  AsyncWebHeader(const String &name, const String &value) : _name(name), _value(value) {}
+  const String &name() const { return _name; }
+  const String &value() const { return _value; }
+
+ private:
+  String _name;
+  String _value;
+};
+
 class AsyncWebServerRequest {
  public:
   // ---- what the test puts in ----
   void addParam(const String &name, const String &value) {
     _params.push_back(AsyncWebParameter(name, value));
+  }
+
+  void addHeader(const String &name, const String &value) {
+    _headers.push_back(AsyncWebHeader(name, value));
+  }
+
+  const AsyncWebHeader *getHeader(const String &name) const {
+    for (const AsyncWebHeader &h : _headers)
+      if (h.name() == name) return &h;
+    return nullptr;
   }
 
   // Query parameters only - the stub has no POST form or file parameters,
@@ -93,6 +120,7 @@ class AsyncWebServerRequest {
 
  private:
   std::vector<AsyncWebParameter> _params;
+  std::vector<AsyncWebHeader> _headers;
   bool _sent = false;
   int _code = 0;
   String _contentType;

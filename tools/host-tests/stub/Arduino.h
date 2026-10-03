@@ -86,6 +86,11 @@ class String {
   String operator+(const char *s) const { return String(_s + (s ? s : "")); }
   String operator+(const String &o) const { return String(_s + o._s); }
 
+  bool operator==(const String &o) const { return _s == o._s; }
+  bool operator==(const char *s) const { return _s == (s ? s : ""); }
+  bool operator!=(const String &o) const { return !(*this == o); }
+  bool operator!=(const char *s) const { return !(*this == s); }
+
   // Replaces every occurrence, like the Arduino original.
   void replace(const String &find, const String &repl) {
     if (find._s.empty()) return;

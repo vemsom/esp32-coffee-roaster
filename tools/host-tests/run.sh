@@ -90,8 +90,21 @@ g++ -std=c++17 -Wall -Wextra \
 # that on every run without saying anything new.
 g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -I "$here/stub" -I "$root/include" -I "$json_inc" \
+    -DOTA_TOKEN=\"host-test-push-token\" \
     "$here/test_web_server.cpp" "$root/src/web_server.cpp" "$root/src/roast_profile.cpp" \
+    "$root/src/ota_push.cpp" \
     -o "$out/test_web_server"
+
+# The push-OTA test links the REAL web_server.cpp (and the handler that
+# replaces the firmware), the real ota_push.cpp, and a stubbed Update library
+# that records what it was asked to do. OTA_TOKEN is set to a throwaway value
+# so the endpoint is enabled exactly as on a device with a token configured.
+g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+    -I "$here/stub" -I "$root/include" -I "$json_inc" \
+    -DOTA_TOKEN=\"host-test-push-token\" \
+    "$here/test_ota_push.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+    "$root/src/roast_profile.cpp" \
+    -o "$out/test_ota_push"
 
 # The control test links the real main.cpp with stubbed hardware, so it can
 # drive setup()/loop() and the callbacks the web server calls. roast_profile.cpp
@@ -100,18 +113,22 @@ g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
 # task against loop(), which is the concurrency case the state lock exists for.
 g++ -std=c++17 -Wall -Wextra -pthread \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+    -DOTA_TOKEN=\"host-test-push-token\" \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
     -o "$out/test_control"
 
 # The RoR-guidance test links the real main.cpp and roast_profile.cpp, so the
 # profile curve and guidance logic run exactly as they ship.
 g++ -std=c++17 -Wall -Wextra -pthread \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+    -DOTA_TOKEN=\"host-test-push-token\" \
     "$here/test_ror_guidance.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/roast_profile.cpp" "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
     -o "$out/test_ror_guidance"
 
 # Same test under ThreadSanitizer: it is the only way to see a shared field
@@ -119,9 +136,11 @@ g++ -std=c++17 -Wall -Wextra -pthread \
 # the loop-vs-web-callback path fails the suite.
 g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
     -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+    -DOTA_TOKEN=\"host-test-push-token\" \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
     -o "$out/test_control_tsan"
 
 "$out/test_safety"
@@ -138,6 +157,7 @@ else
   exit 1
 fi
 "$out/test_web_server"
+"$out/test_ota_push"
 "$out/test_control"
 "$out/test_ror_guidance"
 # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
