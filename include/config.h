@@ -70,6 +70,18 @@
 // poster = 32 s, alltid mer än fönstret, så historiken kan aldrig vara kortare
 // än vad regressionen frågar efter. ~2 kB RAM.
 #define ROR_BUFFER_LEN            128
+// Rate-of-rise guidance gains. RoR guidance is OFF unless a profile step has
+// rorTarget > 0, so these only matter when explicitly enabled.
+// ROR_GUIDANCE_GAIN scales the error (rorTarget - rorEt) into a duty correction.
+// ROR_GUIDANCE_MAX_STEP_PCT_PER_S limits how fast that correction can move per
+// second, so a cold probe or a startup transient cannot drive the element full
+// power in one sample.
+#define ROR_GUIDANCE_GAIN                 3.0f
+#define ROR_GUIDANCE_MAX_STEP_PCT_PER_S   15.0f
+// The element can never be asked for more than 100 % duty. The PID and the RoR
+// correction both clamp to this, and applyHeaterDuty() is the single place
+// where the fan interlock can override it.
+#define HEATER_MAX_DUTY_PCT               100.0f
 
 // ---- WiFi ----
 // Anslutningen startas i setup() utan att vänta, och serviceWifi() i loop()
@@ -214,7 +226,8 @@
 // byggena gar att skillja aven i HA (sw_version ar annars identiskt).
 // 0.6.0 = rate of rise (rorBt/rorEt) - nya sensorer i HA, sa ska byggena
 // garna att skilja pa igen nar enheten flashas om.
-#define FW_VERSION "0.6.0"
+// 0.7.0 = optional RoR guidance per profile step (rorTarget); off by default.
+#define FW_VERSION "0.7.0"
 
 // ---- PID-standardvarden ----
 #define PID_KP  4.0

@@ -18,6 +18,8 @@
 #   test_control         the real setup()/loop(), including a second thread in
 #                        the role of the AsyncTCP task; the same source is
 #                        built a second time under ThreadSanitizer
+#   test_ror_guidance    optional RoR-guidance per profile step: curve, sign,
+#                        clamps, interlock and the off-by-default regression.
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -103,6 +105,15 @@ g++ -std=c++17 -Wall -Wextra -pthread \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
     -o "$out/test_control"
 
+# The RoR-guidance test links the real main.cpp and roast_profile.cpp, so the
+# profile curve and guidance logic run exactly as they ship.
+g++ -std=c++17 -Wall -Wextra -pthread \
+    -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+    "$here/test_ror_guidance.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
+    "$root/src/roast_profile.cpp" "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
+    "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
+    -o "$out/test_ror_guidance"
+
 # Same test under ThreadSanitizer: it is the only way to see a shared field
 # that the lock forgot. Rides on the same binary source, so a race anywhere in
 # the loop-vs-web-callback path fails the suite.
@@ -128,6 +139,7 @@ else
 fi
 "$out/test_web_server"
 "$out/test_control"
+"$out/test_ror_guidance"
 # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
 # aborts with "unexpected memory mapping"), so the sanitized binary runs with
 # address randomisation turned off for that one process. That only changes

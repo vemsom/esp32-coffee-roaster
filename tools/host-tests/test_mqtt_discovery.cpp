@@ -61,6 +61,10 @@ static bool gsf() { return false; }
 static const char *gsr() { return "none"; }
 static bool gra() { return true; }
 static bool gff() { return false; }   // fan interlock: not tripped in this test
+static int ggr() { return 0; }        // RoR guidance step (-1 = none)
+static float ggt() { return 5.0f; }   // RoR target C/min
+static float gge() { return 1.5f; }   // RoR error C/min
+static bool gga() { return false; }   // RoR guidance active
 
 // ---- test helpers ----
 static int checks = 0;
@@ -113,7 +117,8 @@ static std::string haSlug(const std::string &name) {
 // this binary once per build language and diffs the two dumps: identical
 // unique_ids across languages is exactly the promise include/strings.h makes.
 int main(int argc, char **argv) {
-  MqttCallbacks cb = {gb, ge, grb, gre, gh, gf, gm, gp, gms, gsf, gsr, gra, gff};
+  MqttCallbacks cb = {gb, ge, grb, gre, gh, gf, gm, gp, gms, gsf, gsr, gra, gff,
+                      ggr, ggt, gge, gga};
 
   mqtt_init(cb);
 
@@ -350,6 +355,11 @@ int main(int argc, char **argv) {
           "status carries safetyFault");
     check(doc["fanFault"].is<bool>() && !doc["fanFault"].as<bool>(),
           "status carries fanFault");
+    check(doc["roRorGuidance"].as<int>() == 0, "status carries roRorGuidance");
+    check(doc["roRorTarget"].as<float>() == 5.0f, "status carries roRorTarget");
+    check(doc["roRorError"].as<float>() == 1.5f, "status carries roRorError");
+    check(doc["roRorActive"].is<bool>() && !doc["roRorActive"].as<bool>(),
+          "status carries roRorActive");
     // The stub WiFi (tools/host-tests/stub/WiFi.h) owns the address; build the
     // expectation from it so the fixture stays a fixture and not a literal.
     IPAddress localIp = WiFi.localIP();

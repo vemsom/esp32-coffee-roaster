@@ -94,18 +94,26 @@ static float g_profileFan = 80.0f;
 bool RoastProfile::loadFromFile(const String &) {
   _hasFan = true;
   _startTemp = 20;
-  _steps = { ProfileStep{ 0, 600, 200, g_profileFan } };
+  _steps = { ProfileStep{ 0, 600, 200, g_profileFan, 0.0f, 0.0f, 0.0f } };
   return true;
 }
 bool RoastProfile::saveToFile(const String &) const { return true; }
 void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
                            float temp, float fan) {
-  _steps.push_back(ProfileStep{ rampSeconds, holdSeconds, temp, fan });
+  _steps.push_back(ProfileStep{ rampSeconds, holdSeconds, temp, fan, 0.0f, 0.0f, 0.0f });
+  _hasFan = true;
+}
+void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
+                           float temp, float fan,
+                           float rorTarget, float rorStart, float rorEnd) {
+  _steps.push_back(ProfileStep{ rampSeconds, holdSeconds, temp, fan, rorTarget, rorStart, rorEnd });
   _hasFan = true;
 }
 void RoastProfile::clear() { _steps.clear(); _hasFan = false; }
 float RoastProfile::targetAt(unsigned long) const { return 200; }
 float RoastProfile::fanAt(unsigned long) const { return g_profileFan; }
+float RoastProfile::rorTargetAt(unsigned long) const { return 0.0f; }
+int RoastProfile::stepIndexAt(unsigned long) const { return 0; }
 
 // ---- helpers ----------------------------------------------------------------
 static int failures = 0;

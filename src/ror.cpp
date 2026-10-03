@@ -18,6 +18,7 @@ int count = 0;                 // valid entries, 0..ROR_BUFFER_LEN
 int next = 0;                  // ring slot the next sample is written to
 float rorBt = 0.0f;
 float rorEt = 0.0f;
+bool rorValid = false;         // true once ROR_MIN_SPAN_MS of history exists
 
 // index 0 = newest sample. The arithmetic stays inside one buffer length so
 // the unsigned wrap of millis() every 49.7 days does not need special casing.
@@ -27,6 +28,14 @@ const Sample &oldest() { return ring[(next + ROR_BUFFER_LEN - count) % ROR_BUFFE
 // Published with one decimal so /api/status and the MQTT payload show the same
 // number the web UI renders.
 float round1(float value) { return std::round(value * 10.0f) / 10.0f; }
+
+// True when there is enough real history to publish a non-warm-up rate.
+// The answer is deliberately conservative: 0 means "we do not know yet", which
+// the RoR-guidance layer must treat as "do not steer on this number".
+bool valid(unsigned long nowMs) {
+  if (count == 0) return false;
+  return (nowMs - oldest().t) >= ROR_MIN_SPAN_MS;
+}
 
 // Least-squares slope over every usable sample inside the window, in C/min.
 // Fitting the whole series instead of differencing two endpoints is what keeps
@@ -47,7 +56,7 @@ float compute(unsigned long nowMs, float Sample::*field, float nowValue, float p
   // but short of a full window, the fit runs over the span that exists: the
   // slope is per millisecond either way, so the warm-up rate is already
   // correct C/min rather than a scaled one.
-  if (nowMs - oldest().t < ROR_MIN_SPAN_MS) return 0.0f;
+  if (!valid(nowMs)) return 0.0f;
 
   double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
   int n = 0;
@@ -78,6 +87,7 @@ void ror_reset() {
   next = 0;
   rorBt = 0.0f;
   rorEt = 0.0f;
+  rorValid = false;
 }
 
 // Called at SENSOR_READ_INTERVAL_MS: every sample is stored, and both rates
@@ -86,9 +96,14 @@ void ror_update(unsigned long nowMs, float bt, float et) {
   ring[next] = Sample{nowMs, bt, et};
   next = (next + 1) % ROR_BUFFER_LEN;
   if (count < ROR_BUFFER_LEN) count++;
+  rorValid = valid(nowMs);
   rorBt = compute(nowMs, &Sample::bt, bt, rorBt);
   rorEt = compute(nowMs, &Sample::et, et, rorEt);
 }
 
 float ror_get_bt() { return rorBt; }
 float ror_get_et() { return rorEt; }
+
+// True once at least ROR_MIN_SPAN_MS of history exists. Used by the RoR
+// guidance layer to refuse to steer on a freshly-reset or just-booted rate.
+bool ror_valid() { return rorValid; }

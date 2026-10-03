@@ -58,6 +58,13 @@ static void handleStatus(AsyncWebServerRequest *request) {
     // the fetch failing, which the UI shows separately), so it is a secondary
     // signal, useful for cached pages and for anything else reading the API.
     doc["wifiConnected"] = cb.getWifiConnected();
+    // Rate-of-rise guidance diagnostics. roRorGuidance is the active step
+    // index, -1 when no step is RoR-driven. These are always present so the
+    // web UI can show "off" as the default state.
+    doc["roRorGuidance"] = cb.getRorGuidance();
+    doc["roRorTarget"] = cb.getRorTarget();
+    doc["roRorError"] = cb.getRorError();
+    doc["roRorActive"] = cb.getRorActive();
     // Build language (FW_LANG_EN in include/config.h), reported so the page
     // can follow the firmware. The browser's own language must not decide:
     // the UI and the Home Assistant names have to agree.
@@ -221,6 +228,11 @@ static void handleProfileGet(AsyncWebServerRequest *request) {
     o["hold"] = s.holdSeconds;
     o["temp"] = s.temp;
     o["fan"] = s.fan;
+    if (s.rorTarget > 0.0f) {
+      o["rorTarget"] = s.rorTarget;
+      o["rorStart"] = s.rorStart;
+      o["rorEnd"] = s.rorEnd;
+    }
   }
 
   String out;
@@ -248,7 +260,13 @@ static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, s
   RoastProfile p;
   p.setStartTemp(doc["startTemp"] | 20.0f);
   for (JsonObject s : doc["steps"].as<JsonArray>()) {
-    p.addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f);
+    float rorTarget = s["rorTarget"] | 0.0f;
+    if (rorTarget > 0.0f) {
+      p.addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f,
+                rorTarget, s["rorStart"] | 0.0f, s["rorEnd"] | 0.0f);
+    } else {
+      p.addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f);
+    }
   }
 
   String path = String(PROFILES_DIR) + "/" + name + ".json";

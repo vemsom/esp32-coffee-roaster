@@ -27,6 +27,17 @@ static float currentET = NAN;
 static float currentHeaterDuty = 0;
 static int currentFanSpeed = 0;
 
+// Rate-of-rise guidance state, updated each control cycle. Guidance is only
+// active in profile mode when the current step has rorTarget > 0 and the RoR
+// estimate has warmed up. These are reported in /api/status and MQTT.
+static float currentRorTarget = 0.0f;
+static float currentRorError = 0.0f;
+static float currentRorCorrection = 0.0f;
+static int currentRorGuidanceStep = -1;  // -1 = none
+static bool currentRorActive = false;
+// Last time the RoR correction was updated, used to rate-limit its movement.
+static unsigned long lastRorCorrectionUpdate = 0;
+
 // Fan interlock: true while a positive heat request is being withheld because
 // the fan is below FAN_MIN_FOR_HEATER_PCT. Self-clearing and deliberately
 // separate from the latched sensor alarm - it has its own message and must
@@ -111,6 +122,26 @@ static float cbGetRorBt() {
 static float cbGetRorEt() {
   StateLockGuard guard;
   return ror_get_et();
+}
+
+static int cbGetRorGuidance() {
+  StateLockGuard guard;
+  return currentRorGuidanceStep;
+}
+
+static float cbGetRorTarget() {
+  StateLockGuard guard;
+  return currentRorTarget;
+}
+
+static float cbGetRorError() {
+  StateLockGuard guard;
+  return currentRorError;
+}
+
+static bool cbGetRorActive() {
+  StateLockGuard guard;
+  return currentRorActive;
 }
 
 static float cbGetHeaterDuty() {
@@ -286,6 +317,15 @@ static void cbStopCool() {
   cbSetFanSpeed(0);
 }
 
+static void resetRorGuidance() {
+  currentRorTarget = 0.0f;
+  currentRorError = 0.0f;
+  currentRorCorrection = 0.0f;
+  currentRorGuidanceStep = -1;
+  currentRorActive = false;
+  lastRorCorrectionUpdate = 0;
+}
+
 static bool cbStartRoast(const String &profileName) {
   StateLockGuard guard;
   if (safety_faulted()) return false;  // alarm must clear before a new run
@@ -295,6 +335,7 @@ static bool cbStartRoast(const String &profileName) {
   snprintf(selectedProfileName, sizeof(selectedProfileName), "%s",
            profileName.c_str());
   heaterPID.reset();
+  resetRorGuidance();
   roastStartMillis = millis();
   roastPaused = false;
   roastPauseStarted = 0;
@@ -310,6 +351,7 @@ static void cbStopRoast() {
   roastPaused = false;
   roastPauseStarted = 0;
   roastPausedTotal = 0;
+  resetRorGuidance();
   applyHeaterDuty(0);
 }
 
@@ -339,7 +381,69 @@ static void abortRunForSafety() {
   roastPausedTotal = 0;
   manualStartMillis = 0;
   manualAutoCool = false;
+  resetRorGuidance();
   applyHeaterDuty(0);
+}
+
+// Clamp a delta to the per-second rate limit, accounting for the time since
+// the last update. dt is in milliseconds and is treated as at least one sample
+// interval so a single long stall cannot unlock a huge step.
+static float rateLimitDelta(float delta, unsigned long dtMs) {
+  if (dtMs == 0) return 0.0f;
+  float maxDelta = ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (dtMs / 1000.0f);
+  if (delta > maxDelta) return maxDelta;
+  if (delta < -maxDelta) return -maxDelta;
+  return delta;
+}
+
+// Update the RoR-guidance correction. Returns the new correction value and
+// writes the diagnostic state (target/error/active/step) into the globals.
+// The correction is added on top of the PID output and is always 0 when any
+// precondition is missing, so existing behaviour is unchanged unless a profile
+// step explicitly enables rorTarget > 0.
+static float updateRorGuidance(unsigned long nowMs) {
+  currentRorTarget = 0.0f;
+  currentRorError = 0.0f;
+  currentRorGuidanceStep = -1;
+  currentRorActive = false;
+
+  if (controlMode != MODE_PROFILE) return 0.0f;
+  if (roastPaused) return 0.0f;
+
+  unsigned long elapsed = roastElapsedSeconds();
+  int stepIdx = activeProfile.stepIndexAt(elapsed);
+  float rorTarget = activeProfile.rorTargetAt(elapsed);
+  if (stepIdx < 0 || rorTarget <= 0.0f) return 0.0f;
+
+  if (safety_faulted()) return 0.0f;
+  if (!ror_valid()) return 0.0f;
+  if (isnan(currentET)) return 0.0f;
+
+  float rorEt = ror_get_et();
+  float error = rorTarget - rorEt;          // positive = too slow = need more heat
+  float rawCorrection = error * ROR_GUIDANCE_GAIN;
+
+  // Rate-limit the change of the correction, not the absolute value, so a
+  // sudden cold-probe reading can only pull the correction by the configured
+  // step per second instead of jumping straight to the clamp.
+  unsigned long dtMs = (lastRorCorrectionUpdate == 0)
+                           ? SENSOR_READ_INTERVAL_MS
+                           : (nowMs - lastRorCorrectionUpdate);
+  if ((long)dtMs < 0) dtMs = SENSOR_READ_INTERVAL_MS;  // millis() wrap
+  float delta = rawCorrection - currentRorCorrection;
+  delta = rateLimitDelta(delta, dtMs);
+  float correction = currentRorCorrection + delta;
+
+  if (correction > HEATER_MAX_DUTY_PCT) correction = HEATER_MAX_DUTY_PCT;
+  if (correction < -HEATER_MAX_DUTY_PCT) correction = -HEATER_MAX_DUTY_PCT;
+
+  currentRorTarget = rorTarget;
+  currentRorError = error;
+  currentRorCorrection = correction;
+  currentRorGuidanceStep = stepIdx;
+  currentRorActive = true;
+  lastRorCorrectionUpdate = nowMs;
+  return correction;
 }
 
 // Runs the active control mode. Called at the sensor sample rate so the PID
@@ -347,6 +451,9 @@ static void abortRunForSafety() {
 // Every duty request goes through applyHeaterDuty(), which is where the fan
 // interlock holds the element off when there is not enough airflow.
 static void updateControl() {
+  unsigned long nowMs = millis();
+  float rorCorrection = updateRorGuidance(nowMs);
+
   if (controlMode == MODE_PROFILE) {
     unsigned long elapsed = roastElapsedSeconds();
     // Fan first: the interlock has to see this cycle's fan value, or the very
@@ -356,10 +463,14 @@ static void updateControl() {
     }
     float target = activeProfile.targetAt(elapsed);
     if (!isnan(target) && !isnan(currentBT)) {
-      applyHeaterDuty(heaterPID.compute(target, currentBT));
+      float pidDuty = (float)heaterPID.compute(target, currentBT);
+      float duty = pidDuty + rorCorrection;
+      if (duty > HEATER_MAX_DUTY_PCT) duty = HEATER_MAX_DUTY_PCT;
+      if (duty < 0.0f) duty = 0.0f;
+      applyHeaterDuty(duty);
     }
   } else if (controlMode == MODE_MANUAL) {
-    unsigned long elapsed = (millis() - manualStartMillis) / 1000;
+    unsigned long elapsed = (nowMs - manualStartMillis) / 1000;
     if (elapsed >= manualDurationSeconds) {
       controlMode = MODE_IDLE;
       applyHeaterDuty(0);
@@ -570,6 +681,10 @@ void setup() {
     cbGetSafetyReason,
     cbGetFanFault,
     cbGetWifiConnected,
+    cbGetRorGuidance,
+    cbGetRorTarget,
+    cbGetRorError,
+    cbGetRorActive,
     cbSetFanSpeed,
     cbStartManual,
     cbStopManual,
@@ -596,6 +711,10 @@ void setup() {
     cbGetSafetyReason,
     cbGetRoastActive,
     cbGetFanFault,
+    cbGetRorGuidance,
+    cbGetRorTarget,
+    cbGetRorError,
+    cbGetRorActive,
   };
   mqtt_init(mqttCallbacks);
 }

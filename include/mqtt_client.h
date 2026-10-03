@@ -22,6 +22,10 @@ struct MqttCallbacks {
   const char *(*getSafetyReason)();
   bool  (*getRoastActive)();
   bool  (*getFanFault)();    // fan interlock: heat withheld, fan below minimum
+  int   (*getRorGuidance)(); // index of the RoR-driven step, -1 = none
+  float (*getRorTarget)();   // RoR target in C/min
+  float (*getRorError)();    // RoR target - rorEt
+  bool  (*getRorActive)();   // true when correction is being applied
 };
 
 // No-op (MQTT stays disabled, but the firmware runs) when MQTT_HOST is "TBD".

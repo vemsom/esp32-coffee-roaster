@@ -25,6 +25,10 @@ struct WebServerCallbacks {
   const char *(*getSafetyReason)();
   bool  (*getFanFault)();   // fan interlock: heat withheld, fan below minimum
   bool  (*getWifiConnected)();  // device-side WiFi state, shown in the UI
+  int   (*getRorGuidance)();    // index of the RoR-driven step, -1 = none
+  float (*getRorTarget)();      // RoR target in C/min
+  float (*getRorError)();       // RoR target - rorEt
+  bool  (*getRorActive)();      // true when correction is being applied
 
   // Commands
   void (*setFanSpeed)(int percent);

@@ -224,6 +224,12 @@ void mqtt_publish_status() {
     doc["safetyFault"] = cb.getSafetyFault();
     doc["safetyReason"] = cb.getSafetyReason();
     doc["fanFault"] = cb.getFanFault();
+    // RoR guidance diagnostics. No new MQTT entity is added; these live in the
+    // status payload so a user who wants them can template a sensor in HA.
+    doc["roRorGuidance"] = cb.getRorGuidance();
+    doc["roRorTarget"] = cb.getRorTarget();
+    doc["roRorError"] = cb.getRorError();
+    doc["roRorActive"] = cb.getRorActive();
     doc["uptime"] = millis() / 1000;
     doc["rssi"] = WiFi.RSSI();
     IPAddress address = WiFi.localIP();

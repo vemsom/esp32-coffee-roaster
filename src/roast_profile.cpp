@@ -11,7 +11,27 @@ void RoastProfile::clear() {
 
 void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
                            float temp, float fan) {
-  _steps.push_back({rampSeconds, holdSeconds, temp, fan});
+  ProfileStep s;
+  s.rampSeconds = rampSeconds;
+  s.holdSeconds = holdSeconds;
+  s.temp = temp;
+  s.fan = fan;
+  _steps.push_back(s);
+  if (fan > 0) _hasFan = true;
+}
+
+void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
+                           float temp, float fan,
+                           float rorTarget, float rorStart, float rorEnd) {
+  ProfileStep s;
+  s.rampSeconds = rampSeconds;
+  s.holdSeconds = holdSeconds;
+  s.temp = temp;
+  s.fan = fan;
+  s.rorTarget = rorTarget;
+  s.rorStart = rorStart;
+  s.rorEnd = rorEnd;
+  _steps.push_back(s);
   if (fan > 0) _hasFan = true;
 }
 
@@ -45,6 +65,45 @@ float RoastProfile::targetAt(unsigned long elapsedSeconds) const {
                  [](const ProfileStep &s) { return s.temp; });
 }
 
+float RoastProfile::rorTargetAt(unsigned long elapsedSeconds) const {
+  if (_steps.empty()) return 0.0f;
+  // Use the same interpolation as targetAt(), but driven by rorStart..rorEnd
+  // and gated on rorTarget > 0. A disabled step returns 0.
+  float prevTarget = 0.0f;
+  unsigned long t = 0;
+  for (const auto &s : _steps) {
+    unsigned long rampEnd = t + s.rampSeconds;
+    unsigned long holdEnd = rampEnd + s.holdSeconds;
+    if (s.rorTarget <= 0.0f) {
+      prevTarget = 0.0f;
+      t = holdEnd;
+      continue;
+    }
+    float prev = (t == 0) ? s.rorStart : prevTarget;
+    if (s.rampSeconds > 0 && elapsedSeconds < rampEnd) {
+      float ratio = (float)(elapsedSeconds - t) / (float)s.rampSeconds;
+      return prev + ratio * (s.rorEnd - prev);
+    }
+    if (elapsedSeconds < holdEnd) return s.rorEnd;
+    prevTarget = s.rorEnd;
+    t = holdEnd;
+  }
+  return 0.0f;
+}
+
+int RoastProfile::stepIndexAt(unsigned long elapsedSeconds) const {
+  if (_steps.empty()) return -1;
+  unsigned long t = 0;
+  for (size_t i = 0; i < _steps.size(); i++) {
+    const auto &s = _steps[i];
+    unsigned long rampEnd = t + s.rampSeconds;
+    unsigned long holdEnd = rampEnd + s.holdSeconds;
+    if (elapsedSeconds < holdEnd) return (int)i;
+    t = holdEnd;
+  }
+  return -1;
+}
+
 // The fan does not ramp: it steps to the step's value at the start of the
 // step and holds it until the next step begins.
 float RoastProfile::fanAt(unsigned long elapsedSeconds) const {
@@ -73,7 +132,15 @@ bool RoastProfile::loadFromFile(const String &path) {
 
   if (doc["steps"].is<JsonArray>()) {
     for (JsonObject s : doc["steps"].as<JsonArray>()) {
-      addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f);
+      float rorTarget = s["rorTarget"] | 0.0f;
+      if (rorTarget > 0.0f) {
+        addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f,
+                rorTarget,
+                s["rorStart"] | 0.0f,
+                s["rorEnd"] | 0.0f);
+      } else {
+        addStep(s["ramp"] | 0, s["hold"] | 0, s["temp"] | 0.0f, s["fan"] | 0.0f);
+      }
     }
   } else if (doc["points"].is<JsonArray>()) {
     // Backwards compatibility: an old point list becomes one ramp step per
@@ -98,6 +165,13 @@ bool RoastProfile::saveToFile(const String &path) const {
     o["hold"] = s.holdSeconds;
     o["temp"] = s.temp;
     o["fan"] = s.fan;
+    // Only write RoR guidance when the step uses it, so old profiles stay
+    // byte-for-byte identical unless the user explicitly enables RoR.
+    if (s.rorTarget > 0.0f) {
+      o["rorTarget"] = s.rorTarget;
+      o["rorStart"] = s.rorStart;
+      o["rorEnd"] = s.rorEnd;
+    }
   }
 
   File f = LittleFS.open(path, "w");

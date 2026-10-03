@@ -32,3 +32,8 @@ void ror_update(unsigned long nowMs, float bt, float et);
 
 float ror_get_bt();  // C/min, one decimal, negative = cooling
 float ror_get_et();  // C/min, one decimal, negative = cooling
+
+// True once at least ROR_MIN_SPAN_MS of history exists. The warm-up value 0
+// is intentionally indistinguishable from a flat rate, so guidance code must
+// check this flag before acting on ror_get_et().
+bool ror_valid();

@@ -91,6 +91,10 @@
       <div class="card"><div class="label" data-i18n="labelTime">Tid</div><div class="value" id="valTime">--</div></div>
     </div>
 
+    <div class="row">
+      <div class="card"><div class="label" data-i18n="labelRorGuidance">RoR-styrning</div><div class="value sm" id="valRorGuidance">--</div></div>
+    </div>
+
     <div class="panel">
       <div class="controls">
         <div style="flex:2; min-width:180px;">
@@ -280,6 +284,7 @@ const I18N = {
     labelBeanTemp: 'Böntemp (BT)', labelEnvTemp: 'Lufttemp (ET)',
     labelRorBt: 'Böntemperaturökning', labelRorEt: 'Miljötemperaturökning',
     labelHeater: 'Värme', labelFan: 'Fläkt', labelTime: 'Tid',
+    labelRorGuidance: 'RoR-styrning', rorOff: 'av', rorActive: 'aktiv',
     labelTarget: 'Målvärde', labelProfile: 'Profil',
     labelTargetTemp: 'Måltemperatur (°C)', labelMinutes: 'Tid (minuter)',
     labelFanPct: 'Fläkt (%)', labelHeaterPct: 'Värme (%)',
@@ -329,6 +334,7 @@ const I18N = {
     labelBeanTemp: 'Bean temp (BT)', labelEnvTemp: 'Env temp (ET)',
     labelRorBt: 'Bean temp rise', labelRorEt: 'Environment temp rise',
     labelHeater: 'Heat', labelFan: 'Fan', labelTime: 'Time',
+    labelRorGuidance: 'RoR guidance', rorOff: 'off', rorActive: 'active',
     labelTarget: 'Target', labelProfile: 'Profile',
     labelTargetTemp: 'Target temperature (°C)', labelMinutes: 'Time (minutes)',
     labelFanPct: 'Fan (%)', labelHeaterPct: 'Heat (%)',
@@ -516,6 +522,20 @@ async function pollStatus() {
   $('valHeater').textContent = Math.round(s.heaterDuty) + '%';
   $('valFan').textContent = s.fanSpeed + '%';
   $('valTime').textContent = fmtClock(s.elapsedSeconds);
+
+  // Rate-of-rise guidance line: target, actual ET rate, and whether the
+  // correction is being applied. Only shown in detail; the main BT/ET/RoR
+  // cards above still carry the raw measurements.
+  if (typeof s.roRorGuidance === 'number' && s.roRorGuidance >= 0) {
+    const target = num(s.roRorTarget);
+    const actual = num(s.rorEt);
+    const active = s.roRorActive ? t('rorActive') : t('rorOff');
+    $('valRorGuidance').textContent =
+      (target === null ? '--' : target.toFixed(1)) + ' C/min · ET ' +
+      (actual === null ? '--' : actual.toFixed(1)) + ' C/min · ' + active;
+  } else {
+    $('valRorGuidance').textContent = t('rorOff');
+  }
 
   // Same readout in the manual view, plus the setpoint the PID is holding.
   const target = manualTarget();

@@ -10,6 +10,13 @@ struct ProfileStep {
   unsigned long holdSeconds;
   float temp;   // target temperature at the end of the ramp
   float fan;    // fan speed 0-100 % for the step
+  // Rate-of-rise guidance for this step, optional. rorTarget > 0 makes the
+  // step RoR-driven; rorStart and rorEnd describe the target slope in C/min
+  // at the beginning and end of the step. The curve is interpolated the same
+  // way as temperature. Default 0 means RoR guidance is disabled for the step.
+  float rorTarget = 0;
+  float rorStart = 0;
+  float rorEnd = 0;
 };
 
 // A roast profile: an ordered list of steps, always starting from a
@@ -19,9 +26,17 @@ public:
   bool loadFromFile(const String &path);
   bool saveToFile(const String &path) const;
   void addStep(unsigned long rampSeconds, unsigned long holdSeconds, float temp, float fan);
+  void addStep(unsigned long rampSeconds, unsigned long holdSeconds, float temp, float fan,
+               float rorTarget, float rorStart, float rorEnd);
   void clear();
   float targetAt(unsigned long elapsedSeconds) const;
   float fanAt(unsigned long elapsedSeconds) const;
+  // RoR target in C/min at elapsed seconds, or 0 if the current step has no
+  // RoR guidance. Interpolates linearly over ramps and holds the end value
+  // during holds, exactly like targetAt().
+  float rorTargetAt(unsigned long elapsedSeconds) const;
+  // Index of the step that is active at elapsed seconds, or -1 if none.
+  int stepIndexAt(unsigned long elapsedSeconds) const;
   bool hasFan() const { return _hasFan; }
   float startTemp() const { return _startTemp; }
   void setStartTemp(float t) { _startTemp = t; }

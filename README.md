@@ -97,6 +97,38 @@ command that can start, stop or change a roast.
 The web UI has no external dependencies (no CDN), so it works without internet
 access on the device that views it.
 
+## Guiding by rate of rise
+
+The profile can drive the roast by rate of rise instead of only by temperature.
+Add `rorTarget`, `rorStart` and `rorEnd` to a profile step (values are C/min):
+
+```json
+{
+  "ramp": 60,
+  "hold": 60,
+  "temp": 50,
+  "fan": 80,
+  "rorTarget": 1,
+  "rorStart": 15,
+  "rorEnd": 3
+}
+```
+
+`rorTarget > 0` enables the step. The target slope then falls linearly from
+`rorStart` at the beginning of the step to `rorEnd` at the end, the same way
+temperature ramps. The firmware compares this target to the measured environment
+rate of rise (`rorEt`) and nudges the heater duty up or down through a simple
+gain. PID still runs underneath; the RoR correction is added on top and clamped
+to the safe duty range, with a rate limit so a cold probe or a startup glitch
+cannot slam the element to full power.
+
+RoR guidance is **off by default**. A step without `rorTarget`, or any old
+profile, behaves exactly as before: temperature target and PID are unchanged.
+Guiding also pauses itself when the roast is paused, a safety alarm is active,
+the RoR estimate is still warming up, or the fan interlock is holding the
+element off. The web UI and MQTT status show the current RoR target, error and
+whether guidance is active.
+
 ## Safety limits
 
 The heater sits behind a latched alarm that no command can silence. It trips on:
@@ -148,7 +180,7 @@ hard-coded outside it.
 ## Project status
 
 Early development. The firmware builds clean and the host test suite is green
-(RAM 15.7 %, Flash 73.3 %, FW 0.6.0, Arduino core 2.0.17, espressif32 7.1.3).
+(RAM 16.0 %, Flash 73.6 %, FW 0.7.0, Arduino core 2.0.17, espressif32 7.1.3).
 The hardware is not finished: the temperature modules were still in transit and
 the GPIO assignment has never been checked against a physical board.
 `docs/firmware-notes.md` lists what is verified and what is still an
