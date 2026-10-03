@@ -49,3 +49,8 @@ void web_server_init(WebServerCallbacks callbacks);
 // True once a push OTA upload has been written and verified: main.cpp restarts
 // on it, from loop(), so the HTTP response gets out first.
 bool web_ota_reboot_pending();
+
+// Called by main.cpp: false while the filesystem partition is being rewritten
+// by a filesystem OTA transfer. web_server.cpp provides a weak "true" default
+// and main.cpp overrides it, so the server can be linked without main.
+bool web_fs_available();

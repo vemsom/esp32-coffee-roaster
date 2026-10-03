@@ -156,6 +156,22 @@ static bool cbGetRorActive() {
   return currentRorActive;
 }
 
+// True between the unmount in onStart() and the reboot (or the remount in
+// onError()). While it is set, /profiles is not readable - the partition is
+// being rewritten - so the profile endpoints must refuse instead of reading
+// whatever the half-written image happens to look like as a filesystem.
+// Declared up here because the web callback below reads it.
+static volatile bool otaFsUnmounted = false;
+
+// While a filesystem OTA transfer rewrites the profile partition, the profile
+// endpoints have nothing readable to read. No lock: it is a volatile flag set
+// from the OTA callback, and taking the state lock on a path that runs during
+// a transfer would only add a way to block.
+//
+// This overrides the weak default in web_server.cpp, which is what makes the
+// host tests for the profile endpoints work without main.cpp.
+bool web_fs_available() { return !otaFsUnmounted; }
+
 static float cbGetHeaterDuty() {
   StateLockGuard guard;
   return currentHeaterDuty;
@@ -611,9 +627,35 @@ static void startOta() {
   ArduinoOTA.setPassword(OTA_PASSWORD);
 
   ArduinoOTA.onStart([]() {
-    Serial.println("[OTA] transfer starting - heater latched off, run aborted");
+    // What is being written decides what has to get out of the way.
+    //
+    // Update.begin() is called by the library BEFORE this callback, and for
+    // U_SPIFFS it writes straight to the flash partition the filesystem lives
+    // on. LittleFS must not be mounted while that happens: a mounted
+    // filesystem holds its own metadata and buffers in RAM and would be
+    // writing its view of the same blocks over/behind the incoming image.
+    // The symptom is not a clean refusal - the transfer starts, runs for a
+    // while, and then dies, which is exactly what an interrupt mid-write
+    // looks like from the outside.
+    //
+    // So U_SPIFFS unmounts. U_FLASH goes to the inactive app slot and never
+    // shares a block with the filesystem, so it leaves LittleFS alone (and
+    // must: the profiles are read for the rest of this boot).
+    const bool writingFs = (ArduinoOTA.getCommand() == U_SPIFFS);
+    Serial.print("[OTA] transfer starting - heater latched off, run aborted (");
+    Serial.print(writingFs ? "filesystem" : "firmware");
+    Serial.println(")");
     heater_emergency_off();
     abortRunForSafety();
+    if (writingFs) {
+      // Close the filesystem before the incoming image touches its partition.
+      // Nothing after this may read /profiles until it is mounted again - and
+      // after a successful transfer the device reboots, so for that path the
+      // only thing that matters is that this returns quickly.
+      LittleFS.end();
+      otaFsUnmounted = true;
+      Serial.println("[OTA] LittleFS unmounted for the filesystem transfer");
+    }
   });
   ArduinoOTA.onEnd([]() { otaReboot = true; });
   ArduinoOTA.onError([](ota_error_t err) {
@@ -622,6 +664,14 @@ static void startOta() {
     // fails (otadata only flips after a successful end).
     Serial.print("[OTA] transfer failed, code ");
     Serial.println((int)err);
+    // A failed filesystem transfer leaves the partition mounted in the
+    // firmware's eyes but not in ours: remount before the restart so the
+    // profiles are readable if the device does not come back up cleanly.
+    if (otaFsUnmounted) {
+      LittleFS.begin(true);
+      otaFsUnmounted = false;
+      Serial.println("[OTA] LittleFS remounted after the failed transfer");
+    }
     otaReboot = true;
   });
 

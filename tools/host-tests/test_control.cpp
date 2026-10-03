@@ -17,6 +17,7 @@
 #include <WiFi.h>
 #include <ArduinoOTA.h>
 #include <LittleFS.h>
+#include <ESPAsyncWebServer.h>
 #include <max6675.h>
 #include <PubSubClient.h>
 #include <Update.h>
@@ -452,6 +453,76 @@ int main() {
   loop();
   check(ESP.restartCount > restartsBeforeEnd,
         "a finished transfer restarts the device into the new image");
+
+  // ------------------------------------------- filesystem OTA (U_SPIFFS) ----
+  // This is the case that was broken: LittleFS stayed mounted while the
+  // incoming image rewrote the very partition it lived on, and the transfer
+  // died part-way through with "[ERROR]: Error Uploading" after ~190 chunks.
+  // The rule is that the command decides: U_SPIFFS must unmount first, U_FLASH
+  // must not.
+  {
+    // A fresh boot state for the filesystem.
+    LittleFS.begin(true);
+    check(LittleFS.mounted(), "the filesystem is mounted before any transfer");
+
+    const size_t opsBefore = littlefs_stub::opCount();
+    ArduinoOTA.setCommand(U_FLASH);
+    ArduinoOTA.fireStart();
+    check(LittleFS.mounted(),
+          "a FIRMWARE transfer (U_FLASH) leaves LittleFS mounted - it writes the "
+          "other partition, and the profiles are read for the rest of this boot");
+    check(littlefs_stub::opLog().size() == opsBefore ||
+              littlefs_stub::opLog().back().rfind("end", 0) != 0,
+          "a firmware transfer does not unmount the filesystem");
+  }
+  {
+    // U_SPIFFS: the image lands on the filesystem partition, so the filesystem
+    // has to be out of the way before the first byte arrives.
+    LittleFS.begin(true);
+    const size_t opsBefore = littlefs_stub::opCount();
+    ArduinoOTA.setCommand(U_SPIFFS);
+    ArduinoOTA.fireStart();
+    check(!LittleFS.mounted(),
+          "a FILESYSTEM transfer (U_SPIFFS) unmounts LittleFS before the image lands");
+    bool sawEnd = false;
+    for (size_t i = opsBefore; i < littlefs_stub::opLog().size(); i++) {
+      if (littlefs_stub::opLog()[i] == "end:/") sawEnd = true;
+    }
+    check(sawEnd, "the unmount is the real end() call, not just a flag");
+    check(ssrState == LOW,
+          "the element is still latched off on the filesystem path");
+    check(heater_emergency_active(),
+          "and the safety latch holds there too");
+  }
+  {
+    // While unmounted, the profile endpoints have nothing readable to read:
+    // they must refuse instead of reading a half-written partition.
+    check(!web_fs_available(),
+          "the API reports the filesystem as unavailable during a filesystem transfer");
+    const AsyncWebServer::Route *list = nullptr;
+    for (AsyncWebServer *s : asyncWebServers())
+      for (const AsyncWebServer::Route &r : s->routes())
+        if (r.uri == "/api/profiles" && r.method == HTTP_GET) list = &r;
+    if (list) {
+      AsyncWebServerRequest req;
+      list->onRequest(&req);
+      check(req.responseCode() == 503,
+            "listing profiles during a filesystem transfer answers 503, not garbage");
+      check(!LittleFS.mounted(), "and it still does not touch the unmounted filesystem");
+    }
+  }
+  {
+    // A failed filesystem transfer must remount before the restart: the device
+    // comes back with a readable filesystem either way.
+    const int restartsBefore = ESP.restartCount;
+    ArduinoOTA.fireError(OTA_RECEIVE_ERROR);
+    check(LittleFS.mounted(),
+          "a failed filesystem transfer remounts LittleFS before restarting");
+    loop();
+    check(ESP.restartCount > restartsBefore,
+          "and then restarts like any failed transfer");
+    check(web_fs_available(), "the API reports the filesystem as available again");
+  }
 
   printf("\n%d checks, %d failures\n", checks, failures);
   return failures == 0 ? 0 : 1;

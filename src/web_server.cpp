@@ -191,7 +191,23 @@ static bool validProfileName(const String &name) {
   return true;
 }
 
+// True while the profile partition is readable. A filesystem OTA transfer
+// rewrites that partition, so during one the profile endpoints must refuse
+// rather than read a half-written image as if it were a filesystem.
+//
+// Weak on purpose: web_server.cpp owns the check, but only main.cpp knows when
+// a transfer is running. Linking the server without main (the host tests for
+// the profile endpoints) gets "always available", which is the truth there.
+__attribute__((weak)) bool web_fs_available() { return true; }
+
+static bool fsReady(AsyncWebServerRequest *request) {
+  if (web_fs_available()) return true;
+  sendError(request, 503, "filesystem update in progress");
+  return false;
+}
+
 static void handleProfilesList(AsyncWebServerRequest *request) {
+  if (!fsReady(request)) return;
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
@@ -211,6 +227,7 @@ static void handleProfilesList(AsyncWebServerRequest *request) {
 }
 
 static void handleProfileGet(AsyncWebServerRequest *request) {
+  if (!fsReady(request)) return;
   if (!request->hasParam("name")) {
     sendError(request, 400, "missing name");
     return;
@@ -252,6 +269,7 @@ static void handleProfileGet(AsyncWebServerRequest *request) {
 
 static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
                                 size_t index, size_t total) {
+  if (!fsReady(request)) return;
   JsonDocument doc;
   if (deserializeJson(doc, data, len)) {
     sendError(request, 400, "invalid json");
@@ -288,6 +306,7 @@ static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, s
 }
 
 static void handleProfileDelete(AsyncWebServerRequest *request) {
+  if (!fsReady(request)) return;
   if (!request->hasParam("name")) {
     sendError(request, 400, "missing name");
     return;

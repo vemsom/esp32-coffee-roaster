@@ -43,6 +43,10 @@ sh tools/ota-push.sh 192.168.x.x        # firmware - the normal path
 sh tools/ota-upload.sh 192.168.x.x fs   # web UI only
 ```
 
+Both work with no USB cable and no firewall rule. The `fs` form sends the
+filesystem image to its own partition; it runs on firmware that has the
+filesystem-transfer fix, so it completes instead of dying part-way.
+
 The push script connects to the roaster and POSTs the image to `/api/update`
 with the token from `include/secrets.h` (`OTA_TOKEN`) and a SHA-256 of the
 image, which the device verifies before it commits anything. Two things worth

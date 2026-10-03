@@ -1,9 +1,9 @@
 # Firmware notes - assumptions and what is verified
 
 Status: **verified items below were re-confirmed on 2026-10-03** with a clean
-`pio run` (zero warnings) and the host-side test suite (843 checks, 0
-failures). Push-OTA is additionally verified against real hardware. Everything
-still listed as open is untested against real hardware.
+`pio run` (zero warnings) and the host-side test suite (869 checks, 0
+failures). Push-OTA and filesystem OTA are both verified against real hardware.
+Everything still listed as open is untested against real hardware.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -288,6 +288,63 @@ Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
 - **Nothing else is touched.** `Update` writes to the inactive OTA slot; NVS
   and LittleFS are not part of that, so saved profiles survive a push. The
   host test asserts exactly that against the real handler.
+
+### Filesystem OTA: the command decides, and LittleFS must be unmounted
+
+`sh tools/ota-upload.sh <ip> fs` sends `littlefs.bin` to the filesystem
+partition with `--spiffs`. This was broken, and the failure looked like a
+network problem: the transfer started, ran for ~190 chunks, and died with
+`[ERROR]: Error Uploading` after about 27 s.
+
+The cause was **not** the network. `ArduinoOTA` passes the transfer command to
+`Update.begin(size, command, ...)` itself (`ArduinoOTA.cpp:250`), so `Update`
+knew it was writing SPIFFS - but `onStart()` ignored the command, and LittleFS
+was still **mounted** on the partition being rewritten. A mounted filesystem
+holds its own metadata and buffers in RAM and goes on writing its view of the
+same blocks underneath the incoming image. The transfer dies part-way, which is
+what an interrupted write looks like from the outside.
+
+The rule in `onStart()` is now: **the command decides what gets out of the
+way.**
+
+- `U_SPIFFS` -> `LittleFS.end()` before the first byte lands, and the profile
+  endpoints answer **503** for the duration instead of reading a half-written
+  partition as if it were a filesystem.
+- `U_FLASH` -> LittleFS is left alone. It writes the other partition and never
+  shares a block with the filesystem, and the profiles are read for the rest of
+  that boot.
+- A failed transfer remounts before the restart, so the device comes back
+  readable either way.
+
+**Verified against the hardware 2026-10-03:** `Result: OK`, `Success`,
+1 441 792 bytes, twice in a row, and the device's `/` afterwards is **51 813
+characters and contains `valRorBt`** - with the transfer running on firmware
+that has this fix in it. Before the fix the same command never got past the
+handshake.
+
+### The upload-flag trap, and why the script calls espota directly
+
+Two different PlatformIO traps sit here, and both were hit while making the
+filesystem transfer work:
+
+- **Everything on one line** in `upload_flags` makes PlatformIO pass
+  `"-P 32320 -I 192.168.1.x"` *inside* the `--auth` value: espota answers
+  `Authenticating...FAIL`.
+- **One flag per line** (the form that gives separate arguments) gives every
+  value a **leading space**, so `host_ip` becomes `" 192.168.1.x"` and espota
+  dies on `[ERROR]: Listen Failed` before the transfer even starts. That
+  message reads like a network problem; it is a stray blank.
+
+There is no `upload_command` key in PlatformIO, `extra_scripts` set on the env
+overwrite the one inherited from `extends`, and `UPLOADERFLAGS` is re-set by
+`builder/main.py` after every script hook has run - so no script can clean it
+up reliably. `tools/ota-upload.sh` therefore **calls `espota.py` directly**
+with the arguments as a list: no middleman, no space that can be added.
+`-I 192.168.1.x` (the server's LAN address) and `-P 32320` are both still
+required, and the password is read from `secrets.h` as before.
+
+`platformio.ini` keeps its `upload_flags` for anyone who runs `pio run -e
+esp32-ota -t upload` by hand, with the trap documented next to it.
 
 ### Proving a push landed: the build identity in `/api/status`
 
@@ -718,8 +775,8 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-03: **451 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 843 checks execute in total,
+broker. Last run 2026-10-03: **461 checks, 0 failures**, exit 0, no compiler
+warnings. That figure counts each test once; 869 checks execute in total,
 because `test_mqtt_discovery` runs once per build language and `test_control`
 also runs under ThreadSanitizer:
 
@@ -773,7 +830,11 @@ also runs under ThreadSanitizer:
   port and password, is served while idle, is *not* served while a run is
   active, latches the element low on `onStart()` while a manual heat is
   conducting (and aborts that run), and asks for a restart on `onEnd()` and
-  on `onError()`.
+  on `onError()`. The filesystem path is covered here too: `U_SPIFFS` unmounts
+  LittleFS before the image lands (and really calls `end()`, not just a flag),
+  `U_FLASH` leaves it mounted, the profile endpoints answer 503 while it is
+  unmounted, and a failed transfer remounts before the restart. That is the
+  regression test for the bug that made filesystem OTA die part-way.
 - `test_ota_push` - the push OTA endpoint (59 checks): the real
   `POST /api/update` handler and the real state machine, against a stubbed
   `Update` that records every call, dispatched with every chunk of the body the

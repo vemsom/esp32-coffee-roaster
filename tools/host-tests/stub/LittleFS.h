@@ -130,7 +130,26 @@ class File {
 
 class LittleFSClass {
  public:
-  bool begin(bool format = false) { (void)format; return true; }
+  bool begin(bool format = false) {
+    littlefs_stub::note("begin", "/");
+    _mounted = true;
+    (void)format;
+    return true;
+  }
+
+  // The real LittleFS.end() unmounts: after it returns, nothing may be read or
+  // written until begin() is called again. The stub records both the call and
+  // the state, because "was the filesystem unmounted before the image landed"
+  // is exactly the thing the filesystem-OTA test has to prove.
+  void end() {
+    littlefs_stub::note("end", "/");
+    if (!_mounted) {
+      littlefs_stub::note("end-unmounted", "/");  // end() on an unmounted fs
+    }
+    _mounted = false;
+  }
+
+  bool mounted() const { return _mounted; }
 
   bool exists(const String &path) {
     littlefs_stub::note("exists", path.c_str());
@@ -159,6 +178,8 @@ class LittleFSClass {
       if (d == key) return true;
     return false;
   }
+
+  bool _mounted = true;
 };
 
 inline File LittleFSClass::open(const String &path, const char *mode) {

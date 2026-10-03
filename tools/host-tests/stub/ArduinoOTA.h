@@ -15,6 +15,12 @@ typedef enum {
   OTA_END_ERROR
 } ota_error_t;
 
+// The two update commands the real library accepts (ArduinoOTA.cpp:176 only
+// lets these two through). Their numeric values matter no more here than they
+// do there - only that U_SPIFFS is distinguishable from U_FLASH.
+#define U_FLASH 0
+#define U_SPIFFS 100
+
 class ArduinoOTAClass {
  public:
   void setHostname(const char *h) { hostname = h; }
@@ -28,7 +34,14 @@ class ArduinoOTAClass {
   void begin() { beginCount++; }
   void handle() { handleCount++; }
 
-  // Test controls: the real library calls these from its own task.
+  // The command of the transfer in progress, exactly as the real library
+  // exposes it (ArduinoOTA.h: getCommand()).
+  int getCommand() { return command; }
+
+  // Test controls: the real library calls these from its own task. setCommand
+  // is what a test sets before fireStart(), so it can drive the U_SPIFFS path
+  // the way espota --spiffs does.
+  void setCommand(int cmd) { command = cmd; }
   void fireStart() { if (startFn) startFn(); }
   void fireEnd() { if (endFn) endFn(); }
   void fireError(ota_error_t e) { if (errorFn) errorFn(e); }
@@ -37,6 +50,7 @@ class ArduinoOTAClass {
   std::string hostname;
   std::string password;
   uint16_t port = 0;
+  int command = U_FLASH;
   int beginCount = 0;
   int handleCount = 0;
 
