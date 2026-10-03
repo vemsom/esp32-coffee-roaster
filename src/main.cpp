@@ -232,6 +232,15 @@ static bool cbIsRunActive() {
          cbGetCoolActive();
 }
 
+// The other half of the OTA window: is the element asking for power right now?
+// The window is "no run active AND the element off" - a heater left conducting
+// by anything else (a stale duty, a run that just gave up) must block a flash
+// just as hard as a running roast does.
+static bool cbIsHeaterAsking() {
+  StateLockGuard guard;
+  return currentHeaterDuty > 0;
+}
+
 static int cbGetCoolSpeed() {
   StateLockGuard guard;
   return coolSpeed;
@@ -732,7 +741,8 @@ void setup() {
   web_server_init(callbacks);
   if (test_web_server_cb_captured) test_web_server_cb_captured(callbacks);
 
-  OtaPushCallbacks otaCallbacks = { cbIsRunActive };
+  OtaPushCallbacks otaCallbacks = { cbIsRunActive, cbIsHeaterAsking,
+                                    []() -> uint32_t { return millis(); } };
   ota_push_init(otaCallbacks);
   g_otaCallbacks = otaCallbacks;
 

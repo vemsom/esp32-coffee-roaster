@@ -331,29 +331,37 @@ static void handleRoastResume(AsyncWebServerRequest *request) {
 
 // ------------------------------------------------------------------ push OTA ---
 
-// POST /api/update with the image as the body and the token in X-OTA-Token.
-// The header is checked before a single byte of the image is read, the body is
-// only accepted while the machine is idle (see include/ota_push.h), and a
-// finished transfer restarts into the new image - but only after the response
-// has been sent, otherwise the client would see a broken connection on an
-// upload that actually succeeded.
+// POST /api/update with the image as the body, X-OTA-Token and X-OTA-SHA256
+// as headers. Every check happens before a single byte of the image is read
+// (see include/ota_push.h and src/ota_push.cpp), the body is only accepted
+// while the machine is idle AND the element is off, and a finished transfer
+// restarts into the new image - but only after the response has been sent,
+// otherwise the client would see a broken connection on an upload that
+// actually succeeded.
 static volatile bool pushOtaReboot = false;
+
+// Set when the first chunk of a body was refused. The library keeps handing the
+// remaining chunks of the same body to the handler after the response is sent,
+// and those must not reach Update.write() with no transfer started.
+static volatile bool otaPushRefused = false;
 
 static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decision) {
   int code = 400;
   const char *msg = "bad request";
   switch (decision) {
-    case OtaPushDisabled:
-      code = 503;
-      msg = "push OTA disabled: OTA_TOKEN is not set on the device";
-      break;
+    case OtaPushHidden:
+      // Not the allowed client, or a bad token/checksum: indistinguishable
+      // from a path that does not exist. 401 would confirm that this route is
+      // there and worth guessing at.
+      request->send(404, "text/plain", "Not Found");
+      return;
     case OtaPushUnauthorized:
-      code = 401;
-      msg = "unauthorized";
+      code = 403;
+      msg = "the image does not match the checksum that was announced";
       break;
     case OtaPushBusy:
       code = 409;
-      msg = "refused: a roast, manual run or cooling is active";
+      msg = "refused: a run is active or the heater is still conducting";
       break;
     case OtaPushTooLarge:
       code = 413;
@@ -363,6 +371,10 @@ static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decisio
       code = 500;
       msg = "Update.begin() failed";
       break;
+    case OtaPushHashMismatch:
+      code = 403;
+      msg = "the image does not match the checksum that was announced";
+      break;
     default:
       code = 400;
       msg = "missing or unusable Content-Length";
@@ -371,19 +383,54 @@ static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decisio
   sendError(request, code, msg);
 }
 
+// True when a request may be answered with a real error instead of a 404
+// decoy: the allowed client, with the right token and a well-formed checksum.
+// A probe from anywhere else learns nothing.
+static bool otaProbeIsTrusted(AsyncWebServerRequest *request) {
+  char remote[24];
+  snprintf(remote, sizeof(remote), "%s", request->client()->remoteIP().toString().c_str());
+  const AsyncWebHeader *token = request->getHeader("X-OTA-Token");
+  const AsyncWebHeader *sha = request->getHeader("X-OTA-SHA256");
+  return ota_push_probe_trusted(remote, token ? token->value().c_str() : nullptr,
+                                sha ? sha->value().c_str() : nullptr);
+}
+
+// GET on the update path: same rule as a POST that is refused. A client that
+// pokes at the URI without being able to upload anything sees "Not Found".
+static void handleOtaProbe(AsyncWebServerRequest *request) {
+  if (otaProbeIsTrusted(request)) {
+    sendError(request, 405, "POST the firmware image here with X-OTA-Token and X-OTA-SHA256");
+    return;
+  }
+  request->send(404, "text/plain", "Not Found");
+}
+
 static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
                            size_t index, size_t total) {
   // index == 0 is the first chunk of the body and the only place where the
   // decision is made; later chunks belong to a transfer already accepted.
   if (index == 0) {
-    const AsyncWebHeader *header = request->getHeader("X-OTA-Token");
-    OtaPushDecision decision =
-        ota_push_begin(header ? header->value().c_str() : nullptr, total);
+    char remote[24];
+    snprintf(remote, sizeof(remote), "%s", request->client()->remoteIP().toString().c_str());
+    const AsyncWebHeader *token = request->getHeader("X-OTA-Token");
+    const AsyncWebHeader *sha = request->getHeader("X-OTA-SHA256");
+    OtaPushDecision decision = ota_push_begin(
+        remote, token ? token->value().c_str() : nullptr,
+        sha ? sha->value().c_str() : nullptr, total);
     if (decision != OtaPushOk) {
+      // The library keeps calling this handler for the remaining chunks of the
+      // same body even after the response is sent, so the refusal has to be
+      // remembered: without this, chunk two would fall through to
+      // ota_push_write() with no transfer started, Update.write() would fail
+      // and the client would see 500 "write failed" instead of the 404 that
+      // deliberately hides the route.
+      otaPushRefused = true;
       sendOtaError(request, decision);
       return;
     }
+    otaPushRefused = false;
   }
+  if (otaPushRefused) return;  // rest of a body already refused
 
   size_t accepted = ota_push_write(data, len);
   if (accepted != len) {
@@ -396,9 +443,13 @@ static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_
   // same moment, and a body handler that sees neither (connection died) falls
   // through to the abort in ota_push_finished(false) on the next request.
   if (index + len >= total) {
+    // ota_push_finished() hashes what arrived and compares it with the header.
+    // A mismatch discards the written data here, before any reboot is asked
+    // for, so the device keeps booting the image it is already running.
     bool ok = ota_push_finished(true);
     if (!ok) {
-      sendError(request, 500, "Update.end() failed");
+      sendOtaError(request, ota_push_last_transfer_rejected() ? OtaPushHashMismatch
+                                                              : OtaPushUpdateBeginFailed);
       return;
     }
     request->send(200, "application/json",
@@ -436,6 +487,7 @@ void web_server_init(WebServerCallbacks callbacks) {
   // Push OTA. Deliberately not under /api/status's neighbourhood: this one
   // replaces the running firmware, so it is its own path with its own token.
   server.on("/api/update", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr, handleOtaUpdate);
+  server.on("/api/update", HTTP_GET, handleOtaProbe);
 
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 

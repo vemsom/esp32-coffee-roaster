@@ -11,6 +11,7 @@
 // from outside that translation unit, so every instance puts itself in a
 // registry: that is how a test finds the routes to dispatch at.
 #include <Arduino.h>
+#include <WiFi.h>  // IPAddress: request->client()->remoteIP() returns one
 #include <functional>
 #include <string>
 #include <vector>
@@ -86,6 +87,24 @@ class AsyncWebServerRequest {
     _params.push_back(AsyncWebParameter(name, value));
   }
 
+  // The requesting client, as the real library exposes it: only remoteIP() is
+  // read by the firmware (the push OTA endpoint checks where the request came
+  // from). A stub address type keeps the same shape without pulling in IPAddress.
+  class AsyncClientStub {
+   public:
+    // The real library returns an IPAddress, and the firmware turns it into a
+    // string with IPAddress::toString(). Returning the same type here keeps the
+    // call site on the device compiling unchanged - the stub must not be more
+    // convenient than reality.
+    IPAddress remoteIP() const { return _ip; }
+    void setRemoteIP(const String &ip) { _ip = IPAddress(ip); }
+    void setRemoteIP(const IPAddress &ip) { _ip = ip; }
+
+   private:
+    IPAddress _ip;
+  };
+  AsyncClientStub *client() { return &_client; }
+
   void addHeader(const String &name, const String &value) {
     _headers.push_back(AsyncWebHeader(name, value));
   }
@@ -121,6 +140,7 @@ class AsyncWebServerRequest {
  private:
   std::vector<AsyncWebParameter> _params;
   std::vector<AsyncWebHeader> _headers;
+  AsyncClientStub _client;
   bool _sent = false;
   int _code = 0;
   String _contentType;

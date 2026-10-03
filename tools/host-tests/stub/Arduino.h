@@ -70,6 +70,10 @@ class String {
   size_t length() const { return _s.size(); }
   bool isEmpty() const { return _s.empty(); }
   const char *c_str() const { return _s.c_str(); }
+  // The real String has it, and index-wise reads are the only sane way to walk
+  // one without copying it.
+  char charAt(size_t i) const { return i < _s.size() ? _s[i] : '\0'; }
+  char operator[](size_t i) const { return charAt(i); }
 
   // ArduinoJson's generic Writer serialises through these two, the same way
   // it drives a Print on the real target - without them serializeJson(doc,

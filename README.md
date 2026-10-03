@@ -44,10 +44,25 @@ sh tools/ota-upload.sh 192.168.x.x fs   # web UI only
 ```
 
 The push script connects to the roaster and POSTs the image to `/api/update`
-with the token from `include/secrets.h` (`OTA_TOKEN`). That direction is
-deliberate: the ArduinoOTA variant (`sh tools/ota-upload.sh <ip>`, still in the
-firmware) needs the *device* to connect back to your machine, which a network
-that isolates its IoT VLAN will not allow. See `docs/firmware-notes.md`.
+with the token from `include/secrets.h` (`OTA_TOKEN`) and a SHA-256 of the
+image, which the device verifies before it commits anything. Two things worth
+knowing:
+
+- The device only accepts the push from **one address**,
+  `OTA_ALLOWED_CLIENT_IP` in `include/secrets.h` - run the script from that
+  machine. A valid token from anywhere else in the IoT VLAN is refused, because
+  IoT devices reach each other on port 80 and the network will not isolate this
+  route for you. Everything else (wrong token, wrong checksum, wrong address)
+  gets a plain 404, like an unknown path.
+- It refuses to flash while the machine is busy - a session running **or the
+  element still asking for power** - so a push never interrupts a roast and
+  never lands on a live heater.
+
+That direction is deliberate: the ArduinoOTA variant
+(`sh tools/ota-upload.sh <ip>`, still in the firmware) needs the *device* to
+connect back to your machine, which a network that isolates its IoT VLAN will
+not allow unless espota's listener is bound to the right address
+(`-I 192.168.1.x`, already in `platformio.ini`). See `docs/firmware-notes.md`.
 
 Replace `192.168.x.x` with the address your roaster got on your network.
 

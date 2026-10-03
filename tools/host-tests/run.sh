@@ -92,18 +92,25 @@ g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -I "$here/stub" -I "$root/include" -I "$json_inc" \
     -DOTA_TOKEN=\"host-test-push-token\" \
     "$here/test_web_server.cpp" "$root/src/web_server.cpp" "$root/src/roast_profile.cpp" \
-    "$root/src/ota_push.cpp" \
+    "$root/src/ota_push.cpp" "$here/stub/sha256.cpp" \
     -o "$out/test_web_server"
+
+# Every binary that links ota_push.cpp (or main.cpp, which calls it) also needs
+# the SHA-256 it hashes with. The host tests compile the real implementation
+# from stub/sha256.cpp rather than stubbing it, so the checksum they exercise
+# is a checksum that actually verifies images.
+sha_src="$here/stub/sha256.cpp"
 
 # The push-OTA test links the REAL web_server.cpp (and the handler that
 # replaces the firmware), the real ota_push.cpp, and a stubbed Update library
-# that records what it was asked to do. OTA_TOKEN is set to a throwaway value
-# so the endpoint is enabled exactly as on a device with a token configured.
+# that records what it was asked to do. OTA_TOKEN and OTA_ALLOWED_CLIENT_IP are
+# throwaway values so the endpoint is enabled exactly as on a device with a
+# token configured.
 g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -I "$here/stub" -I "$root/include" -I "$json_inc" \
-    -DOTA_TOKEN=\"host-test-push-token\" \
+    -DOTA_TOKEN=\"host-test-push-token\" -DOTA_ALLOWED_CLIENT_IP=\"192.168.1.x\" \
     "$here/test_ota_push.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
-    "$root/src/roast_profile.cpp" \
+    "$root/src/roast_profile.cpp" "$sha_src" \
     -o "$out/test_ota_push"
 
 # The control test links the real main.cpp with stubbed hardware, so it can
@@ -117,7 +124,7 @@ g++ -std=c++17 -Wall -Wextra -pthread \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
-    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" "$sha_src" \
     -o "$out/test_control"
 
 # The RoR-guidance test links the real main.cpp and roast_profile.cpp, so the
@@ -128,7 +135,7 @@ g++ -std=c++17 -Wall -Wextra -pthread \
     "$here/test_ror_guidance.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/roast_profile.cpp" "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
-    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" "$sha_src" \
     -o "$out/test_ror_guidance"
 
 # Same test under ThreadSanitizer: it is the only way to see a shared field
@@ -140,7 +147,7 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
     "$here/test_control.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
     "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
     "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
-    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+    "$root/src/web_server.cpp" "$root/src/ota_push.cpp" "$sha_src" \
     -o "$out/test_control_tsan"
 
 "$out/test_safety"

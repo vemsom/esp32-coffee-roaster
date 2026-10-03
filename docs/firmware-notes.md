@@ -1,9 +1,9 @@
 # Firmware notes - assumptions and what is verified
 
-Status: **verified items below were re-confirmed on 2026-09-27** with a clean
-`pio run` (`pio run -t clean` then `pio run`, 47.8 s, zero warnings) and the
-host-side test suite (368 checks, 0 failures). Everything still listed as open
-is untested against real hardware.
+Status: **verified items below were re-confirmed on 2026-10-03** with a clean
+`pio run` (zero warnings) and the host-side test suite (833 checks, 0
+failures). Push-OTA is additionally verified against real hardware. Everything
+still listed as open is untested against real hardware.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -254,26 +254,85 @@ trade.
 
 Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
 
+- **Only the allowed client.** `OTA_ALLOWED_CLIENT_IP` in `include/secrets.h`
+  is the one address whose requests are even considered. A valid token is not
+  enough: port 80 is the device's normal web server and IoT devices reach each
+  other inside the IoT VLAN, so the network does not isolate this route. A
+  request from anywhere else gets **404 - the same answer an unknown path
+  gives** - so a probe cannot map the endpoint at all.
 - **Token required.** `OTA_TOKEN` in `include/secrets.h` (32 hex characters,
   never committed, never printed). The header is compared before
-  `Update.begin()`, so an unauthorised request writes no byte at all. **Empty
-  token disables the endpoint completely** - the same rule as MQTT (no user ->
-  disabled) and ArduinoOTA (no password -> not started): 503, not a fallback.
-- **Refused while a session runs** (roast / manual / cool-down), 409, for the
-  same reason `serviceOta()` refuses then: a flash aborts the run, and the
-  element should never be conducting during one.
+  `Update.begin()`, so an unauthorised request writes no byte at all. A wrong
+  token also answers **404, not 401**: a 401 would confirm the route exists.
+  **Empty token disables the endpoint completely** - the same rule as MQTT
+  (no user -> disabled) and ArduinoOTA (no password -> not started): 503, not
+  a fallback.
+- **The checksum is the real protection.** The token travels in clear text
+  over Wi-Fi; the image does not have to. `tools/ota-push.sh` computes
+  `sha256sum firmware.bin` and sends it as `X-OTA-SHA256`, and the device
+  hashes every byte it writes with mbedtls SHA-256 and compares before
+  committing. A mismatch answers **403, calls `Update.abort()`** and leaves
+  the running image as the boot target - so a wrong or half-written image
+  never becomes the firmware. A malformed checksum header is refused before
+  the body is read.
+- **Refused while the machine is busy**: **409** when a session runs (roast /
+  manual / cool-down) **or when the element is still asking for power** - not
+  "when a roast is running", because the element is the thing that must never
+  be live during a flash.
 - **The restart happens after the response.** The handler writes the image,
   answers 200, and only then does `loop()` restart - otherwise the client sees
-  a broken connection on an upload that actually succeeded.
+  a broken connection on an upload that actually succeeded. (Confirmed on the
+  device: the connection does sometimes close before curl reads the status
+  line, which is why `ota-push.sh` waits for the device to come back instead
+  of trusting the exit code.)
 - **Nothing else is touched.** `Update` writes to the inactive OTA slot; NVS
   and LittleFS are not part of that, so saved profiles survive a push. The
   host test asserts exactly that against the real handler.
+
+**Verified on hardware 2026-10-03** against the roaster at 192.168.2.x:
+
+```text
+POST /api/update, 974 512 bytes, sha256 announce  ->  HTTP 200, device reboots
+wrong token (right client, right shape)           ->  HTTP 404 "Not Found"
+right token, checksum 0000...0000                 ->  HTTP 403, device keeps running
+GET /api/update with token (trusted client)       ->  HTTP 405 "POST here"
+GET /api/update without token                     ->  HTTP 404 "Not Found"
+```
+
+The first hardware run exposed a bug the host test had missed: the library
+keeps feeding the remaining chunks of a body to the handler **after** the
+refusal was sent, so chunk two reached `Update.write()` with no transfer
+started, `Update.write()` failed, and the client saw **500 "write failed"
+instead of the hiding 404**. `dispatch()` in the host test stopped at the
+first chunk, which is why it passed. The handler now remembers a refusal for
+the rest of the body, and the test sends every chunk - thirteen checks fail
+without that guard.
 
 ### ArduinoOTA (kept, no longer the default)
 
 Still in the firmware, harmless, and it may well work on a flat network where
 the device can dial back. With a password it is not a liability, so it stays
 as a second option - but the documented way in is the push above.
+
+**It does work here, and the reason it looked blocked for hours was not the
+firewall.** Three things had to line up, in this order:
+
+1. **`-I 192.168.1.x` - the listener has to bind the server's LAN address.**
+   Without it `espota` binds whatever address it guesses, the device's
+   dial-back reaches nothing, and the upload dies after
+   `Authenticating...OK` with `No response from device`. That message is the
+   fixed signature of a mis-bound listener, not of a firewall rule.
+2. **No stray whitespace in the flag.** PlatformIO's `upload_flags` can pass an
+   `-I` value with a leading space, and `espota` then fails with
+   `[ERROR]: Listen Failed`.
+3. **`-P 32320`** pins the return port (espota otherwise picks a random one
+   between 10000 and 60000) so a narrow rule *could* match it. Now that no
+   rule is needed, this is hygiene - but it costs nothing and it is what makes
+   the traffic predictable.
+
+All three live in `platformio.ini` (env `esp32-ota`), and `tools/ota-upload.sh`
+documents them: **do not call `espota` by hand without both flags**, and put
+them in `platformio.ini` rather than assembling them in a variable.
 
 **Chosen approach: ArduinoOTA with a password**, not an upload page. In order
 of weight: it ships with the ESP32 Arduino core (no new entry in `lib_deps`),
@@ -321,12 +380,28 @@ idle, is *not* served while a run is active, latches the element low on
 `onEnd()` and `onError()`.
 
 The push path has its own host test (`tools/host-tests/test_ota_push.cpp`,
-against the real handler and the real state machine): a wrong token, a missing
-token and a short token are refused with 401 before `Update.begin()`;
-a run in progress is refused with 409; a missing Content-Length is refused with
-400 and an oversized image with 413; a complete transfer writes exactly
-`Content-Length` bytes, ends with `Update.end()`, leaves every profile
-byte-identical and only then asks for the restart.
+against the real handler and the real state machine): a request from any
+address other than `OTA_ALLOWED_CLIENT_IP` is refused with 404, and a valid
+token does not change that; a wrong, missing or short token and a malformed or
+missing checksum header are all refused with 404 *before* `Update.begin()`, with
+the rest of the body arriving too (the chunks after a refusal must not turn the
+answer into a 500 - the bug the first hardware run found); a run in progress or
+a live element is refused with 409; a missing Content-Length is refused with
+400 and an oversized image with 413; an image whose SHA-256 does not match is
+refused with 403 and discarded with `Update.abort()`, leaving the running image
+as the boot target; a half-sent image aborts instead of committing; a complete
+transfer writes exactly `Content-Length` bytes, ends with `Update.end()`, leaves
+every profile byte-identical and only then asks for the restart.
+
+The checksum test hashes with the same SHA-256 the device runs - the host
+stub in `stub/sha256.cpp` is a real implementation, checked against the
+published vectors for the empty string and `"abc"` first, so a broken hasher
+cannot make the test agree with itself and pass.
+
+**Verified against real hardware 2026-10-03** (see the OTA section): a full
+974 512-byte push answered 200 and the device rebooted into it; a wrong token
+answered 404; a wrong checksum answered 403 and the device kept running; the
+trusted client's GET probe answered 405 and a stranger's answered 404.
 
 Known unknown: whether an upload reaches the roaster from the machine that runs
 the script depends on the network, not the firmware. Push needs LAN -> IoT only
@@ -606,8 +681,8 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-03: **413 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 800 checks execute in total,
+broker. Last run 2026-10-03: **441 checks, 0 failures**, exit 0, no compiler
+warnings. That figure counts each test once; 833 checks execute in total,
 because `test_mqtt_discovery` runs once per build language and `test_control`
 also runs under ThreadSanitizer:
 
@@ -662,18 +737,23 @@ also runs under ThreadSanitizer:
   active, latches the element low on `onStart()` while a manual heat is
   conducting (and aborts that run), and asks for a restart on `onEnd()` and
   on `onError()`.
-- `test_ota_push` - the push OTA endpoint (37 checks): the real
+- `test_ota_push` - the push OTA endpoint (59 checks): the real
   `POST /api/update` handler and the real state machine, against a stubbed
-  `Update` that records every call. A wrong token, a missing token and a token
-  one character short are refused with 401 *before* `Update.begin()`, so no byte
-  of an unauthorised image is written and no file is touched; a run in progress
-  is refused with 409 with `Update.begin()` never reached; a missing
-  Content-Length is refused with 400 and an image larger than the OTA slot with
-  413; a complete transfer writes exactly `Content-Length` bytes in order, ends
-  with `Update.end()` (never `abort()`), reads back byte-identical, leaves a
-  stored profile in LittleFS untouched and only then asks for the restart; a
-  failed `Update.begin()` or `Update.end()` answers 500; and an interrupted
-  transfer aborts instead of ending, leaving the state machine idle.
+  `Update` that records every call, dispatched with every chunk of the body the
+  way the library really does. A valid token from an address other than
+  `OTA_ALLOWED_CLIENT_IP` is refused with 404, and a wrong, missing or short
+  token and a malformed or missing checksum header likewise - always *before*
+  `Update.begin()`, so no byte of an unauthorised image is written and no file
+  is touched, and never as a 500 when the remaining chunks arrive. A run in
+  progress *or a live element* is refused with 409 with `Update.begin()` never
+  reached. A missing Content-Length is refused with 400 and an image larger
+  than the OTA slot with 413. An image whose SHA-256 does not match is refused
+  with 403 and discarded with `Update.abort()`, so the running image stays the
+  boot target - the rollback; a half-sent image aborts the same way. A complete
+  transfer writes exactly `Content-Length` bytes in order, ends with
+  `Update.end()` (never `abort()`), reads back byte-identical, leaves a stored
+  profile in LittleFS untouched and only then asks for the restart. A failed
+  `Update.begin()` or `Update.end()` answers 500.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder
