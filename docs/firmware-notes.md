@@ -1,7 +1,7 @@
 # Firmware notes - assumptions and what is verified
 
 Status: **verified items below were re-confirmed on 2026-10-04** with a clean
-`pio run` (zero warnings) and the host-side test suite (916 checks, 0
+`pio run` (zero warnings) and the host-side test suite (943 checks, 0
 failures). Push-OTA and filesystem OTA are both verified against real hardware.
 Everything still listed as open is untested against real hardware.
 
@@ -199,6 +199,62 @@ The element may only fire while the fan runs at least `FAN_MIN_FOR_HEATER_PCT`
 In profile mode the fan is applied *before* the duty is computed, otherwise the
 first sample of a run would be judged against the previous run's fan value.
 
+## Fan duty curve (implemented 2026-10-04, NOT verified on hardware)
+
+A 24 V DC fan driven by PWM through the MOSFET does not answer linearly to the
+average voltage: below a start threshold it stands still, and just above it the
+speed climbs steeply. On the bench it only starts at about **60 % duty**
+(≈14.4 V), which left the bottom 60 % of the requested range dead and the top
+40 % too fine to use as a control input. That is normal fan behaviour, not
+necessarily a hardware fault.
+
+`fan_set_speed()` (src/fan_control.cpp) therefore keeps its percent API and
+changes only the duty that reaches the LEDC channel:
+
+- `percent <= 0` → duty 0, the fan off, exactly as before.
+- `1..100` → mapped linearly onto the duty band
+  `[FAN_DUTY_MIN_PCT, FAN_DUTY_MAX_PCT]` (include/config.h, default 60..100):
+  `duty_pct = MIN + percent * (MAX - MIN) / 100` (integer), then scaled to the
+  8-bit duty range. So 1 % → 60 % duty (the fan turns, above the interlock's
+  10 % threshold) and 100 % → 100 % duty.
+- Guard rail: if `FAN_DUTY_MAX_PCT <= FAN_DUTY_MIN_PCT` the function falls back
+  to the old straight 0–100 map, so a misconfigured constant cannot freeze or
+  invert the fan.
+
+What is reported everywhere stays the **requested** percent: `/api/status`,
+the MQTT/HA fan entity, the profile steps and the `FAN_MIN_FOR_HEATER_PCT`
+(10 %) interlock all keep speaking 0–100, so the change moves no entity in Home
+Assistant and does not touch the interlock semantics. Only the duty written to
+the channel changed.
+
+**NOT verified on hardware** — the 60 % knee is one bench measurement with the
+fan in its current wiring, and the band has not been swept at 60/70/80/90/100 %
+duty.
+
+Tuning `FAN_DUTY_MIN_PCT` needs no instrument at all: raise it until the fan
+visibly starts on the lowest setting, with the real fan in place. It can be set
+at build time (`-DFAN_DUTY_MIN_PCT=65`, the macro is `#ifndef`-guarded) or in
+include/config.h.
+
+Only the later "should the band carry an exponent" question needs a speed
+figure, and a plain 2-wire DC fan has no tach output to read. Three ways to get
+one, cheapest first:
+
+- **no instrument**: judge airflow by its effect instead of RPM - at a fixed
+  heater duty, how fast does the chamber answer a fan step? That is the quantity
+  the roast actually cares about, and it needs nothing but the two probes.
+- **handheld optical tachometer**: point it at a mark on a blade; one reading
+  per duty step, no wiring.
+- **a fan with a tach wire** (FG): its pulse train goes to a spare GPIO and
+  counts as revolutions per second, but that means a different fan.
+
+The exponent is a separate change with that data behind it, not part of this
+one.
+
+`tools/host-tests/test_fan.cpp` pins the mapping (0 → 0, the band floor at 1 %,
+the midpoint, the top, clipping of 101 and negative values, monotonicity, and
+the straight-map fallback for a broken band). It is built twice, once per band.
+
 ## Web UI monitor
 
 The manual view carries the same readout as the roast view: cards for BT, ET,
@@ -382,7 +438,7 @@ and the build time into `build_flags`, and `/api/status` reports them:
 
 ```sh
 curl -s http://192.168.x.x/api/status | python3 -m json.tool | grep -E 'fw|build|built'
-#   "fw":    "0.7.0"                    <- same string HA shows as sw_version
+#   "fw":    "0.8.0"                    <- same string HA shows as sw_version
 #   "build": "82888dc"                  <- git rev-parse --short HEAD
 #   "built": "2026-10-03T11:38:27Z"
 ```
@@ -832,9 +888,9 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-04: **916 checks, 0 failures**, exit 0, no compiler
-warnings. That total counts every execution. The eight test binaries account
-for 599 checks counted once each; the other 317 come from the two the suite
+broker. Last run 2026-10-04: **943 checks, 0 failures**, exit 0, no compiler
+warnings. That total counts every execution. The ten test binaries account
+for 626 checks counted once each; the other 317 come from the two the suite
 runs twice, `test_mqtt_discovery` once per build language (214 again) and
 `test_control` under ThreadSanitizer (103 again):
 
@@ -868,6 +924,19 @@ runs twice, `test_mqtt_discovery` once per build language (214 again) and
   rate, 9.75 s gives 0, 10 s - exactly ROR_MIN_SPAN_MS - gives the rate, 5 s
   gives 0); a frozen sensor reads below 0.1 C/min after a window; and NaN
   samples are left out of the fit instead of being fitted as zero.
+- `test_fan` - the fan duty curve (14 checks, or 13 in the fallback build):
+  `fan_set_speed()` keeps its percent API while the duty written to the LEDC
+  channel is mapped onto the band the fan actually responds in. 0 is off
+  (duty 0); 1 % lands on the band floor (60 % duty with the default band, the
+  measured start threshold, and above the 10 % interlock threshold); 50 % and
+  100 % land at the configured midpoint and top; 101 clips and a negative
+  request is off; the duty is non-decreasing across the whole request range;
+  and every nonzero request stays at or above the floor. The file is built a
+  second time with a broken band (`FAN_DUTY_MIN_PCT == FAN_DUTY_MAX_PCT`) to
+  pin the straight-map fallback, so a misconfigured constant can never freeze
+  or invert the fan. The regression that matters is elsewhere: the fan
+  interlock tests in `test_control` speak the requested percent and still pass
+  unchanged, which is what guarantees the reporting side did not move.
 - `test_mqtt_discovery` - MQTT layer (214 checks): all 11 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault` and the signed `rorBt` /

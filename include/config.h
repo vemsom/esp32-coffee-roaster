@@ -51,6 +51,25 @@
 #define FAN_PWM_FREQ_HZ    20000
 #define FAN_PWM_RESOLUTION 8
 
+// Fläktkurva. En 24 V DC-fläkt via MOSFET svarar inte linjärt på PWM-duty:n:
+// under en tändtröskel står den still och strax över den stiger varvtalet
+// brant. Den uppmätta tröskeln är ~60 % duty (≈14,4 V) på bänken, så en rak
+// 0–100-map lägger mer än halva reglerområdet i en död zon. fan_set_speed()
+// behåller sitt procent-API oförändrat (0 = av, 1–100 = den logiska hastighet
+// som webb-UI:t, profilstegen, MQTT/HA-statusen och fläktspärren talar) och
+// mappar 1–100 linjärt på duty-bandet [FAN_DUTY_MIN_PCT, FAN_DUTY_MAX_PCT].
+//
+// FAN_DUTY_MIN_PCT = lägsta duty fläkten bevisligen snurrar på (den uppmätta
+// knät). OVERIFIERAD mot hårdvara: höj tills fläkten startar på lägsta
+// inställningen — värdet mäts med den faktiska fläkten. Båda går att sätta vid
+// bygget (-DFAN_DUTY_MIN_PCT=65) eftersom de är #ifndef-skyddade.
+#ifndef FAN_DUTY_MIN_PCT
+#define FAN_DUTY_MIN_PCT   60
+#endif
+#ifndef FAN_DUTY_MAX_PCT
+#define FAN_DUTY_MAX_PCT   100
+#endif
+
 // ---- Kontrolloop-timing ----
 #define SENSOR_READ_INTERVAL_MS   250
 #define HEATER_WINDOW_MS          2000
@@ -257,7 +276,12 @@
 // 0.6.0 = rate of rise (rorBt/rorEt) - nya sensorer i HA, sa ska byggena
 // garna att skilja pa igen nar enheten flashas om.
 // 0.7.0 = optional RoR guidance per profile step (rorTarget); off by default.
-#define FW_VERSION "0.7.0"
+// 0.8.0 = the fan output now maps the requested 1-100 % onto the duty band the
+// fan actually responds in (FAN_DUTY_MIN_PCT..FAN_DUTY_MAX_PCT, default
+// 60..100). Same percent API and the same reported/HA values - only the duty
+// written to the LEDC channel changed - but that is a change in the fan
+// output, so the build has to be distinguishable in Home Assistant.
+#define FW_VERSION "0.8.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

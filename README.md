@@ -93,7 +93,7 @@ Replace `192.168.x.x` with the address your roaster got on your network.
 **Did the push land?** One request answers it:
 
 ```sh
-curl -s http://192.168.x.x/api/status   # -> ..."fw":"0.7.0","build":"82888dc","built":"..."
+curl -s http://192.168.x.x/api/status   # -> ..."fw":"0.8.0","build":"82888dc","built":"..."
 git rev-parse --short HEAD              # on the machine that sent the image
 ```
 
@@ -235,7 +235,7 @@ hard-coded outside it.
 ## Project status
 
 Early development. The firmware builds clean and the host test suite is green
-(RAM 16.0 %, Flash 73.6 %, FW 0.7.0, Arduino core 2.0.17, espressif32 7.1.3).
+(RAM 16.1 %, Flash 74.2 %, FW 0.8.0, Arduino core 2.0.17, espressif32 7.1.3).
 The hardware is not finished: the temperature modules were still in transit and
 the GPIO assignment has never been checked against a physical board.
 `docs/firmware-notes.md` lists what is verified and what is still an

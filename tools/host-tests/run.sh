@@ -6,6 +6,10 @@
 #   test_safety          safety latch + heater interlock, stubbed Arduino
 #   test_ror             rate of rise: window, warm-up, sign and the quantised
 #                         tolerance, fed at the real 250 ms sample cadence
+#   test_fan             the fan duty curve: request 1-100 % mapped onto the
+#                         band the fan responds in (and the straight-map
+#                         fallback for a misconfigured band), via a recording
+#                         ledcWrite stub. Built twice, one per band.
 #   test_mqtt_discovery  MQTT discovery payloads + command handling, using a
 #                        recording PubSubClient stub (no broker needed).
 #                        Built twice - English and Swedish - and the unique_id
@@ -71,6 +75,20 @@ g++ -std=c++17 -Wall -Wextra \
     -I "$here/stub" -I "$root/include" \
     "$here/test_ror.cpp" "$root/src/ror.cpp" \
     -o "$out/test_ror"
+
+# The fan curve test links the real fan_control.cpp against a recording
+# ledcWrite stub. It is built twice: once with the configured duty band, once
+# with a deliberately broken band (min == max) so the straight-map fallback is
+# pinned too. Both use the same source - the band is compile-time.
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" \
+    "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
+    -o "$out/test_fan"
+g++ -std=c++17 -Wall -Wextra \
+    -I "$here/stub" -I "$root/include" \
+    -DFAN_DUTY_MIN_PCT=60 -DFAN_DUTY_MAX_PCT=60 \
+    "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
+    -o "$out/test_fan_fallback"
 
 # The MQTT discovery test is built ONCE PER BUILD LANGUAGE (FW_LANG_EN): it
 # pins the friendly name of the language it was built with, and it dumps the
@@ -161,6 +179,8 @@ g++ -std=c++17 -Wall -Wextra -pthread -fsanitize=thread \
 "$out/test_safety"
 "$out/test_sensors"
 "$out/test_ror"
+"$out/test_fan"
+"$out/test_fan_fallback"
 "$out/test_mqtt_en" "$out/unique_ids_en"
 "$out/test_mqtt_sv" "$out/unique_ids_sv"
 # The whole point of the two builds above: the same entities, in the same
