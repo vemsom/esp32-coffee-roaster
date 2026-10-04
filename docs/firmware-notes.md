@@ -244,7 +244,7 @@ sh tools/ota-push.sh 192.168.x.x
 The uploading machine connects **to** the roaster and POSTs `firmware.bin` to
 `/api/update`, token in the `X-OTA-Token` header. That direction is the whole
 point: the ArduinoOTA path described below needs the *device* to open a TCP
-connection back to the uploader, and in a VLAN-split home network new
+connection back to the uploader, and in a segmented network new
 connections IoT -> LAN are blocked, so that handshake dies right after
 `Authenticating...OK` while the device is up and reachable. LAN -> IoT works,
 so the upload was turned around instead of the firewall being opened for it.
@@ -257,7 +257,7 @@ Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
 - **Only the allowed client.** `OTA_ALLOWED_CLIENT_IP` in `include/secrets.h`
   is the one address whose requests are even considered. A valid token is not
   enough: port 80 is the device's normal web server and IoT devices reach each
-  other inside the IoT VLAN, so the network does not isolate this route. A
+  other inside the IoT network, so the network does not isolate this route. A
   request from anywhere else gets **404 - the same answer an unknown path
   gives** - so a probe cannot map the endpoint at all.
 - **Token required.** `OTA_TOKEN` in `include/secrets.h` (32 hex characters,
@@ -445,7 +445,7 @@ actually had to be in place, in the order it was found:
    fails with `[ERROR]: Listen Failed` - pick another port.
 4. **`-I <your machine's LAN address>`** is in the command as **hygiene, not as
    a cause**: it
-   makes the listener unambiguous in an LXC with virtual interfaces. Measured
+   makes the listener unambiguous in a container with virtual interfaces. Measured
    2026-10-03: a full transfer goes through **both with and without** `-I`
    (without it espota binds `0.0.0.0:<random port>` and everything works), so
    it does not explain the old `No response from device` - that disappeared
@@ -822,7 +822,7 @@ Tagged the same way as above: what it takes, not just what is left.
   block for seconds - see the known limitation above for what that costs.
 - **CLOSED 2026-10-03 (host-tested)** OTA: `tools/ota-push.sh` POSTs the image
   from the uploading machine to the roaster, so no connection has to come back
-  out of the IoT VLAN. Token from `secrets.h`, refused unless the machine is
+  out of the IoT network. Token from `secrets.h`, refused unless the machine is
   idle, restart after the response, NVS and profiles untouched. ArduinoOTA
   remains in the firmware as a second option. See the OTA section above.
   Open only as far as reachability goes: that depends on the network the

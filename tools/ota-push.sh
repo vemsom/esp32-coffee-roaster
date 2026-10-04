@@ -7,7 +7,7 @@
 #
 # Varför den här vägen och inte tools/ota-upload.sh (ArduinoOTA): ArduinoOTA
 # kräver att ENHETEN öppnar en TCP-anslutning tillbaka till uppladdaren. I ett
-# VLAN-delat hemmanät är nya anslutningar IoT -> LAN blockerade, så den
+# segmenterat nät är nya anslutningar IoT -> LAN blockerade, så den
 # anslutningen kommer aldrig fram och överföringen dör efter
 # "Authenticating...OK". LAN -> IoT fungerar, så här vänder vi på riktningen i
 # stället. Se include/ota_push.h och docs/firmware-notes.md.
@@ -22,7 +22,7 @@
 # innehållet. Skriptet räknar med sha256sum; saknas det avbryter vi hellre än
 # att skicka en bild utan verifiering.
 #
-# Enheten accepterar bara anrop från OTA_ALLOWED_CLIENT_IP (serverns adress) -
+# Enheten accepterar bara anrop från OTA_ALLOWED_CLIENT_IP (den här maskinens adress) -
 # en giltig token från en annan adress i IoT-nätet nekas. Vilken adress
 # enheten väntar sig står i include/secrets.h; kör skriptet från den maskinen.
 #
@@ -133,7 +133,7 @@ case "$CODE" in
        echo "      enheten kör kvar sin gamla firmware. Kör 'pio run' och försök igen." ;;
   404) echo "FEL: enheten svarar 404. Antingen känner den inte igen vår adress"
        echo "      (OTA_ALLOWED_CLIENT_IP i include/secrets.h) eller kör den firmware"
-       echo "      utan push-OTA. Kör skriptet från servern (OTA_ALLOWED_CLIENT_IP)." ;;
+       echo "      utan push-OTA. Kör skriptet från den maskinen (OTA_ALLOWED_CLIENT_IP)." ;;
   405) echo "FEL: enheten svarar 405 (GET på POST-routen) - använd POST-vägen." ;;
   409) echo "FEL: enheten nekar just nu (409) - en rostning, manuell körning, kylning"
        echo "      eller ett varmt element är igång. Vänta tills den är stilla." ;;

@@ -72,7 +72,7 @@ knowing:
 
 - The device only accepts the push from **one address**,
   `OTA_ALLOWED_CLIENT_IP` in `include/secrets.h` - run the script from that
-  machine. A valid token from anywhere else in the IoT VLAN is refused, because
+  machine. A valid token from anywhere else in the IoT network is refused, because
   IoT devices reach each other on port 80 and the network will not isolate this
   route for you. Everything else (wrong token, wrong checksum, wrong address)
   gets a plain 404, like an unknown path.
@@ -82,7 +82,7 @@ knowing:
 
 That direction is deliberate: the ArduinoOTA variant
 (`sh tools/ota-upload.sh <ip>`, still in the firmware) needs the *device* to
-connect back to your machine, which a network that isolates its IoT VLAN will
+connect back to your machine, which a network that isolates its devices will
 not allow unless espota's listener is bound to the right address
 (`-I <your machine's LAN address>`, which `tools/ota-upload.sh` reads from
 `secrets.h`; in `platformio.ini` the same value comes from `$OTA_LISTEN_IP`).

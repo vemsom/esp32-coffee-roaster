@@ -17,15 +17,15 @@
 #   2. Returporten pinnas (-P 32320) för att trafiken ska vara förutsägbar.
 #      OBS: en dödad körning kan ligga kvar på porten (espota sätter inget
 #      SO_REUSEADDR) och nästa bind blir "[ERROR]: Listen Failed" - byt port då.
-#   3. -I <serverns LAN-IP> är HYGIEN, inte orsak: den gör lyssnaren entydig i
-#      en LXC med virtuella interface. Mätt: en full överföring går igenom både
+#   3. -I <den här maskinens LAN-IP> är HYGIEN, inte orsak: den gör lyssnaren entydig i
+#      en container med virtuella interface. Mätt: en full överföring går igenom både
 #      med och utan -I, så den förklarar inte det gamla "No response from
 #      device". Behåll den för enkelhetens skull, men skriv den inte som orsak.
 #
 # VARFÖR SKRIPTET ANROPAR ESPOTA DIREKT i stället för `pio run`:
 # PlatformIO:s `upload_flags` sätts ihop till en enda sträng, och den flerradiga
 # form som behövs för separata argument ger varje värde ett INLEDANDE
-# BLANKSTEG. espota får då host_ip = " <serverns LAN-IP>" och dör på
+# BLANKSTEG. espota får då host_ip = " <den här maskinens LAN-IP>" och dör på
 # "[ERROR]: Listen Failed" innan överföringen ens börjat. Står allt på en rad i
 # stället hamnar "-P 32320 -I ..." inuti --auth-värdet
 # ("Authenticating...FAIL"). Båda fällorna kostade tid att hitta, och båda
@@ -90,15 +90,15 @@ fi
 PY=$(find "$HOME/.platformio/penv/bin" -name 'python3*' -type f -print -quit 2>/dev/null || true)
 [ -n "$PY" ] || PY=python3
 
-# Lyssnaren binds till serverns LAN-adress, som läses ur `secrets.h`
+# Lyssnaren binds till den här maskinens LAN-adress, som läses ur `secrets.h`
 # (OTA_ALLOWED_CLIENT_IP - samma adress som firmwaren släpper in). Den står
-# uttryckligen och härleds INTE ur default-route: i en LXC med virtuella
+# uttryckligen och härleds INTE ur default-route: i en container med virtuella
 # interface är default-route fel svar, och felet yttrar sig som en överföring
 # som dör efter "Authenticating...OK".
 LISTEN_IP=$(sed -n 's/^#define[[:space:]]*OTA_ALLOWED_CLIENT_IP[[:space:]]*"\(.*\)".*/\1/p' include/secrets.h | head -n 1)
 if [ -z "$LISTEN_IP" ]; then
   echo "FEL: OTA_ALLOWED_CLIENT_IP saknas i include/secrets.h."
-  echo "      Sätt serverns LAN-adress där (samma värde som firmwaren släpper in)."
+  echo "      Sätt den här maskinens LAN-adress där (samma värde som firmwaren släpper in)."
   exit 1
 fi
 

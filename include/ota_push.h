@@ -4,7 +4,7 @@
 // Push-OTA: the uploader connects to the roaster, not the other way round.
 //
 // Why: ArduinoOTA (the /ota path in main.cpp) needs the DEVICE to open a TCP
-// connection back to whoever is uploading. In a VLAN-split home network new
+// connection back to whoever is uploading. In a segmented network new
 // connections IoT -> LAN are blocked, so that handshake dies right after
 // "Authenticating...OK". LAN -> IoT works fine, so the reliable direction is
 // this one: the server POSTs the image to the roaster.
@@ -18,7 +18,7 @@
 //   1. The request must come from OTA_ALLOWED_CLIENT_IP (the machine that runs
 //      the upload; the value lives in the gitignored secrets.h - the default
 //      here is a documentation address). A valid token is not
-//      enough on its own: IoT devices reach each other inside the IoT VLAN,
+//      enough on its own: IoT devices reach each other inside the IoT network,
 //      so the network does not isolate this endpoint.
 //   2. A wrong token, or a request arriving at all outside the window, answers
 //      404 rather than 401 - a client that probes must not be able to tell

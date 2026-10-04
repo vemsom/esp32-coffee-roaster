@@ -5,14 +5,14 @@
 // images.
 //
 // Why this exists: with the ArduinoOTA path the DEVICE had to connect back to
-// the uploader, which a VLAN-split network blocks, so the upload path moved to
+// the uploader, which a segmented network blocks, so the upload path moved to
 // the direction that works (uploader -> device, see include/ota_push.h). That
 // makes a firmware replacement reachable over HTTP on the port that is already
 // there, and the endpoint then has to defend itself on its own merits:
 //
 //   * only the allowed client (OTA_ALLOWED_CLIENT_IP) may replace the
 //     firmware. A valid token is not enough - IoT devices reach each other
-//     inside the IoT VLAN, so the network does not isolate this route.
+//     inside the IoT network, so the network does not isolate this route.
 //     Everything else gets 404, the same answer an unknown path gives, so a
 //     probe cannot even map it.
 //   * a bad token or a malformed checksum header also gets 404, and no byte of
@@ -211,7 +211,7 @@ int main() {
   }
   {
     // The address check is on the endpoint, not on the network: this is the
-    // IoT-internal case @network-tech flagged.
+    // IoT-internal case flagged in review.
     check(!ota_push_probe_trusted(FOREIGN_CLIENT, TEST_TOKEN, sha256hex(image).c_str()),
           "a valid token does not buy access from a non-allowed address");
   }
