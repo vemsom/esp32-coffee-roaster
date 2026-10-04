@@ -1,7 +1,7 @@
 # Firmware notes - assumptions and what is verified
 
-Status: **verified items below were re-confirmed on 2026-10-03** with a clean
-`pio run` (zero warnings) and the host-side test suite (869 checks, 0
+Status: **verified items below were re-confirmed on 2026-10-04** with a clean
+`pio run` (zero warnings) and the host-side test suite (916 checks, 0
 failures). Push-OTA and filesystem OTA are both verified against real hardware.
 Everything still listed as open is untested against real hardware.
 
@@ -60,11 +60,11 @@ and there is a BT/ET cross-check on top of it.
 
 Safety latch and heater interlock (src/safety.cpp, src/heater_control.cpp):
 exercised by host tests with stubbed Arduino calls - `test_safety` (57 checks),
-`test_mqtt_discovery` (161 checks) and `test_control` (75 checks, which drives
+`test_mqtt_discovery` (214 checks) and `test_control` (103 checks, which drives
 the real setup()/loop() and also runs a second thread in the role of the
-AsyncTCP task). 293 checks, 0 failures, as of the 2026-09-27 run of
-`tools/host-tests/run.sh`, plus the same `test_control` source rebuilt under
-ThreadSanitizer (also 75/0, zero race reports). See `tools/host-tests/`.
+AsyncTCP task); the same `test_control` source is rebuilt under
+ThreadSanitizer. See the Host-side tests section below for the full current
+figures.
 
 ## Safety behaviour (implemented 2026-09-26)
 
@@ -808,10 +808,11 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-03: **461 checks, 0 failures**, exit 0, no compiler
-warnings. That figure counts each test once; 869 checks execute in total,
-because `test_mqtt_discovery` runs once per build language and `test_control`
-also runs under ThreadSanitizer:
+broker. Last run 2026-10-04: **916 checks, 0 failures**, exit 0, no compiler
+warnings. That total counts every execution. The eight test binaries account
+for 599 checks counted once each; the other 317 come from the two the suite
+runs twice, `test_mqtt_discovery` once per build language (214 again) and
+`test_control` under ThreadSanitizer (103 again):
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks): trip on the hard limit, on sustained sensor faults and on
@@ -824,6 +825,14 @@ also runs under ThreadSanitizer:
   cooling never trips, a frozen channel trips while the other one moves, and a
   stuck alarm survives a power cycle without being laundered by healthy-looking
   samples.
+- `test_sensors` - the ET/BT offset (13 checks): the offset is applied exactly
+  once and only *after* the plausibility check, so a floating or open probe is
+  still a fault and a faulted channel returns its last good value with the
+  offset **not** applied. The cross-check side is asserted from the constants
+  rather than a pinned measurement: a raw pair separated by exactly the fitted
+  ET-BT difference calibrates onto one temperature, and a raw disagreement far
+  enough above `SENSOR_MAX_SPREAD_C` still trips after the offset was trimmed
+  to -6.5 C.
 - `test_ror` - rate of rise (22 checks): a constant 10 C/min and 6.5 C/min ramp
   holds its value to +-0.1 C/min across several windows (which wraps the
   128-entry sample ring); cooling keeps its sign (-5 stays -5); a signal
@@ -835,7 +844,7 @@ also runs under ThreadSanitizer:
   rate, 9.75 s gives 0, 10 s - exactly ROR_MIN_SPAN_MS - gives the rate, 5 s
   gives 0); a frozen sensor reads below 0.1 C/min after a window; and NaN
   samples are left out of the fit instead of being fitted as zero.
-- `test_mqtt_discovery` - MQTT layer (210 checks): all 11 discovery configs are
+- `test_mqtt_discovery` - MQTT layer (214 checks): all 11 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault` and the signed `rorBt` /
   `rorEt`); the two rate-of-rise sensors carry unit C/min and state_class
@@ -844,7 +853,13 @@ also runs under ThreadSanitizer:
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_control` - the real src/main.cpp against stubbed hardware (79 checks):
+- `test_web_server` - the profile HTTP API (56 checks): the real handlers,
+  dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
+  that logs every operation. `name=../config` and `name=../../etc/passwd` over
+  GET and DELETE answer 400 and provably cause **no** filesystem call at all,
+  with a honeytoken file outside `/profiles` proving the traversal would
+  otherwise have found something.
+- `test_control` - the real src/main.cpp against stubbed hardware (103 checks):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions; a probe
@@ -868,7 +883,7 @@ also runs under ThreadSanitizer:
   `U_FLASH` leaves it mounted, the profile endpoints answer 503 while it is
   unmounted, and a failed transfer remounts before the restart. That is the
   regression test for the bug that made filesystem OTA die part-way.
-- `test_ota_push` - the push OTA endpoint (59 checks): the real
+- `test_ota_push` - the push OTA endpoint (82 checks): the real
   `POST /api/update` handler and the real state machine, against a stubbed
   `Update` that records every call, dispatched with every chunk of the body the
   way the library really does. A valid token from an address other than
@@ -885,6 +900,11 @@ also runs under ThreadSanitizer:
   `Update.end()` (never `abort()`), reads back byte-identical, leaves a stored
   profile in LittleFS untouched and only then asks for the restart. A failed
   `Update.begin()` or `Update.end()` answers 500.
+- `test_ror_guidance` - optional rate-of-rise guidance (52 checks): the target
+  curve, the sign of the correction, a zero correction when disabled, the rate
+  limit and clamp that keep a cold-probe transient under `HEATER_MAX_DUTY_PCT`,
+  every duty request routed through `applyHeaterDuty()`, and the off-by-default
+  regression when a profile carries no `rorTarget`.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder
