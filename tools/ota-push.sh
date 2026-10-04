@@ -29,6 +29,13 @@
 # Bygg först:  pio run
 # (Ändringar i data/ måste fortfarande OTA:as med tools/ota-upload.sh <ip> fs,
 #  den vägen använder espota-protokollet och rör inte app-partitionen.)
+#
+# Vilken bild som skickas: .pio/build/esp32-ota/firmware.bin - OTA-environ.
+# esp32dev-imagen duger INTE, även om den är lika stor och byggs ur samma
+# källor: build-id:n skiljer sig (se fw_build_id.py - FW_BUILD_TIME är en
+# tidsstämpel per bygge), och enheten svarar 403 på en bild vars X-OTA-SHA256
+# inte stämmer med innehållet. Bygg därför OTA-environ innan pushen:
+#   pio run -e esp32-ota
 set -e
 cd "$(dirname "$0")/.."
 
@@ -42,7 +49,7 @@ if [ -z "$HOST" ]; then
   exit 2
 fi
 
-IMAGE=".pio/build/esp32dev/firmware.bin"
+IMAGE=".pio/build/esp32-ota/firmware.bin"
 if [ ! -f "$IMAGE" ]; then
   echo "FEL: $IMAGE finns inte - kör 'pio run' först."
   exit 1
