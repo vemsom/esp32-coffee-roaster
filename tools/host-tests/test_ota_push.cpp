@@ -67,7 +67,7 @@ static void check(bool cond, const char *what) {
 // The values this test device is built with (from -D in run.sh). Never real.
 static const char *TEST_TOKEN = OTA_TOKEN;
 static const char *ALLOWED_CLIENT = OTA_ALLOWED_CLIENT_IP;
-static const char *FOREIGN_CLIENT = "192.168.2.x";
+static const char *FOREIGN_CLIENT = "198.51.100.7";
 
 // ---- the checksum, computed with the same SHA-256 the device runs ----------
 

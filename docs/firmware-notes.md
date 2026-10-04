@@ -328,10 +328,10 @@ Two different PlatformIO traps sit here, and both were hit while making the
 filesystem transfer work:
 
 - **Everything on one line** in `upload_flags` makes PlatformIO pass
-  `"-P 32320 -I 192.168.1.x"` *inside* the `--auth` value: espota answers
+  `"-P 32320 -I <address>"` *inside* the `--auth` value: espota answers
   `Authenticating...FAIL`.
 - **One flag per line** (the form that gives separate arguments) gives every
-  value a **leading space**, so `host_ip` becomes `" 192.168.1.x"` and espota
+  value a **leading space**, so `host_ip` becomes `" <address>"` and espota
   dies on `[ERROR]: Listen Failed` before the transfer even starts. That
   message reads like a network problem; it is a stray blank.
 
@@ -340,8 +340,8 @@ overwrite the one inherited from `extends`, and `UPLOADERFLAGS` is re-set by
 `builder/main.py` after every script hook has run - so no script can clean it
 up reliably. `tools/ota-upload.sh` therefore **calls `espota.py` directly**
 with the arguments as a list: no middleman, no space that can be added.
-`-I 192.168.1.x` (the server's LAN address) and `-P 32320` are both still
-required, and the password is read from `secrets.h` as before.
+`-I <your machine's LAN address>` (read from `secrets.h`) and `-P 32320` are
+both still required, and the password is read from `secrets.h` as before.
 
 `platformio.ini` keeps its `upload_flags` for anyone who runs `pio run -e
 esp32-ota -t upload` by hand, with the trap documented next to it.
@@ -380,7 +380,7 @@ Keeping `fw` equal to `FW_VERSION` - the same value `mqtt_client.cpp` publishes
 as HA's `sw_version` - is deliberate: the web API and Home Assistant must never
 disagree about which release is running.
 
-**Verified on hardware 2026-10-03** against the roaster at 192.168.2.x:
+**Verified on hardware 2026-10-03** against the roaster at its LAN address:
 
 ```text
 POST /api/update, 974 512 bytes, sha256 announce  ->  HTTP 200, device reboots
@@ -419,7 +419,8 @@ actually had to be in place, in the order it was found:
    requirement: no firewall rule is needed either way. A killed run can leave
    the port occupied (espota sets no `SO_REUSEADDR`), and the next bind then
    fails with `[ERROR]: Listen Failed` - pick another port.
-4. **`-I 192.168.1.x`** is in the command as **hygiene, not as a cause**: it
+4. **`-I <your machine's LAN address>`** is in the command as **hygiene, not as
+   a cause**: it
    makes the listener unambiguous in an LXC with virtual interfaces. Measured
    2026-10-03: a full transfer goes through **both with and without** `-I`
    (without it espota binds `0.0.0.0:<random port>` and everything works), so

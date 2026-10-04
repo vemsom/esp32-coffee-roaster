@@ -59,7 +59,7 @@
 
 // ---- Sensor-kalibrering (enkel offset, tillämpas efter plausibilitetskontrollen) ----
 // Mätt 2026-10-03 med båda proberna intill varandra i rumstemperatur (~22-23 C),
-// inget element igång. Referens = BT (Fredriks rummetermometer visade 22-23 C).
+// inget element igång. Referens = BT (referenstermometern visade 22-23 C).
 // BT läste 24,25-24,75 C (median 24,75), ET läste 29,5-32 C (median 30,75).
 // Median-skillnad ET-BT = 6,0 C. BT behölls oförändrad; ET justeras ned med 6 C.
 //

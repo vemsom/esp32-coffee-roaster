@@ -15,8 +15,9 @@
 // permanently listening HTTP route is not the same thing as a dial-back
 // window that only exists during an upload:
 //
-//   1. The request must come from OTA_ALLOWED_CLIENT_IP (secrets.h, default
-//      192.168.1.x - the machine that runs the upload). A valid token is not
+//   1. The request must come from OTA_ALLOWED_CLIENT_IP (the machine that runs
+//      the upload; the value lives in the gitignored secrets.h - the default
+//      here is a documentation address). A valid token is not
 //      enough on its own: IoT devices reach each other inside the IoT VLAN,
 //      so the network does not isolate this endpoint.
 //   2. A wrong token, or a request arriving at all outside the window, answers
@@ -48,9 +49,11 @@
 #endif
 
 // The only client allowed to replace the firmware. Overridable from
-// secrets.h, and by -D in a host test.
+// secrets.h, and by -D in a host test. The fallback is a RFC 5737 documentation
+// address (TEST-NET-1), never a real one: this repo is public, and a default
+// that silently matched somebody's LAN would be worse than no default at all.
 #ifndef OTA_ALLOWED_CLIENT_IP
-#define OTA_ALLOWED_CLIENT_IP "192.168.1.x"
+#define OTA_ALLOWED_CLIENT_IP "192.0.2.10"
 #endif
 
 #define OTA_PUSH_ENABLED (sizeof(OTA_TOKEN) > 1)

@@ -454,7 +454,7 @@ int main() {
     check(ssrState == HIGH, "element is conducting before the refused push");
 
     AsyncWebServerRequest refused;
-    refused.client()->setRemoteIP(String("192.168.1.x"));
+    refused.client()->setRemoteIP(String(OTA_ALLOWED_CLIENT_IP));
     refused.addHeader("X-OTA-Token", String("host-test-push-token"));
     refused.addHeader("X-OTA-SHA256", String(hash.c_str()));
     update->onBody(&refused, image.data(), image.size(), 0, image.size());
@@ -466,7 +466,7 @@ int main() {
     // Now the push is accepted; the first chunk starts the transfer and keeps
     // it in progress.
     AsyncWebServerRequest push;
-    push.client()->setRemoteIP(String("192.168.1.x"));
+    push.client()->setRemoteIP(String(OTA_ALLOWED_CLIENT_IP));
     push.addHeader("X-OTA-Token", String("host-test-push-token"));
     push.addHeader("X-OTA-SHA256", String(hash.c_str()));
     update->onBody(&push, image.data(), 4096, 0, image.size());

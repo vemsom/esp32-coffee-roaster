@@ -25,7 +25,7 @@
 # VARFÖR SKRIPTET ANROPAR ESPOTA DIREKT i stället för `pio run`:
 # PlatformIO:s `upload_flags` sätts ihop till en enda sträng, och den flerradiga
 # form som behövs för separata argument ger varje värde ett INLEDANDE
-# BLANKSTEG. espota får då host_ip = " 192.168.1.x" och dör på
+# BLANKSTEG. espota får då host_ip = " <serverns LAN-IP>" och dör på
 # "[ERROR]: Listen Failed" innan överföringen ens börjat. Står allt på en rad i
 # stället hamnar "-P 32320 -I ..." inuti --auth-värdet
 # ("Authenticating...FAIL"). Båda fällorna kostade tid att hitta, och båda
@@ -90,10 +90,17 @@ fi
 PY=$(find "$HOME/.platformio/penv/bin" -name 'python3*' -type f -print -quit 2>/dev/null || true)
 [ -n "$PY" ] || PY=python3
 
-# Lyssnaren binds till serverns LAN-adress. Den står uttryckligen: att härleda
-# den ur default-route är fel svar i en LXC med virtuella interface, och det
-# felet yttrar sig som en överföring som dör efter "Authenticating...OK".
-LISTEN_IP="192.168.1.x"
+# Lyssnaren binds till serverns LAN-adress, som läses ur `secrets.h`
+# (OTA_ALLOWED_CLIENT_IP - samma adress som firmwaren släpper in). Den står
+# uttryckligen och härleds INTE ur default-route: i en LXC med virtuella
+# interface är default-route fel svar, och felet yttrar sig som en överföring
+# som dör efter "Authenticating...OK".
+LISTEN_IP=$(sed -n 's/^#define[[:space:]]*OTA_ALLOWED_CLIENT_IP[[:space:]]*"\(.*\)".*/\1/p' include/secrets.h | head -n 1)
+if [ -z "$LISTEN_IP" ]; then
+  echo "FEL: OTA_ALLOWED_CLIENT_IP saknas i include/secrets.h."
+  echo "      Sätt serverns LAN-adress där (samma värde som firmwaren släpper in)."
+  exit 1
+fi
 
 set -- --debug --progress --auth "$PW" -P 32320 -I "$LISTEN_IP" -i "$HOST" -f "$IMAGE"
 if [ "$FS" = "1" ]; then

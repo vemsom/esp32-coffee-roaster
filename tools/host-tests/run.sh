@@ -116,7 +116,7 @@ sha_src="$here/stub/sha256.cpp"
 # token configured.
 g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
     -I "$here/stub" -I "$root/include" -I "$json_inc" \
-    -DOTA_TOKEN=\"host-test-push-token\" -DOTA_ALLOWED_CLIENT_IP=\"192.168.1.x\" \
+    -DOTA_TOKEN=\"host-test-push-token\" -DOTA_ALLOWED_CLIENT_IP=\"192.0.2.10\" \
     "$here/test_ota_push.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
     "$root/src/roast_profile.cpp" "$sha_src" \
     -o "$out/test_ota_push"

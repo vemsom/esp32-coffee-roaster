@@ -84,7 +84,9 @@ That direction is deliberate: the ArduinoOTA variant
 (`sh tools/ota-upload.sh <ip>`, still in the firmware) needs the *device* to
 connect back to your machine, which a network that isolates its IoT VLAN will
 not allow unless espota's listener is bound to the right address
-(`-I 192.168.1.x`, already in `platformio.ini`). See `docs/firmware-notes.md`.
+(`-I <your machine's LAN address>`, which `tools/ota-upload.sh` reads from
+`secrets.h`; in `platformio.ini` the same value comes from `$OTA_LISTEN_IP`).
+See `docs/firmware-notes.md`.
 
 Replace `192.168.x.x` with the address your roaster got on your network.
 

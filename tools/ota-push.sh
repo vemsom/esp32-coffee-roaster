@@ -38,7 +38,7 @@ if [ "${2:-}" = "--dry-run" ]; then DRY_RUN=1; fi
 
 if [ -z "$HOST" ]; then
   echo "Användning: sh tools/ota-push.sh <ip-eller-host> [--dry-run]"
-  echo "  exempel:   sh tools/ota-push.sh 192.168.2.x"
+  echo "  exempel:   sh tools/ota-push.sh <rostarens-ip>"
   exit 2
 fi
 
@@ -126,7 +126,7 @@ case "$CODE" in
        echo "      enheten kör kvar sin gamla firmware. Kör 'pio run' och försök igen." ;;
   404) echo "FEL: enheten svarar 404. Antingen känner den inte igen vår adress"
        echo "      (OTA_ALLOWED_CLIENT_IP i include/secrets.h) eller kör den firmware"
-       echo "      utan push-OTA. Kör skriptet från servern 192.168.1.x." ;;
+       echo "      utan push-OTA. Kör skriptet från servern (OTA_ALLOWED_CLIENT_IP)." ;;
   405) echo "FEL: enheten svarar 405 (GET på POST-routen) - använd POST-vägen." ;;
   409) echo "FEL: enheten nekar just nu (409) - en rostning, manuell körning, kylning"
        echo "      eller ett varmt element är igång. Vänta tills den är stilla." ;;
