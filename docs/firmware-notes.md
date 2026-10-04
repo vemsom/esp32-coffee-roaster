@@ -739,6 +739,21 @@ in step 6 that a genuinely floating input lands below it.
   samma hårdvara/koppling och stämmer inte med dagens värden - använd inte båda
   samtidigt.
 
+- **INLAGD 2026-10-04 - ET-offset ned till -6,5 C:** live-mätning i
+  rumstemperatur/idle, 2-min-medelvärden ur Home Assistant, visade ET ~24,7 C
+  mot BT ~24,2 C - ET låg alltså 0,5 C över BT efter den då gällande -6,0 C.
+  Mätningen ovan (2026-10-03) satte ET i nivå med BT vid 6,0 C råskillnad; den
+  här mätningen visar att 0,5 C återstod, så `SENSOR_OFFSET_ET_C` är nu -6.5f
+  (BT oförändrad 0,0f). Mätningen 2026-10-03 står kvar som historik men är
+  inaktuell som siffra - använd bara -6,5 C.
+  Fortfarande bara verifierad kring rumstemperatur: ingen referensmätning vid
+  rostningstemperatur finns, så vid 200-260 C är offseten en gissning.
+  Sidoeffekt att känna till: BT/ET-korsskontrollen jämför kalibrerade värden,
+  så en ET-offset på -6,5 C flyttar larmgränsen i råa tal med 0,5 C (ett rått
+  par måste nu skilja > 21,5 C, mot > 21,0 C med -6,0 C, för att slå
+  `SENSOR_MAX_SPREAD_C`). Det är inneboende i offseten, inte en bugg, och
+  host-testet `test_sensors` täcker båda riktningarna.
+
 ## Still open, not done
 
 Tagged the same way as above: what it takes, not just what is left.
