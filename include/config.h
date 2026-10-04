@@ -58,19 +58,25 @@
 #define SENSOR_FAULT_MAX_COUNT    5
 
 // ---- Sensor-kalibrering (enkel offset, tillämpas efter plausibilitetskontrollen) ----
-// Mätt 2026-10-03 med båda proberna intill varandra i rumstemperatur (~22-23 C),
-// inget element igång. Referens = BT (referenstermometern visade 22-23 C).
-// BT läste 24,25-24,75 C (median 24,75), ET läste 29,5-32 C (median 30,75).
-// Median-skillnad ET-BT = 6,0 C. BT behölls oförändrad; ET justeras ned med 6 C.
+// GALLER NU (mätt 2026-10-04, rumstemperatur/idle): 2-min-medelvärden ur HA
+// visade ET ~24,7 C mot BT ~24,2 C, dvs ET låg 0,5 C över BT. ET drogs därför
+// ned ytterligare 0,5 C så att de ligger i linje. BT är oförändrad.
+//
+// Historik: mätt 2026-10-03 med båda proberna intill varandra i rumstemperatur
+// (~22-23 C), inget element igång. Referens = BT (referenstermometern visade
+// 22-23 C). BT läste 24,25-24,75 C (median 24,75), ET läste 29,5-32 C (median
+// 30,75). Median-skillnad ET-BT = 6,0 C; ET drogs då ned 6 C. Den här mätningen
+// är historik - använd inte båda siffrorna samtidigt.
 //
 // Orsaken till ET:s avvikelse är INTE utredd (kandidater: modulens cold-junction,
-// klonchip, probe/placering). Offseten är bara giltig kring rumstemperatur tills
-// någon mätt den mot en referens vid rostningstemperatur.
+// klonchip, probe/placering). Offseten är fortfarande bara verifierad kring
+// rumstemperatur: ingen mätning mot referens vid rostningstemperatur finns ännu,
+// så vid 200-260 C är den en gissning.
 //
 // Om du ändrar en av dessa, uppdatera tools/host-tests/test_sensors.cpp och
 // docs/firmware-notes.md.
 #define SENSOR_OFFSET_BT_C   0.0f
-#define SENSOR_OFFSET_ET_C  -6.0f
+#define SENSOR_OFFSET_ET_C  -6.5f
 
 // ---- Rate of Rise (RoR) ----
 // Temperaturändringen per minutt, rapporterad som rorBt/rorEt i /api/status

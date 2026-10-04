@@ -71,26 +71,38 @@ int main() {
 
   g_probeET = 25.0f;  // restore a healthy ET for the next block
 
-  // The cross-check in safety.cpp works on calibrated values: raw ET 6 C above
-  // BT should read the same after calibration, so no spread alarm.
-  g_probeBT = 24.75f;
-  g_probeET = 30.75f;  // +6 C raw, the measured median difference
+  // The cross-check in safety.cpp works on calibrated values. The ET offset is
+  // fitted to be exactly the raw ET-BT difference it was measured at, so a raw
+  // pair that far apart must read as one and the same temperature after
+  // calibration - and therefore never trip the spread alarm. Derive the raw ET
+  // from the raw BT and the two constants instead of hard-coding a pair: the
+  // assertion then still means "ET calibrates onto BT" after the next offset
+  // change, rather than pinning one measurement. Raw BT anchored at the
+  // measured median (24,75 C, room temperature).
+  const float rawBt = 24.75f;
+  const float rawEt = rawBt + (SENSOR_OFFSET_BT_C - SENSOR_OFFSET_ET_C);
+  g_probeBT = rawBt;
+  g_probeET = rawEt;
   r = sensors_read();
   check(!r.btFault && !r.etFault, "measured median raw pair is individually plausible");
-  check(fabs(r.et - r.bt) < 0.1f,
-        "calibrated ET matches BT at the measured median raw difference");
+  check(fabs(r.et - r.bt) < 0.02f,
+        "ET calibrates onto BT at the fitted raw difference");
 
-  // Sanity-check the other direction too: a real 15 C spread stays detected.
-  // With ET offset -6 C and BT offset 0 C, raw 20/35 becomes calibrated 20/29,
-  // i.e. a 9 C spread - still above the 15 C raw threshold? No: the point is
-  // that the cross-check sees calibrated values, so we assert the calibrated
-  // spread equals (raw_spread + ET_offset). The safety layer then compares that
-  // to SENSOR_MAX_SPREAD_C.
+  // Sanity-check the other direction too: the cross-check compares CALIBRATED
+  // values against SENSOR_MAX_SPREAD_C, so where the alarm sits is set by the
+  // ET offset, not by the raw pair. Pick a raw spread far enough above the
+  // threshold that the offset cannot pull it under it, and assert it still
+  // trips - a 0,5 C offset change must not disable the check.
+  const float rawSpreadThatMustTrip =
+      SENSOR_MAX_SPREAD_C - (SENSOR_OFFSET_ET_C - SENSOR_OFFSET_BT_C) + 1.0f;
   g_probeBT = 20.0f;
-  g_probeET = 35.0f;
+  g_probeET = 20.0f + rawSpreadThatMustTrip;
   r = sensors_read();
-  check(!r.btFault && !r.etFault, "20/35 raw pair is individually plausible");
-  check(fabs((r.et - r.bt) - (15.0f + SENSOR_OFFSET_ET_C - SENSOR_OFFSET_BT_C)) < 0.1f,
+  check(!r.btFault && !r.etFault, "the raw disagreement pair is individually plausible");
+  check(fabs(r.et - r.bt) > SENSOR_MAX_SPREAD_C,
+        "a raw disagreement that must trip survives the ET offset");
+  check(fabs((r.et - r.bt) -
+             (rawSpreadThatMustTrip + SENSOR_OFFSET_ET_C - SENSOR_OFFSET_BT_C)) < 0.02f,
         "calibrated spread is raw spread plus the ET-BT offset difference");
 
   printf("\n%d checks, %d failures\n", checks, failures);
