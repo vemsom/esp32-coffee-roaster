@@ -346,6 +346,30 @@ both still required, and the password is read from `secrets.h` as before.
 `platformio.ini` keeps its `upload_flags` for anyone who runs `pio run -e
 esp32-ota -t upload` by hand, with the trap documented next to it.
 
+### Branch state (2026-10-04)
+
+`main` and `ota-hardening` are now the same line of history: `main` was a strict
+ancestor of the branch, so the join was a fast-forward rather than a merge
+commit - one parent, no empty merge, easier to read. Both contents live on
+`main`:
+
+- from `main`'s own commits: `LICENSE`, `SAFETY.md`, the per-module SO/CS sensor
+  pinout (`PIN_MAX6675_MISO_BT`/`_ET`), and the docs work
+- from the branch: push OTA, the filesystem-OTA `U_SPIFFS` fix, the build
+  identity in `/api/status`, and the sensor-offset work with its tests
+
+**Comparing firmware images across directories is a trap.** Same tree built
+twice differs by 66 bytes - the `FW_BUILD_TIME` string and nothing else, so a
+hash never matches between two build minutes. Worse, a build in a `git worktree`
+has no git context, so `tools/fw_build_id.py` stamps `FW_BUILD_SHA` as
+`unknown` and the image is a **different size** (938 752 vs 979 360 bytes) for
+identical source. Build both revisions in the main working tree before
+concluding anything from a binary, or compare `src/`/`include/` and the file
+size instead of the hash.
+
+**Verified on the merged tree:** 916 host checks, 0 failures; `pio run` green
+with RAM 16.1% and Flash 74.2%; build id `a7aa818` with no `+dirty`.
+
 ### Proving a push landed: the build identity in `/api/status`
 
 `FW_VERSION` says which *release* is running. It cannot say which *build* of
