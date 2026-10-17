@@ -346,6 +346,15 @@ int main() {
       check(body.find(std::string("\"etDisabled\":") + (wantEtDisabled ? "true" : "false")) !=
                 std::string::npos,
             "status reports etDisabled matching the build's SAFETY_ET_ENABLED");
+
+      // Which channel the RoR guidance steers on, reported for the same reason:
+      // rorBt and rorEt are both published whatever the source is, so the
+      // numbers alone cannot say which one a rorTarget step is compared
+      // against. Follows the build mode too (ROR_GUIDANCE_ON_BT), so this test
+      // runs in both passes and expects the source its own flag implies.
+      check(body.find(std::string("\"rorSource\":\"") +
+                      (ROR_GUIDANCE_ON_BT ? "bt" : "et") + "\"") != std::string::npos,
+            "status reports which channel the RoR guidance steers on");
     }
   }
 

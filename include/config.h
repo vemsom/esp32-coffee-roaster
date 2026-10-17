@@ -121,7 +121,8 @@
 #define ROR_BUFFER_LEN            128
 // Rate-of-rise guidance gains. RoR guidance is OFF unless a profile step has
 // rorTarget > 0, so these only matter when explicitly enabled.
-// ROR_GUIDANCE_GAIN scales the error (rorTarget - rorEt) into a duty correction.
+// ROR_GUIDANCE_GAIN scales the error (rorTarget - the measured rate: rorEt or
+// rorBt, see ROR_GUIDANCE_ON_BT below) into a duty correction.
 // ROR_GUIDANCE_MAX_STEP_PCT_PER_S limits how fast that correction can move per
 // second, so a cold probe or a startup transient cannot drive the element full
 // power in one sample.
@@ -131,6 +132,38 @@
 // correction both clamp to this, and applyHeaterDuty() is the single place
 // where the fan interlock can override it.
 #define HEATER_MAX_DUTY_PCT               100.0f
+
+// ---- Which channel the RoR guidance steers on ----
+// The rate of rise is measured on BOTH channels (rorBt, rorEt) and both stay
+// published either way; this macro only picks the one the guidance loop
+// compares its rorTarget against. 1 = steer on rorBt (the bean mass, the
+// denser signal), 0 = steer on rorEt (chamber air).
+//
+// The default follows the ET channel, and that is the whole point: the two
+// build modes must not be combinable into the one combination that fails
+// silently. A BT-only build (SAFETY_ET_ENABLED 0) never reads the ET
+// converter, so a guidance loop pointed at rorEt would return 0 on every
+// cycle - a profile step with rorTarget > 0 would look armed in the web UI and
+// never move the element, with no error anywhere to say why. So the source
+// follows the channel that is actually measured: ET while it is watched,
+// BT when it is not.
+//
+// The standard build (SAFETY_ET_ENABLED 1, the ET module healthy) therefore
+// steers on rorEt exactly as it always has. #ifndef-guarded so a build can
+// force the source either way (-DROR_GUIDANCE_ON_BT=0/1) - that is how a host
+// test pins one source in a build where both channels exist. The body uses the
+// parenthesised expression form on purpose: macros expand where they are USED,
+// so SAFETY_ET_ENABLED (defined further down this file) is resolved correctly,
+// which an #if here would not be. Steering on ET in a build that does not read
+// ET is refused at compile time - see the check under SAFETY_ET_ENABLED.
+#ifndef ROR_GUIDANCE_ON_BT
+#define ROR_GUIDANCE_ON_BT  (!SAFETY_ET_ENABLED)   // BT-only-build styr på BT
+#endif
+
+// The same choice as the string /api/status and the MQTT status payload carry,
+// so the machine can always say which channel it is steering on. Reported
+// because neither rorBt nor rorEt says which of them the loop is using.
+#define ROR_GUIDANCE_SOURCE_NAME (ROR_GUIDANCE_ON_BT ? "bt" : "et")
 
 // ---- WiFi ----
 // Anslutningen startas i setup() utan att vänta, och serviceWifi() i loop()
@@ -192,9 +225,11 @@
 //     SENSOR_SPREAD_MAX_COLD_C): it needs two channels and cannot be evaluated
 //     with one, and it is the only check that sees a probe that is wrong but
 //     individually plausible
-//   * RoR guidance, which steers on rorEt: no ET is measured, so
-//     updateRorGuidance() in src/main.cpp stays inert (it refuses to steer on
-//     a NaN ET) and a profile step with rorTarget > 0 simply does not steer
+// RoR guidance is NOT on that list any more (2026-10-17): with the ET channel
+// off it steers on rorBt instead of rorEt (ROR_GUIDANCE_ON_BT above), so a
+// profile step with rorTarget > 0 still moves the element. What that costs is
+// documented in docs/firmware-notes.md: the gains and the 30 s window were
+// chosen against an ET curve and have to be trimmed against a BT one.
 // What REMAINS, untouched: the BT plausibility window
 // (SENSOR_MIN_VALID_C..SENSOR_MAX_VALID_C), the BT jump check, the BT
 // stuck-probe detector (SENSOR_STUCK_MAX_MS), the BT ceiling
@@ -205,8 +240,9 @@
 // healthy or not.
 //
 // The mode is made visible wherever the machine is observed: /api/status
-// reports etDisabled, the web UI shows a standing warning pill, Home Assistant
-// gets an ET-disabled problem sensor, and safetyReason reads
+// reports etDisabled (and rorSource, which follows this flag through
+// ROR_GUIDANCE_ON_BT), the web UI shows a standing warning pill, Home
+// Assistant gets an ET-disabled problem sensor, and safetyReason reads
 // "et disabled - bt only" while the latch is clear instead of "none".
 //
 // It exists for one situation - a broken ET module while the machine still has
@@ -215,6 +251,18 @@
 //   PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
 #ifndef SAFETY_ET_ENABLED
 #define SAFETY_ET_ENABLED  1
+#endif
+
+// The two build modes and the RoR guidance source must not be combinable into
+// the one combination that fails silently: steering on rorEt in a build that
+// does not read the ET channel leaves updateRorGuidance() returning 0 forever,
+// with no error and no visible difference from a step that has no rorTarget.
+// The default above cannot produce it (ROR_GUIDANCE_ON_BT follows the flag);
+// a forced -DROR_GUIDANCE_ON_BT=0 can, so it is refused here, at build time,
+// with the reason in the message. Compiles only with 1 to be checked after the
+// flag is known, hence the operator form.
+#if !ROR_GUIDANCE_ON_BT && !SAFETY_ET_ENABLED
+#error "ROR_GUIDANCE_ON_BT=0 steers the RoR guidance on rorEt, but this build does not read the ET channel (SAFETY_ET_ENABLED 0) - the guidance would be inert. Drop -DROR_GUIDANCE_ON_BT or build with SAFETY_ET_ENABLED=1."
 #endif
 
 // ---- Fastskad sensor (stuck probe) ----
@@ -334,7 +382,13 @@
 // (which needs the device to dial back to the uploader - it cannot here). New
 // endpoint, so a new release: an app image that answers /api/update/fs and one
 // that answers 404 there must be distinguishable after a push.
-#define FW_VERSION "0.10.0"
+// 0.11.0 = the RoR guidance can steer on BT: with the ET channel switched off
+// (SAFETY_ET_ENABLED 0) a step with rorTarget > 0 now steers on rorBt instead
+// of staying inert, and /api/status + the MQTT status payload report which
+// channel is in use (rorSource). A behaviour change in the control loop, so a
+// new version: a device running 0.10.0 and one running 0.11.0 make different
+// decisions on the same profile.
+#define FW_VERSION "0.11.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

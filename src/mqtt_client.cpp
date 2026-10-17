@@ -255,6 +255,10 @@ void mqtt_publish_status() {
     doc["roRorTarget"] = cb.getRorTarget();
     doc["roRorError"] = cb.getRorError();
     doc["roRorActive"] = cb.getRorActive();
+    // Which channel the guidance above steers on, "bt" or "et" (compile-time,
+    // see include/config.h). Carried here for the same reason as etDisabled:
+    // the numbers alone do not say which channel produced them.
+    doc["rorSource"] = ROR_GUIDANCE_SOURCE_NAME;
     doc["uptime"] = millis() / 1000;
     doc["rssi"] = WiFi.RSSI();
     IPAddress address = WiFi.localIP();

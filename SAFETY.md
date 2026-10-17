@@ -54,14 +54,20 @@ run - and it is a **reduced-protection build, not a normal mode**:
   stuck-probe detector, the 260 C BT ceiling, the fan interlock and the latched
   emergency stop. The alarm still clears only after 10 healthy samples in a row -
   with the ET channel off, "healthy" means healthy on BT.
-- **Visible everywhere:** `/api/status` reports `etDisabled`, `safetyReason`
+- **Visible everywhere:** `/api/status` reports `etDisabled` and `rorSource` (the
+  channel the RoR guidance steers on, `bt` in this build), `safetyReason`
   reads `et disabled - bt only` whenever the latch is clear, the web UI shows a
   standing "ET AVSTÄNGD - endast BT" pill, and Home Assistant gets an
   "ET disabled" problem sensor that is ON. A switched-off probe must never be
   readable as a healthy one.
 
 Behind a frozen BT probe the 260 C ceiling is then the only limit left, and RoR
-guidance (which steers on ET) is inert. Do not roast unattended in this mode.
+guidance is still able to move the element: since 0.11.0 it steers on `rorBt`
+instead of `rorEt` (`ROR_GUIDANCE_ON_BT` follows `SAFETY_ET_ENABLED`), so a
+profile step with `rorTarget > 0` does steer in this mode. Its gain, rate limit
+and 30 s window were chosen against an ET curve and have **not** been trimmed
+against a BT one - the loop runs, it is not tuned for the bean channel. Do not
+roast unattended in this mode.
 Build again with the flag at 1 as soon as the ET module is replaced.
 
 ## Operating

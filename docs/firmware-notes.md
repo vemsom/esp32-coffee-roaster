@@ -5,13 +5,20 @@ Status: **verified items below were re-confirmed on 2026-10-04** with a clean
 failures). Push-OTA and filesystem OTA are both verified against real hardware.
 Everything still listed as open is untested against real hardware.
 Re-confirmed again on 2026-10-17 with the two-pass suite (the firmware now has a
-BT-only build mode): **989 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
-**792 checks, 0 failures** with it at 0 - see "BT-only build mode" below.
+BT-only build mode): **1093 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
+**1035 checks, 0 failures** with it at 0 - see "BT-only build mode" and "RoR
+guidance source" below. (Earlier on the same day it read 989/792 and then
+1091/976: the suite grew with the filesystem-push tests first and with the
+BT-source guidance tests after that.)
 **2026-10-17, 0.10.0: the filesystem image has its own push route**
 (`POST /api/update/fs`), so the web UI no longer needs espota's dial-back - see
 "Default path now: push, for BOTH partitions" and "Verified on hardware
 2026-10-17 (0.10.0): the filesystem push" below for the current totals and what
 was verified on the device.
+**2026-10-17, 0.11.0: the RoR guidance steers on BT when the ET channel is
+off** - the machine is still a BT-only build, and a profile step with
+`rorTarget > 0` now moves the element there instead of doing nothing - see
+"RoR guidance source: BT when the ET channel is off" below.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -89,9 +96,12 @@ A BT-only image therefore also reports:
   image changes. Still report-only: no `command_topic`, no subscription - the
   same rule as the rest of the MQTT layer.
 
-RoR guidance steers on `rorEt` and is therefore inert in this mode: main.cpp
-already refuses to steer on a NaN ET (`updateRorGuidance()`), so a profile step
-with `rorTarget > 0` simply does not steer and `rorEt` stays at its last value.
+RoR guidance is no longer inert in this mode: since 0.11.0 it steers on `rorBt`
+instead of `rorEt` (`ROR_GUIDANCE_ON_BT` follows `SAFETY_ET_ENABLED`), so a
+profile step with `rorTarget > 0` does steer - on the bean channel, which is the
+one this build actually measures. See "RoR guidance source: BT when the ET
+channel is off" below for what that changes and which constants still have to be
+trimmed.
 
 **Host tests.** The suite runs twice, once per mode
 (`sh tools/host-tests/run.sh`, or `--et-enabled` / `--bt-only` for a single
@@ -109,6 +119,86 @@ replaced, and check the machine: `/api/status` must show `etDisabled: false` and
 a live `et` again. The flag is a stopgap - the cold cross-check and the 300 C ET
 ceiling are part of the safety net and should not be missing for longer than the
 repair takes.
+
+## RoR guidance source: BT when the ET channel is off (0.11.0, 2026-10-17)
+
+**Why.** The ET module on the machine is dead and the machine runs a BT-only
+build. Until this release that made an entire feature inert: the guidance
+compared its `rorTarget` against `rorEt`, and `rorEt` is built from a channel
+that is not read, so `updateRorGuidance()` returned 0 on every cycle. A profile
+step with `rorTarget > 0` was accepted, saved, shown in the UI - and steered
+nothing. That is a silent failure: no error, no alarm, and the same visible
+behaviour as a step that carries no `rorTarget` at all.
+
+It does not have to be that way, and the missing piece was never the maths.
+`rorBt` has been computed and published since 0.6.0 (`rorBt` in `/api/status`,
+the "Böntemperaturökning" entity in Home Assistant), `ror_valid()` is a property
+of the history window rather than of a channel, and the BT probe sits right above
+the beans while the ET probe hangs 4 cm higher in the chamber air. BT is the
+denser and more meaningful signal of the two; the question was whether the RoR
+loop can run without ET at all, and it can.
+
+**What changed** (0.11.0, `Drive the RoR guidance from BT when the ET channel is
+off`):
+
+- `include/config.h`: `ROR_GUIDANCE_ON_BT`, `#ifndef`-guarded, defaulting to
+  `(!SAFETY_ET_ENABLED)` - so the standard build (ET channel watched) steers on
+  `rorEt` exactly as before, and a BT-only build steers on `rorBt`. The
+  combination that fails silently - steering on ET in a build that does not read
+  ET - cannot be produced by the default, and a forced
+  `-DROR_GUIDANCE_ON_BT=0` next to `SAFETY_ET_ENABLED=0` is a `#error` at build
+  time instead of an inert loop.
+- `src/main.cpp` (`updateRorGuidance()`): the gate and the measured rate follow
+  the source. With BT as the source the gate is `!isnan(currentBT)`, and a NaN
+  ET no longer disables anything - which is the whole point of the change. The
+  gate is on the live reading rather than on the fitted rate, because `ror.cpp`
+  keeps publishing the previous rate while a sample is missing: the number alone
+  cannot say whether a measurement is behind it.
+- Gain, rate limit and `ROR_WINDOW_MS` are **untouched** in this release (3.0,
+  15 %/s, 30 s) - see the trim note below.
+- Visible wherever the machine is observed: `/api/status` and the MQTT status
+  payload carry `rorSource: "bt" | "et"` (compile-time, the same value the loop
+  uses), and the web UI's RoR row has a "RoR source" card next to the guidance
+  line, which also names the channel inside its text
+  (`12.0 C/min · BT 8.4 C/min · active`).
+
+**The constants are still ET-tuned, and that matters more now.** `ROR_GUIDANCE_GAIN`
+(3.0), `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` (15) and `ROR_WINDOW_MS` (30 s) were all
+chosen against an *ET* curve - a probe in the chamber air, which reacts faster
+and moves further than the bean mass. A BT curve differs in two ways that both
+push on the same constants:
+
+- **slower**: the bean probe lags. At the start of a roast BT barely moves while
+  the chamber air is already climbing, so a target an ET loop tracked will read
+  as a large positive error for longer. The rate limit (15 %/s) is what keeps
+  that from arriving as a step, and the gain is what decides how hard it pushes
+  once it arrives.
+- **noisier early on**: right after the turning point the bean signal is small
+  and quantised onto the MAX6675's 0.25 C ladder, and a 30 s least-squares fit
+  over a slow ramp sits closer to that resolution floor than the same fit over an
+  ET curve. That is a gain question first and a window question second.
+
+So before a BT-driven `rorTarget` profile is trusted, trim the three against a
+real BT curve on the machine (the calibration route at the bottom of this file:
+baseline noise first, then a roast with the loop off and Artisan on the same
+beans for comparison). Do not compensate by nudging the constants until one
+roast looks calm: the honest claim of this release is that the loop *runs* on BT,
+not that it is tuned for it.
+
+**Host tests.** `test_ror_guidance` is built in BOTH passes now, one source each:
+the flag-1 pass pins the `rorEt` behaviour that has shipped since 0.7.0
+(unchanged), the flag-0 pass pins the BT source - target curve, sign of the
+correction, and a cold-probe transient asserted *per cycle* (the correction never
+moves more than `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` per second, and the duty never
+passes `HEATER_MAX_DUTY_PCT` even when the fit reads -50 C/min) - with the ET
+channel reading nothing at all for the whole run. `test_web_server` asserts that
+the new `rorSource` field follows the build mode, in both passes, next to
+`etDisabled`.
+
+**What is not claimed.** Nothing has been roasted on BT guidance yet. The loop is
+exercised by host tests against synthetic curves, and `rorSource` is verified by
+reading `/api/status` back after the push; behaviour on real beans is unmeasured,
+and the constants above are the reason to expect it to need work.
 
 ## Verified on build / in source
 
@@ -1147,23 +1237,22 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-17 (0.10.0, the filesystem push route): **1091 checks, 0
-failures** with the flag at 1 and **976 checks, 0 failures** with it at 0, exit
+Last run 2026-10-17 (0.11.0, the BT-source RoR guidance): **1093 checks, 0
+failures** with the flag at 1 and **1035 checks, 0 failures** with it at 0, exit
 0 both times, no compiler warnings from this code. The totals count every
 execution:
 
-- flag 1, 11 binaries: 754 checks counted once each, plus the two the suite runs
+- flag 1, 11 binaries: 756 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
   `test_control` under ThreadSanitizer (104 again).
-- flag 0, 7 binaries: 635 checks counted once each, plus `test_mqtt_discovery`
+- flag 0, 8 binaries: 694 checks counted once each, plus `test_mqtt_discovery`
   (233 again) and `test_control` under ThreadSanitizer (108 again). `test_safety`
-  and `test_ror_guidance` are flag-1 only (`test_safety` asserts exactly the ET
-  trips the flag switches off, and RoR guidance steers on ET), and `test_ror`,
-  `test_fan`, `test_fan_fallback` link neither safety.cpp nor sensors.cpp, so
-  the flag cannot reach them - they run once, in the default pass.
-  `test_ota_push` and `test_ota_push_disabled` are flag-independent too, but run
-  in BOTH passes on purpose: the endpoint answers the same in either build mode,
-  and a mode-dependent endpoint would be a trap.
+  is flag-1 only (it asserts exactly the ET trips the flag switches off), and
+  `test_ror`, `test_fan`, `test_fan_fallback` link neither safety.cpp nor
+  sensors.cpp, so the flag cannot reach them - they run once, in the default
+  pass. `test_ota_push` and `test_ota_push_disabled` are flag-independent too,
+  but run in BOTH passes on purpose: the endpoint answers the same in either
+  build mode, and a mode-dependent endpoint would be a trap.
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks, default pass only): trip on the hard limit, on sustained sensor
@@ -1239,14 +1328,15 @@ execution:
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_web_server` - the profile HTTP API (57 checks): the real handlers,
+- `test_web_server` - the profile HTTP API (58 checks): the real handlers,
   dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
   that logs every operation. `name=../config` and `name=../../etc/passwd` over
   GET and DELETE answer 400 and provably cause **no** filesystem call at all,
   with a honeytoken file outside `/profiles` proving the traversal would
   otherwise have found something. It also asserts that `/api/status` reports
   `etDisabled` matching the mode it was built in, since that field is the only
-  thing that separates a dead ET module from a channel that is not watched.
+  thing that separates a dead ET module from a channel that is not watched - and
+  `rorSource`, which has to follow the build mode the same way.
 - `test_control` - the real src/main.cpp against stubbed hardware (104 checks
   with the flag at 1, 108 with it at 0):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
@@ -1303,12 +1393,20 @@ execution:
   (21 checks, built and run in both passes): both routes answer 503 to a
   well-formed, authenticated POST, open no partition, write no byte and touch no
   file; both GET probes answer 404. The build a device without a token runs.
-- `test_ror_guidance` - optional rate-of-rise guidance (52 checks, default pass
-  only): the target
+- `test_ror_guidance` - optional rate-of-rise guidance (53 checks with the flag
+  at 1, 58 with it at 0): the target
   curve, the sign of the correction, a zero correction when disabled, the rate
   limit and clamp that keep a cold-probe transient under `HEATER_MAX_DUTY_PCT`,
-  every duty request routed through `applyHeaterDuty()`, and the off-by-default
-  regression when a profile carries no `rorTarget`.
+  every duty request routed through `applyHeaterDuty()`, the off-by-default
+  regression when a profile carries no `rorTarget`, and that the MQTT status
+  payload names the channel the guidance steers on. Built in both passes, one
+  source per pass: with the flag at 1 it steers on `rorEt` (the behaviour that
+  has shipped since 0.7.0, asserted unchanged); with it at 0 on `rorBt`, with
+  the ET channel reading nothing for the whole run - where the BT transient case
+  also pins the rate limit per cycle (the correction moves at most
+  `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` per second, the duty never passes
+  `HEATER_MAX_DUTY_PCT`, and the clamp really is reached: the peak is 100.00 %
+  with the fit reading -50 C/min).
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder

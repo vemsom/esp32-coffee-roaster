@@ -73,6 +73,12 @@ static void handleStatus(AsyncWebServerRequest *request) {
     doc["roRorTarget"] = cb.getRorTarget();
     doc["roRorError"] = cb.getRorError();
     doc["roRorActive"] = cb.getRorActive();
+    // Which channel that guidance steers on, "bt" or "et". Compile-time
+    // (ROR_GUIDANCE_ON_BT in include/config.h, which follows SAFETY_ET_ENABLED)
+    // and reported because neither rorBt nor rorEt says which of the two the
+    // error above was built from - and a rorTarget step that never moves is
+    // exactly the silent failure this field makes visible.
+    doc["rorSource"] = ROR_GUIDANCE_SOURCE_NAME;
     // Build language (FW_LANG_EN in include/config.h), reported so the page
     // can follow the firmware. The browser's own language must not decide:
     // the UI and the Home Assistant names have to agree.

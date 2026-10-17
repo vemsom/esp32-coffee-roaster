@@ -475,9 +475,10 @@ int main() {
 #else
   // BT-only: no ET is read, so there is no history to fit and the ET rate stays
   // at its last value (0, from ror_reset()) instead of inventing a number from
-  // a channel that is switched off. RoR guidance steers on this rate and is
-  // inert for the same reason - main.cpp refuses to steer on a NaN ET, which is
-  // covered in test_ror_guidance and documented in include/config.h.
+  // a channel that is switched off. Nothing steers on it either: the RoR
+  // guidance follows the channel the build measures (ROR_GUIDANCE_ON_BT), so in
+  // this mode it steers on rorBt - covered in test_ror_guidance, documented in
+  // include/config.h and in docs/firmware-notes.md.
   check(web.getRorEt() == 0.0f,
         "the ET rate stays empty when the ET channel is off");
 #endif

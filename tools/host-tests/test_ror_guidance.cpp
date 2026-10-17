@@ -4,13 +4,26 @@
 // safety clamps. A profile with rorTarget > 0 is written to the in-memory
 // LittleFS and started through the same HTTP callback path the web UI uses.
 //
-// Covered:
+// Built once per pass, because the channel the guidance steers on is a build
+// choice (ROR_GUIDANCE_ON_BT follows SAFETY_ET_ENABLED, include/config.h):
+//
+//   * ET pass (ROR_GUIDANCE_ON_BT 0, the standard build): the loop steers on
+//     rorEt. Everything below is the behaviour that has shipped since 0.7.0 and
+//     is asserted unchanged.
+//   * BT-only pass (ROR_GUIDANCE_ON_BT 1, SAFETY_ET_ENABLED 0): the ET channel
+//     is not read at all, the loop steers on rorBt, and the checks below hold
+//     with a NaN ET for the whole run - a dead ET must not disable the
+//     guidance when BT is the source.
+//
+// Covered in both passes:
 //   * the target curve interpolates linearly from rorStart to rorEnd
 //   * the correction has the right sign (too slow -> positive, too fast -> negative)
 //   * the correction is zero when disabled (paused, non-RoR step, alarm, invalid RoR)
 //   * the rate limit + clamp keeps a cold-probe transient below HEATER_MAX_DUTY_PCT
 //   * every duty request goes through applyHeaterDuty(): fan below minimum -> 0 duty
 //   * a profile without rorTarget behaves like before (the RoR state reports off)
+//   * /api/status and the MQTT status payload report which channel is steering
+//     (rorSource), so "a rorTarget step that never moves" can never be silent
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
@@ -35,6 +48,16 @@
 #include "mqtt_client.h"
 #include "roast_profile.h"
 #include "state_lock.h"
+
+// This file pins ONE source per build: the pass decides which, and the checks
+// below branch on the same macro the firmware does. The BT branch asserts that
+// the ET channel read nothing for the whole run, which only holds when the ET
+// converter is not read at all, so this file accepts the BT source only in the
+// BT-only build mode - the firmware itself allows -DROR_GUIDANCE_ON_BT=1 in a
+// full build, this test file does not.
+#if ROR_GUIDANCE_ON_BT && SAFETY_ET_ENABLED
+#error "the BT-source checks here need a BT-only build (SAFETY_ET_ENABLED 0): compile with -DSAFETY_ET_ENABLED=0, or without -DROR_GUIDANCE_ON_BT=1"
+#endif
 
 void setup();
 void loop();
@@ -253,6 +276,62 @@ int main() {
   runLoops(4);
 
   // ------------------------------------------------------- sign of correction -
+  // One case per channel under test. Which channel that is follows the build
+  // (ROR_GUIDANCE_ON_BT): the ET branch below is the behaviour that has shipped
+  // since 0.7.0, asserted unchanged; the BT branch is the BT-only build, where
+  // the ET channel reads nothing at all.
+#if ROR_GUIDANCE_ON_BT
+  // BT is the source here. The ET converter is not read in this build, so
+  // currentET is NaN for the whole run - every check below has to hold anyway,
+  // because a dead ET is exactly the machine this mode exists for.
+  seedProfile("bt-sign", true);
+  check(web.startRoast(String("bt-sign")), "BT-source roast starts");
+  web.setFanSpeed(80);
+  // Case 1: BT rises far too slowly -> positive correction. The step asks for
+  // 20 C with a target falling from 15 to 3 C/min, so a BT drifting at
+  // 0.5 C/min leaves the error positive throughout. BT is not held
+  // bit-identical on purpose: the stuck-probe detector would trip after 60 s of
+  // heat on a reading that never changes.
+  bool etWasNan = true;
+  for (int i = 0; i < 120; i++) {
+    g_probeBT = 20.0f + 0.5f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
+    etWasNan = etWasNan && std::isnan(web.getET());
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    loop();
+  }
+  check(etWasNan, "the ET channel read nothing for the whole BT-source run");
+  check(web.getRorTarget() > 0.0f, "RoR target is active in the BT sign test");
+  check(web.getRorGuidance() == 0, "guidance reports step 0 with BT as the source");
+  check(web.getRorError() > 0.0f, "a slow BT gives positive error (target > actual)");
+  check(web.getRorActive(), "guidance is active on BT with a dead ET channel");
+  check(web.getHeaterDuty() > 0.0f, "positive error adds heat");
+
+  // Case 2: BT rises far too fast -> negative correction. 60 C/min against a
+  // profile ramp of 30 C/min, so the target is at ~42 C while BT is at 65 C:
+  // the PID is at 0 on its own here and the negative RoR correction is what
+  // holds the element off.
+  web.stopRoast();
+  runLoops(4);
+  check(web.startRoast(String("bt-sign")), "BT sign-test roast restarts");
+  web.setFanSpeed(80);
+  for (int i = 0; i < 180; i++) {
+    g_probeBT = 20.0f + 60.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    loop();
+  }
+  check(std::isnan(web.getET()), "the ET channel is still not read in case 2");
+  check(web.getRorError() < 0.0f, "a fast BT gives negative error");
+  check(web.getHeaterDuty() == 0.0f,
+        "negative error clamps duty to 0 (PID alone would be small here)");
+  // Walk BT back down before the next section instead of assigning 20 C: a
+  // 45 C step reads as a pulled probe in sensors.cpp (SENSOR_FAULT_MAX_JUMP_C
+  // is 20 C), latches the alarm and fails every later section for the wrong
+  // reason - lastGood stays at 65 C and no later reading can get past the jump
+  // check again.
+  rampProbes(20.0f, 20.0f, 8);
+  web.stopRoast();
+  runLoops(4);
+#else
   seedProfile("sign", true);
   check(web.startRoast(String("sign")), "sign-test roast starts");
   // The profile target at 0 s is 20 C. Keep BT there so the PID error is tiny,
@@ -296,6 +375,7 @@ int main() {
         "negative error clamps duty to 0 (PID alone would be small here)");
   web.stopRoast();
   runLoops(4);
+#endif
 
   // ------------------------------------------------------ disabled states ----
   seedProfile("disabled", true);
@@ -382,10 +462,54 @@ int main() {
   mqtt_update();
   check(statusHas("\"roRorGuidance\":-1"), "mqtt status carries roRorGuidance");
   check(statusHas("\"roRorActive\":false"), "mqtt status carries roRorActive");
+  // Which channel the guidance would steer on. Compile-time, so the payload has
+  // to carry the channel this build actually uses (ROR_GUIDANCE_ON_BT follows
+  // SAFETY_ET_ENABLED) - a build that steered on BT while reporting ET would be
+  // worse than one that reports nothing.
+  check(statusHas(ROR_GUIDANCE_ON_BT ? "\"rorSource\":\"bt\"" : "\"rorSource\":\"et\""),
+        "mqtt status carries the RoR guidance source this build steers on");
   web.stopRoast();
   runLoops(4);
 
   // ---------------------------------------------------------- clamp / rate ---
+#if ROR_GUIDANCE_ON_BT
+  // The cold-probe transient on the channel that is steering: BT plunges at
+  // -50 C/min while the profile still asks for 20 -> 50 C. The fitted rate ends
+  // up far below the target, so the raw correction is several times
+  // HEATER_MAX_DUTY_PCT. Both protections are checked per cycle, not just at
+  // the end: the clamp holds the duty at the ceiling and the rate limit keeps
+  // the correction from jumping there in one step. The PID contributes 0
+  // throughout (BT is above the target), so the duty here IS the correction.
+  seedProfile("bt-clamp", true);
+  // Move the probes gently to the starting point so sensors.cpp does not see
+  // the step change as a pulled probe.
+  rampProbes(80.0f, 80.0f, 8);
+  check(web.startRoast(String("bt-clamp")), "BT clamp-test roast starts");
+  web.setFanSpeed(80);
+  float maxDuty = 0.0f;
+  float maxDutyJump = 0.0f;
+  float prevDuty = web.getHeaterDuty();
+  for (int i = 0; i < 240; i++) {
+    g_probeBT = 80.0f - 50.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
+    fakeMillis += SENSOR_READ_INTERVAL_MS;
+    loop();
+    float duty = web.getHeaterDuty();
+    if (duty > maxDuty) maxDuty = duty;
+    if (std::fabs(duty - prevDuty) > maxDutyJump) maxDutyJump = std::fabs(duty - prevDuty);
+    prevDuty = duty;
+  }
+  check(std::isnan(web.getET()), "the ET channel was not read during the BT transient");
+  check(web.getRorError() > 20.0f, "a plunging BT creates a large positive error");
+  check(maxDuty <= HEATER_MAX_DUTY_PCT + 0.01f,
+        "duty never exceeds HEATER_MAX_DUTY_PCT in any cycle of the transient");
+  check(maxDutyJump <=
+            ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f) + 0.01f,
+        "the correction moves at most ROR_GUIDANCE_MAX_STEP_PCT_PER_S per second");
+  check(ssrState == HIGH || web.getHeaterDuty() == 0.0f,
+        "heater pin follows the clamped duty (on when positive)");
+  web.stopRoast();
+  runLoops(4);
+#else
   seedProfile("clamp", true);
   // Move the probes gently to the clamp-test starting point so sensors.cpp
   // does not see the step change as a pulled probe.
@@ -409,6 +533,7 @@ int main() {
         "heater pin follows the clamped duty (on when positive)");
   web.stopRoast();
   runLoops(4);
+#endif
 
   // ------------------------------------------------------ fan interlock ------
   // Use a profile whose fan is below the interlock threshold so the guidance
@@ -418,7 +543,11 @@ int main() {
   // like a probe fault to sensors.cpp.
   rampProbes(20.0f, 20.0f, 8);
   check(web.startRoast(String("interlock")), "interlock-test roast starts");
-  // Keep ET flat so guidance wants positive heat.
+  // Keep both probes drifting so neither channel sits bit-identical under heat,
+  // and note that the guidance does not have to be the reason the request is
+  // positive here: the PID alone already asks for heat (the target climbs to
+  // 35 C while the probes sit at ambient), and the interlock is what has to
+  // withhold it - whichever channel the RoR correction was built from.
   tick = 0;
   for (int i = 0; i < 120; i++) {
     driftProbes(tick, 20.0f, 20.0f);

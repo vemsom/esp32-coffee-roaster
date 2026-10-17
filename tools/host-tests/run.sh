@@ -56,10 +56,10 @@
 #                        nothing.
 #   test_ror_guidance    optional RoR-guidance per profile step: curve, sign,
 #                        clamps, interlock and the off-by-default regression.
-#                        DEFAULT PASS ONLY: the guidance steers on rorEt, and a
-#                        BT-only build has no ET reading to steer on (main.cpp
-#                        refuses to steer on a NaN ET, so it is inert there -
-#                        nothing to assert, and nothing that could steer).
+#                        Built in BOTH passes, one source per pass: with the
+#                        flag at 1 the guidance steers on rorEt (unchanged), at
+#                        0 it steers on rorBt and every check has to hold with
+#                        an ET channel that reads nothing at all.
 #   test_ota_push        the push-OTA endpoints. Links web_server.cpp but drives
 #                        only /api/update and /api/update/fs: it never links
 #                        safety.cpp or sensors.cpp, so the flag cannot reach it,
@@ -277,18 +277,25 @@ run_pass() {
       "$root/src/roast_profile.cpp" "$sha_src" \
       -o "$out/test_ota_push_disabled$sfx"
 
-  if [ "$pass" = "et" ]; then
-    # The RoR-guidance test links the real main.cpp and roast_profile.cpp, so
-    # the profile curve and guidance logic run exactly as they ship.
-    g++ -std=c++17 -Wall -Wextra -pthread \
-        -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
-        -DOTA_TOKEN=\"host-test-push-token\" \
-        "$here/test_ror_guidance.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
-        "$root/src/roast_profile.cpp" "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
-        "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
-        "$root/src/web_server.cpp" "$root/src/ota_push.cpp" "$sha_src" \
-        -o "$out/test_ror_guidance"
-  fi
+  # The RoR-guidance test links the real main.cpp and roast_profile.cpp, so
+  # the profile curve and guidance logic run exactly as they ship. Built in
+  # BOTH passes, because the source the guidance steers on is a build mode of
+  # its own (ROR_GUIDANCE_ON_BT follows SAFETY_ET_ENABLED): the flag-1 pass
+  # pins today's rorEt behaviour, the flag-0 pass pins the BT-only build, where
+  # the ET channel is dead for the whole run and the guidance has to steer on
+  # rorBt regardless. The file branches on the same macro the firmware does and
+  # refuses to build the BT branch without the flag.
+  # -Wno-unused-parameter for the same reason as the web-server test above:
+  # web_server.cpp's route lambdas have to mirror the library's signature.
+  g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter -pthread \
+      -I "$here/stub" -I "$root/include" -I "$json_inc" $mqtt_defs \
+      -DOTA_TOKEN=\"host-test-push-token\" \
+      $et_flag \
+      "$here/test_ror_guidance.cpp" "$root/src/main.cpp" "$root/src/safety.cpp" \
+      "$root/src/roast_profile.cpp" "$root/src/sensors.cpp" "$root/src/heater_control.cpp" \
+      "$root/src/fan_control.cpp" "$root/src/ror.cpp" "$root/src/mqtt_client.cpp" \
+      "$root/src/web_server.cpp" "$root/src/ota_push.cpp" "$sha_src" \
+      -o "$out/test_ror_guidance$sfx"
 
   # ---------------------------------------------------------------- run -----
   if [ "$pass" = "et" ]; then
@@ -312,6 +319,9 @@ run_pass() {
   run_test "$out/test_ota_push$sfx"
   run_test "$out/test_ota_push_disabled$sfx"
   run_test "$out/test_control$sfx"
+  # RoR guidance, one source per pass (see the build above): rorEt with the
+  # flag at 1, rorBt with it at 0.
+  run_test "$out/test_ror_guidance$sfx"
   # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
   # aborts with "unexpected memory mapping"), so the sanitized binary runs with
   # address randomisation turned off for that one process. That only changes
@@ -327,7 +337,6 @@ run_pass() {
     run_test "$out/test_ror"
     run_test "$out/test_fan"
     run_test "$out/test_fan_fallback"
-    run_test "$out/test_ror_guidance"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the

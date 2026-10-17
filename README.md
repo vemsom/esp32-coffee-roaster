@@ -177,11 +177,14 @@ Add `rorTarget`, `rorStart` and `rorEnd` to a profile step (values are C/min):
 
 `rorTarget > 0` enables the step. The target slope then falls linearly from
 `rorStart` at the beginning of the step to `rorEnd` at the end, the same way
-temperature ramps. The firmware compares this target to the measured environment
-rate of rise (`rorEt`) and nudges the heater duty up or down through a simple
-gain. PID still runs underneath; the RoR correction is added on top and clamped
-to the safe duty range, with a rate limit so a cold probe or a startup glitch
-cannot slam the element to full power.
+temperature ramps. The firmware compares this target to the measured rate of
+rise and nudges the heater duty up or down through a simple gain. Which channel
+that rate comes from follows the build: `rorEt` in the standard build, `rorBt` in
+a BT-only one (`SAFETY_ET_ENABLED 0`), where the ET channel is not read at all -
+the guidance never runs against a channel the firmware cannot measure. PID still
+runs underneath; the RoR correction is added on top and clamped to the safe duty
+range, with a rate limit so a cold probe or a startup glitch cannot slam the
+element to full power.
 
 RoR guidance is **off by default**. A step without `rorTarget`, or any old
 profile, behaves exactly as before: temperature target and PID are unchanged.
@@ -241,7 +244,7 @@ hard-coded outside it.
 ## Project status
 
 Early development, running on real hardware. The firmware builds clean and the
-host test suite is green (989 checks with the default build, 792 with the
+host test suite is green (1093 checks with the default build, 1035 with the
 BT-only build; Arduino core 2.0.17, espressif32 7.1.3). The build is assembled:
 the SSR switches the element, both MAX6675 modules are wired, and the GPIO
 assignment is the one in `include/config.h`. The image currently running on the

@@ -41,7 +41,9 @@ static int currentFanSpeed = 0;
 
 // Rate-of-rise guidance state, updated each control cycle. Guidance is only
 // active in profile mode when the current step has rorTarget > 0 and the RoR
-// estimate has warmed up. These are reported in /api/status and MQTT.
+// estimate has warmed up. These are reported in /api/status and MQTT. The rate
+// it steers on is a build choice: rorEt, or rorBt when the ET channel is not
+// read at all (ROR_GUIDANCE_ON_BT, include/config.h).
 static float currentRorTarget = 0.0f;
 static float currentRorError = 0.0f;
 static float currentRorCorrection = 0.0f;
@@ -454,7 +456,9 @@ static float rateLimitDelta(float delta, unsigned long dtMs) {
 // writes the diagnostic state (target/error/active/step) into the globals.
 // The correction is added on top of the PID output and is always 0 when any
 // precondition is missing, so existing behaviour is unchanged unless a profile
-// step explicitly enables rorTarget > 0.
+// step explicitly enables rorTarget > 0. The measured rate it steers on is
+// rorEt, or rorBt in a BT-only build (ROR_GUIDANCE_ON_BT) - the error reported
+// here is always target minus the channel actually in use.
 static float updateRorGuidance(unsigned long nowMs) {
   currentRorTarget = 0.0f;
   currentRorError = 0.0f;
@@ -471,10 +475,27 @@ static float updateRorGuidance(unsigned long nowMs) {
 
   if (safety_faulted()) return 0.0f;
   if (!ror_valid()) return 0.0f;
-  if (isnan(currentET)) return 0.0f;
 
-  float rorEt = ror_get_et();
-  float error = rorTarget - rorEt;          // positive = too slow = need more heat
+  // Which channel the loop compares the target against is a build choice
+  // (ROR_GUIDANCE_ON_BT, include/config.h): rorEt while the ET channel is
+  // watched, rorBt when it is not read at all. The gate has to sit on the
+  // channel behind the number, not on the other one: in a BT-only build ET is
+  // NaN by design, and a gate on a NaN ET is exactly what used to make the
+  // guidance silently dead there.
+  //
+  // The gate is on the live reading, not on the fitted rate: ror.cpp keeps
+  // publishing the previous rate while a sample is missing (a probe that has
+  // never read, a faulted read), so the fitted number alone cannot say whether
+  // there is a measurement behind it right now.
+#if ROR_GUIDANCE_ON_BT
+  if (isnan(currentBT)) return 0.0f;
+  float rorActual = ror_get_bt();
+#else
+  if (isnan(currentET)) return 0.0f;
+  float rorActual = ror_get_et();
+#endif
+
+  float error = rorTarget - rorActual;      // positive = too slow = need more heat
   float rawCorrection = error * ROR_GUIDANCE_GAIN;
 
   // Rate-limit the change of the correction, not the absolute value, so a

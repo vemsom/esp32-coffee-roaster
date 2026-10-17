@@ -27,7 +27,7 @@ struct WebServerCallbacks {
   bool  (*getWifiConnected)();  // device-side WiFi state, shown in the UI
   int   (*getRorGuidance)();    // index of the RoR-driven step, -1 = none
   float (*getRorTarget)();      // RoR target in C/min
-  float (*getRorError)();       // RoR target - rorEt
+  float (*getRorError)();       // RoR target minus the measured rate (see ROR_GUIDANCE_ON_BT)
   bool  (*getRorActive)();      // true when correction is being applied
   bool  (*isRunActive)();       // roast, manual or cooling - push OTA refuses then
 
