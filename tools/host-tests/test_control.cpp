@@ -321,12 +321,27 @@ int main() {
         "mqtt status reports the ET channel as disabled");
 #endif
 
-  // Fan up to 100 %: heat is allowed.
+  // Fan up to 100 %: NOT airflow yet. The duty ramps at FAN_SLEW_PCT_PER_SEC
+  // (config.h), and the interlock judges on the reached speed. Judging on the
+  // request instead is how the element gets lit while the fan is still spinning
+  // up - which is the whole reason the ramp had to move the interlock with it.
   web.setFanSpeed(100);
-  runLoops(4);
+  runLoops(1);   // one sample into the ramp: ~6 % reached, under the 10 % minimum
+  check(web.getFanSpeed() == 100, "the request reports 100 % the moment it is made");
+  check(web.getFanActual() < FAN_MIN_FOR_HEATER_PCT,
+        "the fan has not actually reached the minimum yet");
+  check(web.getFanFault(), "heat is refused while the fan is still ramping up");
+  check(web.getHeaterDuty() == 0 && ssrState == LOW,
+        "and nothing reaches the element meanwhile");
+
+  runLoops(4);   // a second into the ramp: well past the minimum
   check(!web.getFanFault(), "interlock clears once the fan reaches the minimum");
   check(web.getHeaterDuty() > 0, "heat is allowed with airflow");
   check(ssrState == HIGH, "element conducts with airflow");
+  check(web.getPidP() > 0.0f && web.getPidD() == 0.0f,
+        "the PID reports a live P term and a silent D term while heating");
+  check(web.getPidI() < 100.0f && web.getPidIntegral() < 1000.0f,
+        "the I term and its state are reported inside the clamp");
 
   // Fan drops below 10 % while heating: cut on the very next sample.
   web.setFanSpeed(5);
@@ -359,6 +374,43 @@ int main() {
   web.stopRoast();
   runLoops(2);
 
+  // ------------------------------- the filter is in the control path only ----
+  // The PID reads a low-passed bean temperature (include/filter.h), and the
+  // safety layer deliberately does not: safety_update() and the
+  // jump/plausibility checks behind it keep seeing the raw sample from
+  // sensors_read(). Both halves are visible from here: a step BOTH probes make
+  // together (19 C - accepted by the plausibility check, and not a BT/ET
+  // disagreement) shows the raw path following it in the same sample while the
+  // control input lags; and a jump large enough to be a fault still trips.
+  g_probeBT = 20.0f;
+  g_probeET = 20.0f;
+  runLoops(SAFETY_CLEAR_STREAK + 4);
+  check(!safety_faulted(), "clean state before the injected probe step");
+  check(fabs(web.getFilteredBT() - web.getBT()) < 1.0f,
+        "the filtered control input sits on the raw reading while steady");
+
+  g_probeBT = 39.0f;   // +19 C in one sample: under SENSOR_FAULT_MAX_JUMP_C
+  g_probeET = 39.0f;   // both channels, so the cold cross-check stays quiet
+  runLoops(1);
+  check(fabs(web.getBT() - 39.0f) < 0.01f,
+        "the raw reading - what safety and the API see - follows the step at once");
+  check(web.getFilteredBT() < web.getBT(),
+        "while the PID's input is still catching up, so the filter is real");
+
+  // A dropped probe: 21 C in one sample, and this time it is a fault. If the
+  // filter sat in front of the jump check instead of behind sensors_read(),
+  // this would arrive as a plausible ramp and nothing would trip.
+  g_probeBT = 60.0f;
+  runLoops(SENSOR_FAULT_MAX_COUNT + 2);
+  check(safety_faulted(), "a jump a filter would smooth still trips the latch");
+  check(safety_code() == SAFETY_SENSOR_BT, "and it trips as a BT sensor fault");
+
+  // Clear it again for the rest of the test.
+  g_probeBT = 20.0f;
+  g_probeET = 20.0f;
+  runLoops(SAFETY_CLEAR_STREAK + 4);
+  check(!safety_faulted(), "the latch clears after the fault is taken away");
+
   // --------------------------------- probe pulled during a manual run --------
   g_probeBT = 20.0f;
   g_probeET = 20.0f;
@@ -373,6 +425,8 @@ int main() {
   check(!web.getManualActive(), "the running manual heat is aborted");
   check(web.getHeaterDuty() == 0, "duty drops to 0 on abort");
   check(ssrState == LOW, "element off after the abort");
+  check(web.getPidP() == 0.0f && web.getPidI() == 0.0f && web.getPidD() == 0.0f,
+        "the PID terms read 0 again once no run is active");
   check(!web.startManual(200, 600, false, 0, 0), "restart stays denied while latched");
   runLoops(8);
   check(statusHas("\"safetyFault\":true"), "mqtt status carried the safety fault");
@@ -385,7 +439,10 @@ int main() {
   (void)web.getRorBt();
   (void)web.getFanSpeed();
   (void)web.getSafetyFault();
-  check(state_lock_acquisitions() == lockBefore + 4,
+  (void)web.getFanActual();
+  (void)web.getPidP();
+  (void)web.getFilteredBT();
+  check(state_lock_acquisitions() == lockBefore + 7,
         "every status getter takes the state lock");
 
   const unsigned long cmdBefore = state_lock_acquisitions();

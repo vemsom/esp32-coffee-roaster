@@ -388,7 +388,16 @@
 // channel is in use (rorSource). A behaviour change in the control loop, so a
 // new version: a device running 0.10.0 and one running 0.11.0 make different
 // decisions on the same profile.
-#define FW_VERSION "0.11.0"
+// 0.11.1 = the PID integral is clamped in output units (it was clamped in C*s
+// against the 0-100 % output range, which capped the I term at 5 % and left the
+// loop P-only ~20 C under its setpoint), KD is 0 (it differentiated a 250 ms
+// signal and switched duty between 0 and 100), the control input is filtered
+// (the raw sample still reaches the safety layer), and the fan duty slews at
+// FAN_SLEW_PCT_PER_SEC instead of jumping to the target (the 24 V supply cut
+// out on the fan's start current). New tuning and a new fan output, so a new
+// release: this is the first image whose control loop behaves differently on
+// the same profile and the same setpoint.
+#define FW_VERSION "0.11.1"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is
@@ -407,9 +416,64 @@
 #endif
 
 // ---- PID-standardvarden ----
-#define PID_KP  4.0
-#define PID_KI  0.05
-#define PID_KD  2.0
+// STARTING POINT, NOT A TUNED SET (2026-10-17). These numbers have never been
+// trimmed against a roast; they are where the first one starts from, and the
+// roast is what sets the real values (see docs/firmware-notes.md).
+//
+// The set they replace (KP 4.0 / KI 0.05 / KD 2.0) was never tested against
+// hardware either - it was written before the machine existed - and the first
+// measured run with it showed what it really did: BT parked ~20 C under the
+// setpoint with duty at 82-86 %, i.e. exactly the steady-state offset of a
+// P-only loop. The integral could not do anything about it (its clamp was in
+// the wrong unit - see include/pid.h), and KD 2.0 turned 250 ms sampling noise
+// into a 0/100 switch. So:
+//   * KP 2.0 (from 4.0): the offset the I term now removes does not have to be
+//     paid for with a 4 %-duty-per-degree response.
+//   * KI 0.15 (from 0.05): enough to take out a 20 C offset within a minute or
+//     so of roast time without setting up an oscillation.
+//   * KD 0.0 (from 2.0): removed, not trimmed down. A derivative on a signal
+//     that jitters +-10 C between samples is a switch; the input filter
+//     (PID_INPUT_FILTER_TAU_S) does what the D term was supposed to do, without
+//     amplifying the quantisation.
+// Trim KP up until the ramp tracks its setpoint, then KI, and only add a small
+// KD if a real (filtered) overshoot shows up. Keep this list in step with
+// docs/firmware-notes.md.
+#define PID_KP  2.0
+#define PID_KI  0.15
+#define PID_KD  0.0
+
+// ---- Filter on the PID's input (NEVER on the safety path) ----
+// Time constant of the one-pole filter on the bean temperature as the control
+// loop reads it (include/filter.h). 1 s is a compromise: long enough to take
+// the 0.25 C quantisation and the sample-to-sample dither out of the signal the
+// P and D terms see, short enough that it is not a delay in the loop (~0.2 C at
+// a 10 C/min ramp).
+//
+// The safety layer is deliberately NOT behind it: safety_update() and the
+// jump/plausibility checks see the raw sample from sensors_read(), because a
+// dropped probe smoothed by a 1 s filter is a plausible ramp, not a fault.
+#define PID_INPUT_FILTER_TAU_S  1.0
+
+// ---- Fläktens startström: slew-rate på duty ----
+// The 24 V supply cuts out when the fan is switched straight on at 100 %: the
+// start current of a stalled DC motor is too much for it. The duty therefore
+// ramps toward the requested speed instead of jumping - 25 %/s, i.e. 0 -> 100 %
+// in 4 s. A DECREASE is still written at once: spinning down draws no start
+// current, and the heat interlock has to see a requested stop immediately.
+//
+// The percent API is unchanged (0 = off, 1-100 = requested speed): this is the
+// rate at which the fan actually gets there. What the interlock judges on is
+// the REACHED speed - fan_actual_pct() - not the request, or the element could
+// be lit while the fan is still spinning up.
+//
+// #ifndef-guarded so a build (or a bisect) can change it:
+//   -DFAN_SLEW_PCT_PER_SEC=50     faster
+//   -DFAN_SLEW_PCT_PER_SEC=0      no ramp at all (the old immediate write)
+#ifndef FAN_SLEW_PCT_PER_SEC
+// A plain literal (no `f` suffix) on purpose: the host tests select on this in
+// #if, and `25.0f` is not a valid preprocessor expression.
+#define FAN_SLEW_PCT_PER_SEC  25.0
+#endif
 
 // ---- Profil-lagring ----
 #define PROFILES_DIR "/profiles"

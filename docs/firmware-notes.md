@@ -19,6 +19,15 @@ was verified on the device.
 off** - the machine is still a BT-only build, and a profile step with
 `rorTarget > 0` now moves the element there instead of doing nothing - see
 "RoR guidance source: BT when the ET channel is off" below.
+**2026-10-17, 0.11.1: the control loop is fixed and the fan ramps** - the
+integral was clamped in the wrong unit (C*s against the 0-100 % output range),
+which quietly made the regulator P-only and parked BT ~20 C under its setpoint;
+KD 2.0 differentiated the 250 ms sample and switched duty between 0 and 100;
+and the 24 V supply cut out when the fan was switched straight on at 100 %. See
+"PID and the control input filter" below. The device reported FW 0.11.0
+`build b1c4fbc` when this was built, so the note that the 0.11.0 image was still
+unflashed had gone stale in the meantime; the image flashed here carries 0.11.0
+and these fixes.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -360,6 +369,90 @@ still cannot be closed from a desk):
   keep in mind that a K-type thermocouple in a hot air stream reads air, not
   bean temperature.
 
+## PID and the control input filter (0.11.1, 2026-10-17)
+
+Three faults in the loop that decides how much power the element gets, all
+measured on the machine on 2026-10-17. None of them was a probe calibration
+problem, which is what the ~20 C offset first looked like.
+
+### 1. The integral was clamped in the wrong unit (the ~20 C offset)
+
+`SimplePID::compute()` accumulated `_integral += error * dt` - C*s - and then
+clamped that raw state against the OUTPUT range (0..100 %). The clamp therefore
+capped the I contribution at `KI * 100` = 5 %, and a regulator whose I term can
+never exceed 5 % is a P-only loop: it settles where `KP * error = duty`, i.e. at
+`error = duty / KP` = 85 / 4.0 ≈ 21 C under the setpoint. That is the measured
+behaviour exactly - BT 168-170 C against a 190 C setpoint with `heaterDuty`
+82-86 %, and 188-192 C with duty pinned at 100 % and a 203 C setpoint.
+
+Fixed in include/pid.h: the clamp now applies to `KI * integral` - the product
+the output is actually built from - and the stored state is written back from
+the clamped product, so a fully wound integrator is at most `outMax / KI` in
+C*s rather than an unbounded number no clamp ever touched. On top of that,
+**conditional integration** as anti-windup: a sample is committed only while it
+does not push an already saturated output further out. The opposite case (output
+saturated, error pointing back inside) *is* committed - that is what lets a
+saturated state unwind instead of pinning.
+
+### 2. KD differentiated the sampling noise
+
+`PID_KD` was 2.0 on a signal sampled every 250 ms and quantised to the MAX6675's
+0.25 C ladder, and the machine showed it: `heaterDuty` alternating between 0 and
+100 between two readings. A derivative over that much dither is a switch, not a
+correction, so KD is **0** - removed, not trimmed down. What the D term was
+supposed to do (react to a trend instead of to the noise) is what the input
+filter now does.
+
+### 3. The control input is filtered - and the safety path is not
+
+`include/filter.h` is a one-pole filter with `PID_INPUT_FILTER_TAU_S` = 1 s,
+applied in src/main.cpp to the PID's input only:
+
+- the PID computes on `btFiltered` (reported in `/api/status`);
+- `safety_update()`, the `SENSOR_FAULT_MAX_JUMP_C` jump check and the
+  `SENSOR_MIN_VALID_C` plausibility window keep seeing the RAW sample from
+  `sensors_read()` - and so do the RoR fit, MQTT/HA and `/api/status`'s `bt`.
+
+The split is a hard requirement, not a taste: a dropped probe behind a 1 s
+filter arrives as a plausible ramp, so a filter in front of the jump check would
+hide exactly the fault that check exists to catch. `test_control` pins both
+halves of it - a 19 C step both probes make together (the raw reading follows it
+in the same sample, the control input lags) and then a 21 C jump (the latch
+still trips as a BT sensor fault).
+
+### New tuning - a starting point, NOT a tuned set
+
+| gain | old (never tested on hardware) | new (also untested) |
+|------|-------------------------------|---------------------|
+| KP   | 4.0                           | 2.0                 |
+| KI   | 0.05                          | 0.15                |
+| KD   | 2.0                           | 0.0                 |
+
+The old set was written before the machine existed, and the first roast on it
+showed what it really did. The new set is an estimate with a reason per number
+(include/config.h) and **has to be trimmed at the next roast**: KP until the
+ramp tracks its setpoint, then KI, and a small KD only if a real overshoot shows
+up on the filtered signal. `test_pid` pins the properties that have to hold
+whatever the numbers become: error → 0 under a constant load, no windup, and a
+dithering input that cannot switch the duty between 0 and 100 (the same signal
+is run through the old gains and derivative there as the control group, so the
+failure mode is committed rather than described).
+
+### Trimming against a running machine
+
+`/api/status` carries the loop's internals now, so the gains can be watched
+while the machine runs instead of between roasts:
+
+| field | meaning |
+|-------|---------|
+| `pidP` / `pidI` / `pidD` | the three contributions as last applied, in percent |
+| `pidIntegral` | the raw integral state in C*s - pinned at `outMax / KI` (667 here) means the loop is asking for more than the element can give, and the offset left is physical, not tuning |
+| `btFiltered` | the bean temperature the PID read (compare it with `bt`, the raw sample) |
+
+All of them read 0 while no run is active, so "no run" is distinguishable from
+"a run with a silent term". No web-UI change in this release: the fields are for
+whoever is trimming, not for the roast view.
+
 ## Fan interlock (implemented 2026-09-26)
 
 The element may only fire while the fan runs at least `FAN_MIN_FOR_HEATER_PCT`
@@ -403,11 +496,44 @@ changes only the duty that reaches the LEDC channel:
   to the old straight 0–100 map, so a misconfigured constant cannot freeze or
   invert the fan.
 
-What is reported everywhere stays the **requested** percent: `/api/status`,
-the MQTT/HA fan entity, the profile steps and the `FAN_MIN_FOR_HEATER_PCT`
-(10 %) interlock all keep speaking 0–100, so the change moves no entity in Home
-Assistant and does not touch the interlock semantics. Only the duty written to
-the channel changed.
+What is reported everywhere stays the **requested** percent: `/api/status`'s
+`fanSpeed`, the MQTT/HA fan entity, the profile steps and the manual fan input
+all keep speaking 0–100, so the change moved no entity in Home Assistant.
+
+### The ramp to it, and what the interlock judges on (0.11.1, 2026-10-17)
+
+The 24 V supply cuts out when the fan is switched straight on at 100 %: the
+start current of a stalled DC motor is more than it will take. So the duty no
+longer jumps to the request - it climbs at `FAN_SLEW_PCT_PER_SEC` (include/
+config.h, default 25 %/s, i.e. 0 → 100 % in 4 s). A request that does **not**
+ask the fan to go up is still written in the same call: spinning down draws no
+start current, and the element has to be cut in the control cycle the fan is
+asked to stop.
+
+That splits one number into two, and the split is the whole point:
+
+- `fanSpeed` - the requested speed, unchanged, still what HA/the UI/profiles say;
+- `fanActual` (`fan_actual_pct()`) - the speed the fan has actually reached.
+
+`applyHeaterDuty()` now compares the interlock against `fanActual`, not against
+the request. Judging on the request is how the element gets lit while the fan is
+still spinning up: a profile step asking for 100 % would satisfy a
+`FAN_MIN_FOR_HEATER_PCT` (10 %) test instantly while the fan is still at 0 %.
+`test_control` drives exactly that - one sample after a 0 → 100 % request the fan
+is at ~6 %, and the heat is refused - and `test_fan` pins the ramp itself
+(monotone, the documented time, and the fan still under the minimum one sample
+in).
+
+The rate is `#ifndef`-guarded, so a build can change it
+(`-DFAN_SLEW_PCT_PER_SEC=50`) or remove the ramp entirely
+(`-DFAN_SLEW_PCT_PER_SEC=0` - the old immediate write, kept as an escape hatch so
+a bisect can tell the ramp apart from everything else in this release;
+`test_fan` is built a third time with it at 0).
+
+**NOT verified on hardware** - the fan in this build has never been started
+through the ramp. The 25 %/s is a first guess at what the supply tolerates: if
+it still cuts out, lower it; if it tolerates more, raise it. What *is* verified
+is the behaviour above, host-side.
 
 **NOT verified on hardware** — the 60 % knee is one bench measurement with the
 fan in its current wiring, and the band has not been swept at 60/70/80/90/100 %
@@ -1195,9 +1321,15 @@ Tagged the same way as above: what it takes, not just what is left.
   wiring that nothing sits on a strapping pin (0, 2, 5, 12, 15) - GPIO5 and
   GPIO2 are deliberately unused now, so the old GPIO5-high-at-reset question
   is gone.
-- **REQUIRES HARDWARE** PID values (PID_KP/KI/KD in config.h): unguessed
-  starting values. Will need tuning against the real thermal response once the
-  machine is testable.
+- **REQUIRES HARDWARE, now with a measured reason** PID values
+  (PID_KP/PID_KI/PID_KD in include/config.h): **2.0 / 0.15 / 0.0 as of 0.11.1**,
+  a starting point and not a tuned set. What they replace (4.0 / 0.05 / 2.0) was
+  never tested against hardware either, and its ~20 C offset turned out to be
+  the integral's clamp (C*s clamped against the 0-100 % output range) rather
+  than the gain - see "PID and the control input filter" above. KD 0 is settled
+  (a derivative on a 250 ms, 0.25 C-quantised signal is a switch); what is still
+  unmeasured is the real thermal response, so trim KP, then KI, at the next
+  roast, watching `pidP`/`pidI`/`pidIntegral` in `/api/status` while it runs.
 - **KNOWN LIMITATION, accepted on purpose** The web API has no authentication:
   access control is whatever the network around the device provides. Closing it
   means a token or basic-auth check on every handler in src/web_server.cpp plus
@@ -1237,20 +1369,24 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-17 (0.11.0, the BT-source RoR guidance): **1093 checks, 0
-failures** with the flag at 1 and **1035 checks, 0 failures** with it at 0, exit
-0 both times, no compiler warnings from this code. The totals count every
-execution:
+Last run 2026-10-17 (0.11.1, the PID clamp, KD 0, the input filter and the fan
+ramp): **1201 checks, 0 failures** with the flag at 1 and **1069 checks, 0
+failures** with it at 0, exit 0 both times. The only compiler warnings are the
+pre-existing `-Wunused-parameter` ones from `web_server.cpp`'s handler
+signatures (they mirror the library's, so they are compiled with
+`-Wno-unused-parameter` in the builds that use them); nothing from the files
+this change touched. The totals count every execution:
 
-- flag 1, 11 binaries: 756 checks counted once each, plus the two the suite runs
+- flag 1, 14 binaries: 850 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
-  `test_control` under ThreadSanitizer (104 again).
-- flag 0, 8 binaries: 694 checks counted once each, plus `test_mqtt_discovery`
-  (233 again) and `test_control` under ThreadSanitizer (108 again). `test_safety`
+  `test_control` under ThreadSanitizer (118 again).
+- flag 0, 9 binaries: 714 checks counted once each, plus `test_mqtt_discovery`
+  (233 again) and `test_control` under ThreadSanitizer (122 again). `test_safety`
   is flag-1 only (it asserts exactly the ET trips the flag switches off), and
-  `test_ror`, `test_fan`, `test_fan_fallback` link neither safety.cpp nor
-  sensors.cpp, so the flag cannot reach them - they run once, in the default
-  pass. `test_ota_push` and `test_ota_push_disabled` are flag-independent too,
+  `test_ror`, `test_fan`, `test_fan_fallback`, `test_fan_immediate` and
+  `test_pid` link neither safety.cpp nor sensors.cpp, so the flag cannot reach
+  them - they run once, in the default pass. `test_ota_push` and
+  `test_ota_push_disabled` are flag-independent too,
   but run in BOTH passes on purpose: the endpoint answers the same in either
   build mode, and a mode-dependent endpoint would be a trap.
 
@@ -1303,19 +1439,45 @@ execution:
   rate, 9.75 s gives 0, 10 s - exactly ROR_MIN_SPAN_MS - gives the rate, 5 s
   gives 0); a frozen sensor reads below 0.1 C/min after a window; and NaN
   samples are left out of the fit instead of being fitted as zero.
-- `test_fan` - the fan duty curve (14 checks, or 13 in the fallback build):
+- `test_fan` - the fan duty curve and the ramp to it (29 checks in the default
+  build, 28 in the fallback one, 24 with the ramp disabled):
   `fan_set_speed()` keeps its percent API while the duty written to the LEDC
   channel is mapped onto the band the fan actually responds in. 0 is off
   (duty 0); 1 % lands on the band floor (60 % duty with the default band, the
   measured start threshold, and above the 10 % interlock threshold); 50 % and
   100 % land at the configured midpoint and top; 101 clips and a negative
   request is off; the duty is non-decreasing across the whole request range;
-  and every nonzero request stays at or above the floor. The file is built a
-  second time with a broken band (`FAN_DUTY_MIN_PCT == FAN_DUTY_MAX_PCT`) to
-  pin the straight-map fallback, so a misconfigured constant can never freeze
-  or invert the fan. The regression that matters is elsewhere: the fan
-  interlock tests in `test_control` speak the requested percent and still pass
-  unchanged, which is what guarantees the reporting side did not move.
+  and every nonzero request stays at or above the floor. Then the ramp
+  (`FAN_SLEW_PCT_PER_SEC`): a request of 100 % writes nothing by itself, the
+  reached speed walks to it at the configured rate, it is monotone in both the
+  speed and the duty, 0 → 100 % takes the time the rate says, and one control
+  sample in the fan is still below `FAN_MIN_FOR_HEATER_PCT` - the state
+  `test_control` uses to check that the heat is refused. A decrease is written
+  immediately, which is what keeps the interlock able to cut the element in the
+  cycle the fan is asked to stop. The file is built twice more: with a broken
+  band (`FAN_DUTY_MIN_PCT == FAN_DUTY_MAX_PCT`, the straight-map fallback - a
+  misconfigured constant can never freeze or invert the fan) and with
+  `FAN_SLEW_PCT_PER_SEC` 0 (the escape hatch that restores the old immediate
+  write). The regression that matters is elsewhere: the fan interlock tests in
+  `test_control` still speak the requested percent through `/api/status` and
+  still pass unchanged, which is what guarantees the reporting side did not
+  move.
+- `test_pid` - the PID and the control-input filter (20 checks, default pass
+  only, links no other translation unit): a first-order plant with a real load
+  settles at zero steady-state error with the I term holding the duty, while the
+  same signal through a P-only loop parks ~18 C under the setpoint (the measured
+  failure, committed as a regression); `KI * integral` is clamped to the output
+  range and the stored state follows the clamp (the old clamp on the raw C*s
+  state would read 1000 % here); the integral does not grow while the output is
+  saturated, nothing is stored to overshoot with on arrival, and a saturated
+  state still integrates when the error turns back inside; a +-10 C dither on
+  the input makes the OLD gains and derivative swing the duty over 80 points
+  sample to sample while KD 0 plus the filter holds it inside ~6 points; KD 0
+  contributes exactly nothing; and the filter itself seeds from its first
+  sample, covers ~63 % of a step in one time constant and takes the dither down
+  about 8x. The safety half of the same story - that the latch still trips on a
+  jump the filter would smooth - is in `test_control`, because it only exists in
+  the path that runs `loop()`.
 - `test_mqtt_discovery` - MQTT layer (233 checks): all 12 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault`, `etDisabled` and the signed
@@ -1328,26 +1490,36 @@ execution:
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_web_server` - the profile HTTP API (58 checks): the real handlers,
+- `test_web_server` - the profile HTTP API (64 checks): the real handlers,
   dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
   that logs every operation. `name=../config` and `name=../../etc/passwd` over
   GET and DELETE answer 400 and provably cause **no** filesystem call at all,
   with a honeytoken file outside `/profiles` proving the traversal would
   otherwise have found something. It also asserts that `/api/status` reports
   `etDisabled` matching the mode it was built in, since that field is the only
-  thing that separates a dead ET module from a channel that is not watched - and
-  `rorSource`, which has to follow the build mode the same way.
-- `test_control` - the real src/main.cpp against stubbed hardware (104 checks
-  with the flag at 1, 108 with it at 0):
+  thing that separates a dead ET module from a channel that is not watched -
+  `rorSource`, which has to follow the build mode the same way - and the PID
+  diagnostics (`pidP`, `pidI`, `pidD`, `pidIntegral`, `btFiltered`) and
+  `fanActual`, each with a value of its own so a field wired to the wrong getter
+  cannot pass by accident.
+- `test_control` - the real src/main.cpp against stubbed hardware (118 checks
+  with the flag at 1, 122 with it at 0):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
-  the fan interlock in manual *and* profile mode, both directions; a probe
+  the fan interlock in manual *and* profile mode, both directions - including
+  **while the fan ramps**: one sample after a 0 → 100 % request the fan is at
+  ~6 %, and the heat is refused (judging on the requested percent instead is how
+  the element would be lit while the fan spins up); a step both probes make
+  together moves the raw reading at once while the filtered control input lags,
+  and a 21 C jump still trips the latch - the filter is in the control path, not
+  in `sensors_read()`; a probe
   pulled mid-run aborts the running heat; and the MQTT status payload carries
   both fault flags. This is the test that would have caught the 0 C bug. On
   top of that: booting with WiFi down returns from `setup()` promptly, still
   trips the safety latch, and retries the connect after
   `WIFI_RETRY_INTERVAL_MS`; the web callbacks provably take the state lock
-  (acquisition counter, including the rate-of-rise getters); and a second
+  (acquisition counter, including the rate-of-rise, fan-actual, PID and
+  filtered-temperature getters); and a second
   thread plays the AsyncTCP task against `loop()` for 20 s of simulated control
   time, checking that nothing deadlocks and that the state it leaves behind
   still makes sense. Then the rate of rise end to end: both probes ramped at

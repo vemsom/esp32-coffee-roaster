@@ -48,6 +48,11 @@ static void handleStatus(AsyncWebServerRequest *request) {
     doc["rorEt"] = cb.getRorEt();
     doc["heaterDuty"] = cb.getHeaterDuty();
     doc["fanSpeed"] = cb.getFanSpeed();
+    // The speed the fan has actually reached, next to the requested one. They
+    // differ exactly while the ramp (FAN_SLEW_PCT_PER_SEC) is running - and that
+    // is also when the interlock is holding the element off, so this is the
+    // field that explains a fanFault next to a fanSpeed of 100.
+    doc["fanActual"] = cb.getFanActual();
     doc["roastActive"] = cb.getRoastActive();
     doc["elapsedSeconds"] = cb.getElapsedSeconds();
     doc["roastPaused"] = cb.getRoastPaused();
@@ -73,6 +78,27 @@ static void handleStatus(AsyncWebServerRequest *request) {
     doc["roRorTarget"] = cb.getRorTarget();
     doc["roRorError"] = cb.getRorError();
     doc["roRorActive"] = cb.getRorActive();
+    // PID diagnostics, so the loop can be trimmed while the machine is running
+    // instead of between roasts (see include/pid.h and the PID section in
+    // docs/firmware-notes.md). pidP/pidI/pidD are the three contributions as
+    // they were last applied, in percent; the sum of the three (before the
+    // output clamp) is what the element was asked for in profile mode. These
+    // are always present and read 0 while no run is active, so a client can
+    // tell "no run" from "a run with a silent term".
+    doc["pidP"] = cb.getPidP();
+    doc["pidI"] = cb.getPidI();
+    doc["pidD"] = cb.getPidD();
+    // The integral state itself, in C*s. This is the number that used to be
+    // clamped against the 0-100 output range (which capped the I term at
+    // KI * 100 = 5 % and left the loop ~20 C under its setpoint). Watch it while
+    // trimming: if it sits pinned at outMax / KI the loop is asking for more
+    // than the element can give, and the offset is physical, not tuning.
+    doc["pidIntegral"] = cb.getPidIntegral();
+    // The control input: the bean temperature low-passed at
+    // PID_INPUT_FILTER_TAU_S, which is what the PID above read. The raw value
+    // stays in `bt` - the safety layer, the RoR fit and HA all keep seeing that
+    // one, and only the controller is behind the filter.
+    doc["btFiltered"] = cb.getFilteredBT();
     // Which channel that guidance steers on, "bt" or "et". Compile-time
     // (ROR_GUIDANCE_ON_BT in include/config.h, which follows SAFETY_ET_ENABLED)
     // and reported because neither rorBt nor rorEt says which of the two the

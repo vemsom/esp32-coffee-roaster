@@ -10,7 +10,11 @@ struct WebServerCallbacks {
   float (*getRorBt)();    // rate of rise, C/min (see include/ror.h)
   float (*getRorEt)();    // rate of rise, C/min, negative while cooling
   float (*getHeaterDuty)();
-  int   (*getFanSpeed)();
+  int   (*getFanSpeed)();   // the REQUESTED speed (what HA and the UI show)
+  // The speed the fan has actually reached (the ramp, FAN_SLEW_PCT_PER_SEC).
+  // Reported next to the request so "asked for 100 %, still at 0 %" - the state
+  // the heat interlock exists for - is visible from outside.
+  float (*getFanActual)();
   bool  (*getRoastActive)();
   unsigned long (*getElapsedSeconds)();
   bool  (*getRoastPaused)();
@@ -29,6 +33,16 @@ struct WebServerCallbacks {
   float (*getRorTarget)();      // RoR target in C/min
   float (*getRorError)();       // RoR target minus the measured rate (see ROR_GUIDANCE_ON_BT)
   bool  (*getRorActive)();      // true when correction is being applied
+  // PID diagnostics, so the loop can be trimmed against a machine that is
+  // running (see include/pid.h): the three contributions as last applied
+  // (percent), the raw integral state (C*s), and the filtered bean temperature
+  // the PID actually read - the control input, not the value the safety layer
+  // and the UI see.
+  float (*getPidP)();
+  float (*getPidI)();
+  float (*getPidD)();
+  float (*getPidIntegral)();
+  float (*getFilteredBT)();
   bool  (*isRunActive)();       // roast, manual or cooling - push OTA refuses then
 
   // Commands

@@ -5,6 +5,7 @@
 
 #include "config.h"
 #include "pid.h"
+#include "filter.h"
 #include "sensors.h"
 #include "ror.h"
 #include "safety.h"
@@ -19,6 +20,15 @@
 // One PID instance, shared between manual and profile runs. It is reset
 // whenever a run starts so the integral does not carry over between runs.
 static SimplePID heaterPID(PID_KP, PID_KI, PID_KD, 0, 100);
+
+// The bean temperature as the CONTROL loop reads it: the same sample as
+// currentBT, low-passed at PID_INPUT_FILTER_TAU_S (include/filter.h). Kept
+// separate from currentBT on purpose - currentBT stays the raw reading, because
+// that is what the safety layer, the RoR fit, MQTT and /api/status must see. A
+// filter on the sensor channel would turn a dropped probe into a plausible ramp
+// and hide exactly what SENSOR_FAULT_MAX_JUMP_C is looking for.
+static EmaFilter btControlFilter(PID_INPUT_FILTER_TAU_S);
+static float currentBTFiltered = NAN;
 
 enum ControlMode { MODE_IDLE, MODE_MANUAL, MODE_PROFILE };
 static ControlMode controlMode = MODE_IDLE;
@@ -38,6 +48,10 @@ static float currentBT = NAN;
 static float currentET = NAN;
 static float currentHeaterDuty = 0;
 static int currentFanSpeed = 0;
+// Timestamp of the last control sample, used as the filter's dt. The control
+// path is sampled at SENSOR_READ_INTERVAL_MS, so that is also the fallback when
+// the measured gap is unusable (zero, or a stalled loop).
+static unsigned long lastControlSampleMs = 0;
 
 // Rate-of-rise guidance state, updated each control cycle. Guidance is only
 // active in profile mode when the current step has rorTarget > 0 and the RoR
@@ -62,8 +76,14 @@ static bool fanInterlockFault = false;
 // requested duty may reach the SSR, and the flag is recomputed from scratch on
 // each call so it always means "heat is being withheld right now" instead of
 // sticking on after the run has ended.
+//
+// It judges on the REACHED fan speed (fan_actual_pct()), not on the requested
+// one: the duty slews up at FAN_SLEW_PCT_PER_SEC (config.h), so "the user asked
+// for 100 % a moment ago" is not airflow yet. On the request alone the element
+// could be lit for the seconds the fan is still spinning up - which is exactly
+// the state this interlock exists for.
 static void applyHeaterDuty(float duty) {
-  if (duty > 0.0f && currentFanSpeed < FAN_MIN_FOR_HEATER_PCT) {
+  if (duty > 0.0f && fan_actual_pct() < FAN_MIN_FOR_HEATER_PCT) {
     fanInterlockFault = true;
     currentHeaterDuty = 0;
     heater_set_duty(0);
@@ -158,6 +178,39 @@ static bool cbGetRorActive() {
   return currentRorActive;
 }
 
+// PID diagnostics (include/pid.h): the three contributions as they were last
+// applied, and the raw integral state. Reported as 0 while no run is active -
+// the terms belong to the last compute(), and a stale P term next to a stopped
+// machine would be read as a live one while trimming.
+static float cbGetPidP() {
+  StateLockGuard guard;
+  return controlMode == MODE_IDLE ? 0.0f : (float)heaterPID.pTerm();
+}
+
+static float cbGetPidI() {
+  StateLockGuard guard;
+  return controlMode == MODE_IDLE ? 0.0f : (float)heaterPID.iTerm();
+}
+
+static float cbGetPidD() {
+  StateLockGuard guard;
+  return controlMode == MODE_IDLE ? 0.0f : (float)heaterPID.dTerm();
+}
+
+static float cbGetPidIntegral() {
+  StateLockGuard guard;
+  return controlMode == MODE_IDLE ? 0.0f : (float)heaterPID.integral();
+}
+
+// The bean temperature the PID actually read this cycle - the filtered one. The
+// raw value stays in `bt` (above), which is what the safety layer, the RoR fit
+// and HA see, so the two can be compared while tuning without the firmware
+// having to say which is which.
+static float cbGetFilteredBT() {
+  StateLockGuard guard;
+  return currentBTFiltered;
+}
+
 // True between the unmount in onStart() and the reboot (or the remount in
 // onError()). While it is set, /profiles is not readable - the partition is
 // being rewritten - so the profile endpoints must refuse instead of reading
@@ -185,6 +238,14 @@ static float cbGetHeaterDuty() {
 static int cbGetFanSpeed() {
   StateLockGuard guard;
   return currentFanSpeed;
+}
+
+// The reached speed, next to the requested one above. The two differ exactly
+// while the ramp is running, which is when the interlock is holding the element
+// off - so this is the field that says why.
+static float cbGetFanActual() {
+  StateLockGuard guard;
+  return fan_actual_pct();
 }
 
 static bool cbGetRoastActive() {
@@ -343,6 +404,11 @@ static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
   manualCoolSpeed = coolSpeed;
   manualCoolSeconds = coolSeconds;
   heaterPID.reset();
+  // Start the control input from the reading that exists right now instead of
+  // from the filter's leftover state (or from nothing, which would look like a
+  // cold probe for one sample): the first control cycle sees the real machine.
+  btControlFilter.seed(currentBT);
+  currentBTFiltered = currentBT;
   controlMode = MODE_MANUAL;
   return true;
 }
@@ -391,6 +457,8 @@ static bool cbStartRoast(const String &profileName) {
   snprintf(selectedProfileName, sizeof(selectedProfileName), "%s",
            profileName.c_str());
   heaterPID.reset();
+  btControlFilter.seed(currentBT);
+  currentBTFiltered = currentBT;
   resetRorGuidance();
   roastStartMillis = millis();
   roastPaused = false;
@@ -537,8 +605,12 @@ static void updateControl() {
       cbSetFanSpeed((int)(activeProfile.fanAt(elapsed) + 0.5f));
     }
     float target = activeProfile.targetAt(elapsed);
-    if (!isnan(target) && !isnan(currentBT)) {
-      float pidDuty = (float)heaterPID.compute(target, currentBT);
+    // The PID reads the FILTERED bean temperature (currentBTFiltered); the raw
+    // currentBT is what the safety layer, the RoR fit and the UI get. Guarding
+    // on the filtered value is the honest test of "is there a number for the
+    // controller at all".
+    if (!isnan(target) && !isnan(currentBTFiltered)) {
+      float pidDuty = (float)heaterPID.compute(target, currentBTFiltered);
       float duty = pidDuty + rorCorrection;
       if (duty > HEATER_MAX_DUTY_PCT) duty = HEATER_MAX_DUTY_PCT;
       if (duty < 0.0f) duty = 0.0f;
@@ -550,8 +622,8 @@ static void updateControl() {
       controlMode = MODE_IDLE;
       applyHeaterDuty(0);
       maybeStartAutoCool();
-    } else if (!isnan(currentBT)) {
-      applyHeaterDuty(heaterPID.compute(manualTargetTemp, currentBT));
+    } else if (!isnan(currentBTFiltered)) {
+      applyHeaterDuty(heaterPID.compute(manualTargetTemp, currentBTFiltered));
     }
   } else {
     applyHeaterDuty(0);
@@ -808,6 +880,7 @@ void setup() {
     cbGetRorEt,
     cbGetHeaterDuty,
     cbGetFanSpeed,
+    cbGetFanActual,
     cbGetRoastActive,
     cbGetElapsedSeconds,
     cbGetRoastPaused,
@@ -826,6 +899,11 @@ void setup() {
     cbGetRorTarget,
     cbGetRorError,
     cbGetRorActive,
+    cbGetPidP,
+    cbGetPidI,
+    cbGetPidD,
+    cbGetPidIntegral,
+    cbGetFilteredBT,
     cbIsRunActive,
     cbSetFanSpeed,
     cbStartManual,
@@ -892,6 +970,27 @@ void loop() {
     // lock, so the web and MQTT getters never see a half-written history.
     ror_update(now, r.bt, r.et);
 
+    // The control input: the same reading, low-passed for the PID only. It is
+    // updated HERE, after currentBT, and safety_update() below is still fed the
+    // raw sample `r` - that order is the whole promise of this filter: the
+    // controller gets a signal it can differentiate, and the safety layer keeps
+    // a signal it can trip on. dt is the measured gap between control samples,
+    // with the nominal interval as the fallback for a stalled loop or a
+    // first sample; anything larger would be one huge filter step.
+    unsigned long controlDtMs = now - lastControlSampleMs;
+    lastControlSampleMs = now;
+    if (controlDtMs == 0 || controlDtMs > 5000) controlDtMs = SENSOR_READ_INTERVAL_MS;
+    if (!isnan(currentBT)) {
+      currentBTFiltered =
+          (float)btControlFilter.update(currentBT, controlDtMs / 1000.0);
+    } else {
+      // No reading at all (never connected): there is nothing to filter. The
+      // filter re-seeds from the first real sample, so a probe that comes back
+      // does not first have to pull its old value out of the filter.
+      btControlFilter.reset();
+      currentBTFiltered = NAN;
+    }
+
     // The stuck-probe check is armed by the heater actually asking for
     // power, not by "heat recently" - see include/config.h for why that is
     // what keeps the cooling tail from false-tripping.
@@ -921,8 +1020,15 @@ void loop() {
   // heater_set_duty() runs from the web task as well (cbStopManual,
   // cbStopRoast, abortRunForSafety), so the window computation is guarded
   // too. It never blocks, so the lock is held for microseconds.
+  //
+  // fan_update() advances the fan ramp here for the same reason: the target is
+  // written by the web task (cbSetFanSpeed) and the reached speed is read by the
+  // interlock, so both sides of the ramp belong under the lock. Every pass, not
+  // once per sensor sample, so the duty climbs smoothly instead of in 6 %
+  // steps.
   {
     StateLockGuard stateLock;
+    fan_update();
     heater_update();
   }
 

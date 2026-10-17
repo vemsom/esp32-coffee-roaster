@@ -33,7 +33,12 @@ running roast is aborted and new runs are refused, and the fan keeps running. Th
 latch is stored in flash and survives a power cycle.
 
 Separately, a **fan interlock** holds the element off unless the fan runs at
-least 10 %.
+least 10 % - and it judges on the speed the fan has *reached*, not on the one
+that was requested. The duty ramps toward a request
+(`FAN_SLEW_PCT_PER_SEC`, 4 s for 0 → 100 %) because the 24 V supply cuts out on
+the fan's start current, so a request is not airflow yet; using the request would
+light the element while the fan is still spinning up. (`/api/status` reports
+both: `fanSpeed` is the request, `fanActual` the reached speed.)
 
 These are the last line of defence, not the first. Software cannot see a loose
 mains conductor, a missing heatsink or a wrong wiring diagram.

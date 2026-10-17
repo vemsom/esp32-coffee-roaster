@@ -143,6 +143,7 @@ int main() {
   callbacks.getRorEt = []() { return 0.0f; };
   callbacks.getHeaterDuty = []() { return 0.0f; };
   callbacks.getFanSpeed = []() { return 0; };
+  callbacks.getFanActual = []() { return 0.0f; };
   callbacks.getRoastActive = []() { return false; };
   callbacks.getElapsedSeconds = []() { return 0UL; };
   callbacks.getRoastPaused = []() { return false; };
@@ -161,6 +162,11 @@ int main() {
   callbacks.getRorTarget = []() { return 0.0f; };
   callbacks.getRorError = []() { return 0.0f; };
   callbacks.getRorActive = []() { return false; };
+  callbacks.getPidP = []() { return 1.5f; };
+  callbacks.getPidI = []() { return 2.5f; };
+  callbacks.getPidD = []() { return 0.0f; };
+  callbacks.getPidIntegral = []() { return 16.7f; };
+  callbacks.getFilteredBT = []() { return 23.5f; };
   web_server_init(callbacks);
   check(asyncWebServers().size() == 1 && asyncWebServers()[0]->begun(),
         "web_server_init starts the server");
@@ -355,6 +361,26 @@ int main() {
       check(body.find(std::string("\"rorSource\":\"") +
                       (ROR_GUIDANCE_ON_BT ? "bt" : "et") + "\"") != std::string::npos,
             "status reports which channel the RoR guidance steers on");
+
+      // The PID diagnostics and the fan's reached speed. These exist so the
+      // loop can be trimmed against a machine that is RUNNING - the earlier
+      // regime was to flash a change and roast again to find out what the
+      // gains did - so they have to be in the payload, with the values the
+      // callbacks report. The literal values here are deliberately distinct
+      // from each other and from the other fields, so a Field that reports the
+      // wrong getter cannot pass by accident.
+      check(body.find("\"pidP\":1.5") != std::string::npos,
+            "status reports the PID's P contribution");
+      check(body.find("\"pidI\":2.5") != std::string::npos,
+            "status reports the PID's I contribution");
+      check(body.find("\"pidD\":0") != std::string::npos,
+            "status reports the PID's D contribution (0 in the shipped tuning)");
+      check(body.find("\"pidIntegral\":16.7") != std::string::npos,
+            "status reports the raw integral state in C*s");
+      check(body.find("\"btFiltered\":23.5") != std::string::npos,
+            "status reports the filtered bean temperature the PID read");
+      check(body.find("\"fanActual\":0") != std::string::npos,
+            "status reports the fan speed the fan has actually reached");
     }
   }
 

@@ -31,10 +31,21 @@
 #   test_ror             rate of rise: window, warm-up, sign and the quantised
 #                        tolerance, fed at the real 250 ms sample cadence.
 #                        Links ror.cpp only: no flag.
-#   test_fan             the fan duty curve: request 1-100 % mapped onto the
-#                        band the fan responds in (and the straight-map
-#                        fallback for a misconfigured band), via a recording
-#                        ledcWrite stub. Built twice, one per band. No flag.
+#   test_fan             the fan duty curve and its slew-rate limit: request
+#                        1-100 % mapped onto the band the fan responds in (and
+#                        the straight-map fallback for a misconfigured band),
+#                        via a recording ledcWrite stub, plus the ramp toward
+#                        the request (FAN_SLEW_PCT_PER_SEC) and the immediate
+#                        write on a decrease. Built three times: the configured
+#                        band, a broken band (min == max) and the slew rate at
+#                        0. No flag.
+#   test_pid             the PID and the control-input filter: no residual
+#                        offset under a load, the integral clamped in output
+#                        units, anti-windup, and a dithering input that may not
+#                        switch the duty between 0 and 100 (the same signal is
+#                        run through the pre-0.11.1 gains and derivative as the
+#                        control group). Pure logic over a stub clock, no
+#                        Arduino stub beyond millis(). No flag.
 #   test_mqtt_discovery  MQTT discovery payloads + command handling, using a
 #                        recording PubSubClient stub (no broker needed).
 #                        Built twice - English and Swedish - and the unique_id
@@ -235,10 +246,11 @@ run_pass() {
         "$here/test_ror.cpp" "$root/src/ror.cpp" \
         -o "$out/test_ror"
 
-    # The fan curve test is built twice: once with the configured duty band,
-    # once with a deliberately broken band (min == max) so the straight-map
-    # fallback is pinned too. Both use the same source - the band is
-    # compile-time.
+    # The fan curve test is built three times: once with the configured duty
+    # band, once with a deliberately broken band (min == max) so the
+    # straight-map fallback is pinned too, and once with the slew rate at 0 so
+    # the "no ramp" escape hatch is pinned. All three use the same source - the
+    # band and the rate are compile-time.
     g++ -std=c++17 -Wall -Wextra \
         -I "$here/stub" -I "$root/include" \
         "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
@@ -248,6 +260,20 @@ run_pass() {
         -DFAN_DUTY_MIN_PCT=60 -DFAN_DUTY_MAX_PCT=60 \
         "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
         -o "$out/test_fan_fallback"
+    g++ -std=c++17 -Wall -Wextra \
+        -I "$here/stub" -I "$root/include" \
+        -DFAN_SLEW_PCT_PER_SEC=0 \
+        "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
+        -o "$out/test_fan_immediate"
+
+    # The PID and the control-input filter: pure logic over its own stubbed
+    # clock, no other translation unit and no flag (both build modes run the
+    # same loop code). Like test_ror and test_fan it links neither safety.cpp
+    # nor sensors.cpp, so it runs once, in the default pass.
+    g++ -std=c++17 -Wall -Wextra \
+        -I "$here/stub" -I "$root/include" \
+        "$here/test_pid.cpp" \
+        -o "$out/test_pid"
   fi
 
   # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
@@ -337,6 +363,10 @@ run_pass() {
     run_test "$out/test_ror"
     run_test "$out/test_fan"
     run_test "$out/test_fan_fallback"
+    # The same source with the slew rate compiled to 0: the escape hatch that
+    # restores the pre-0.11.1 immediate duty write.
+    run_test "$out/test_fan_immediate"
+    run_test "$out/test_pid"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the
