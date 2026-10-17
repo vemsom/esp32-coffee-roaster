@@ -10,6 +10,16 @@ Popcorn popper machine similar to [this model](https://www.elgiganten.se/product
 - IMPORTANT: the original circuit is NOT galvanically isolated from mains despite the low measured voltage. The motor must be powered from its own isolated DC PSU in this build, not from the original circuit.
 - Fan driver circuit [example](https://www.amazon.se/-/en/dp/B0DGFT4BTR) 
 
+## Heating element
+- Three wires, but **one winding with a tap** - not two halves. Measured 2026-10-17:
+  A-B = 7 ohm, B-C = 40 ohm, A-C = 47 ohm (7 + 40 = 47, so B sits 7 ohm in from A).
+- That tap is the divider output the original circuit used for the motor's low
+  voltage. It is unused in this build and must be left disconnected and insulated.
+- Mains goes across **A and C**: 47 ohm ~ 1 125 W / 4.9 A at 230 V. **Never across
+  A-B** (7 ohm ~ 7.6 kW / 33 A). B-C (40 ohm ~ 1 320 W) is not used: the section
+  that carried the current would then run at ~38 % higher watt density than the
+  winding is made for. Wiring and the check before applying mains: `docs/wiring.md`.
+
 ## Temperature sensors
 - 2x MAX6675 + K-type thermocouples [example](https://www.amazon.se/-/en/dp/B0DRFQ59VT)
 - No built-in fault reporting on MAX6675 - sanity check in firmware (see docs/notes.md)

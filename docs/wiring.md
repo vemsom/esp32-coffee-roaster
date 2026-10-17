@@ -119,6 +119,35 @@ Elementets andra ledare → nötrläget (NTC-jord/retur enligt elementets monter
 - All nätarbete: strömlöst, jordat, och helst med en annan person i närheten.
   Små mätningar med multimeter på spänningslösa kretsar först.
 
+### Elementets tre ledare — en lindning med tapp (mätt 2026-10-17)
+
+Elementet har tre ledare, och de är **inte två halvor**: det är en enda lindning
+med en tapp. Uppmätt med multimeter på spänningslös maskin:
+
+| Mätning | Värde |
+|---|---|
+| A–B | 7 Ω |
+| B–C | 40 Ω |
+| A–C | 47 Ω |
+
+7 + 40 = 47, dvs. B sitter mitt i lindningen, 7 Ω in från änden A. Tappen var
+originalets lågspänning till fläktmotorn (ostyrt 230 × 7/47 ≈ 34 V över
+7 Ω-sektionen, fram till diodbryggan) — den behövs inte här, fläkten går på egen
+24 V-PSU.
+
+- **Nätet över A och C.** A och C är elementets två ledare, precis som i
+  originalet: 47 Ω ≈ 1 125 W / 4,9 A vid 230 V.
+- **B lämnas okopplad och isoleras** (plint eller krympslang) och ska inte ha
+  förbindelse med chassit.
+- **Aldrig nätet över A–B**: 7 Ω ≈ 7,6 kW / 33 A.
+- **B–C används inte.** Den oanvända 7 Ω-sektionen har ingen ström och blir
+  inte varm, men 40 Ω-sektionen skulle gå med ~38 % högre effekttäthet
+  (33,1 mot 24,0 W/Ω) än lindningen är gjord för — inte värt 1 320 W i stället
+  för 1 125 W.
+- Före nätet: mät varje ledare mot elementets metallhölje (ska vara avbrott).
+  Det som står tryckt på elementet (effekt) är sista rimlighetskollen — 47 Ω
+  kallt säger ~1,1 kW, något lägre med varm tråd.
+
 ## Ordning vid montering
 
 1. **ESP32 via USB, inget annat** → enheten går upp, webb-UI svarar, MQTT ansluter.
