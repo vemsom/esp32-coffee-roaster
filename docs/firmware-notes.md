@@ -9,8 +9,9 @@ BT-only build mode): **989 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
 **792 checks, 0 failures** with it at 0 - see "BT-only build mode" below.
 **2026-10-17, 0.10.0: the filesystem image has its own push route**
 (`POST /api/update/fs`), so the web UI no longer needs espota's dial-back - see
-"Push-OTA, both partitions" below for the current totals and what was verified
-on the device.
+"Default path now: push, for BOTH partitions" and "Verified on hardware
+2026-10-17 (0.10.0): the filesystem push" below for the current totals and what
+was verified on the device.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -617,6 +618,58 @@ rather than failing the build.
 Keeping `fw` equal to `FW_VERSION` - the same value `mqtt_client.cpp` publishes
 as HA's `sw_version` - is deliberate: the web API and Home Assistant must never
 disagree about which release is running.
+
+### Verified on hardware 2026-10-17 (0.10.0): the filesystem push
+
+The first run of the new route, on the roaster at 192.168.x.x, from the
+server. This is the run that proves the claim the route exists for: the page
+the device serves is the page in `data/`.
+
+```text
+app push first (the fs route only exists in the new app):
+POST /api/update, 980 768 bytes, clean tree at ba004e6 -> 200/reboot
+/api/status afterwards: fw "0.10.0", build "ba004e6", etDisabled true,
+                         safetyFault false, safetyReason "et disabled - bt only"
+                         (SAFETY_ET_ENABLED 0, the build mode the machine runs)
+
+filesystem push:
+page the device served before:
+GET /                                     -> 51 813 bytes
+POST /api/update/fs, 1 441 792 bytes, sha256 announce -> 200/reboot
+page the device serves after:
+GET /                                     -> 52 745 bytes, byte-identical to
+                                             data/index.html (52 745), and it
+                                             contains both pill texts
+                                             ("ET AVSTÄNDD", "ET DISABLED")
+GET /api/profiles                         -> HTTP 200 (LittleFS mounted again
+                                             after the reboot)
+GET /api/update/fs with token             -> HTTP 405
+GET /api/update/fs without token          -> HTTP 404
+GET /api/update with token                -> HTTP 405
+GET /api/update without token             -> HTTP 404
+```
+
+Before this run the device had been serving 51 813 bytes for a week while
+`data/index.html` had grown to 52 745: the app image went in over
+`/api/update`, and the filesystem image had no route that worked. That is the
+whole reason for the second route.
+
+Two notes from the run:
+
+- The app image was first pushed with the **wrong build mode** (the default
+  `SAFETY_ET_ENABLED 1`) by accident, and `/api/status` immediately showed the
+  difference: `etDisabled false`, `safetyFault true`, `safetyReason "et sensor
+  fault"` - the ET channel is dead on this machine, so a full build latches the
+  safety alarm and refuses to roast. Rebuilding with
+  `PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota` and
+  pushing again restored `etDisabled true`, `safetyFault false` (the BT streak
+  clears the restored ET latch within 2.5 s, as designed). Build the BT-only
+  image for this machine, and read `etDisabled` back to confirm it.
+- `GET /api/update/fs/bogus` with the token answers 405 too: the library's
+  BackwardCompatible matcher treats any path **under** a registered URI as a
+  match. For the update routes that is harmless in the safe direction - a POST
+  to `/api/update/fs/anything` still reaches the filesystem handler and writes
+  the filesystem partition, and `/api/update/anything` reaches the app one.
 
 **Verified on hardware 2026-10-03** against the roaster at its LAN address:
 
