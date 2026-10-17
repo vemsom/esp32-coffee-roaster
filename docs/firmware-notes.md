@@ -525,7 +525,7 @@ and the build time into `build_flags`, and `/api/status` reports them:
 
 ```sh
 curl -s http://192.168.x.x/api/status | python3 -m json.tool | grep -E 'fw|build|built'
-#   "fw":    "0.8.0"                    <- same string HA shows as sw_version
+#   "fw":    "0.9.0"                    <- same string HA shows as sw_version
 #   "build": "82888dc"                  <- git rev-parse --short HEAD
 #   "built": "2026-10-03T11:38:27Z"
 ```
