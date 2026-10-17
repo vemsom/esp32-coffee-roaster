@@ -51,6 +51,9 @@ void web_server_init(WebServerCallbacks callbacks);
 bool web_ota_reboot_pending();
 
 // Called by main.cpp: false while the filesystem partition is being rewritten
-// by a filesystem OTA transfer. web_server.cpp provides a weak "true" default
-// and main.cpp overrides it, so the server can be linked without main.
+// by a filesystem OTA transfer (ArduinoOTA's onStart() or the push route).
+// web_server.cpp provides a weak default that already refuses while a
+// filesystem push is running (ota_push_fs_unmounted()), and main.cpp overrides
+// it with the same answer plus its ArduinoOTA flag, so the server can be linked
+// without main.
 bool web_fs_available();

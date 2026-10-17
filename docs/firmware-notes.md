@@ -7,6 +7,10 @@ Everything still listed as open is untested against real hardware.
 Re-confirmed again on 2026-10-17 with the two-pass suite (the firmware now has a
 BT-only build mode): **989 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
 **792 checks, 0 failures** with it at 0 - see "BT-only build mode" below.
+**2026-10-17, 0.10.0: the filesystem image has its own push route**
+(`POST /api/update/fs`), so the web UI no longer needs espota's dial-back - see
+"Push-OTA, both partitions" below for the current totals and what was verified
+on the device.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -377,25 +381,44 @@ at all.
 The first flash has to be USB - the firmware has never had an update path, and
 adding one does not retroactively make a stock ESP32 updateable.
 
-**Default path now: push. `sh tools/ota-push.sh <ip>`.**
+**Default path now: push, for BOTH partitions.**
 
 ```sh
-pio run                        # build
-sh tools/ota-push.sh 192.168.x.x
+pio run -e esp32-ota                        # app image
+sh tools/ota-push.sh 192.168.x.x            # -> POST /api/update
+pio run -e esp32-ota -t buildfs             # filesystem image (from data/)
+sh tools/ota-push.sh 192.168.x.x fs         # -> POST /api/update/fs
 ```
 
 The uploading machine connects **to** the roaster and POSTs `firmware.bin` to
-`/api/update`, token in the `X-OTA-Token` header. That direction is the whole
-point: the ArduinoOTA path described below needs the *device* to open a TCP
-connection back to the uploader, and in a segmented network new
-connections IoT -> LAN are blocked, so that handshake dies right after
-`Authenticating...OK` while the device is up and reachable. LAN -> IoT works,
-so the upload was turned around instead of the firewall being opened for it.
-A permanent rule for a port that only matters during an upload - where the
-espota listener is also unauthenticated, first connection wins - is the wrong
-trade.
+`/api/update` (the app slot) or `littlefs.bin` to `/api/update/fs` (the
+filesystem partition, i.e. the web UI), token in the `X-OTA-Token` header. That
+direction is the whole point: the ArduinoOTA path described below needs the
+*device* to open a TCP connection back to the uploader, and in a segmented
+network new connections IoT -> LAN are blocked, so that handshake dies right
+after `Authenticating...OK` while the device is up and reachable - which is
+exactly why the UI never reached the roaster before 0.10.0: the app image went
+in over `/api/update`, the filesystem image had only the espota route, and
+espota could not complete. LAN -> IoT works, so the uploads were turned around
+instead of the firewall being opened for a port that only matters during an
+upload (where the espota listener is also unauthenticated, first connection
+wins).
 
-Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
+**How the two routes are kept apart.** The library does not compare paths for
+equality: `server.on(uri, ...)` registers a *BackwardCompatible* matcher with
+the rule `uri == path || path.startsWith(uri + "/")` and the **first**
+registered handler that matches wins (`ESPAsyncWebServer/src/WebServer.cpp`,
+`canHandle` + the `_addHandler` order). The path `/api/update/fs` therefore
+matches the URI `/api/update` too. `/api/update/fs` is registered **first**, so
+the filesystem image can never be handed to the app handler: that would write
+it with `U_FLASH` into the app slot and, on a matching checksum, commit a
+filesystem as the boot image. The host test asserts the order
+(`AsyncWebServer::routeFor()` in the stub models both halves of the library's
+rule), and sizes are checked per route as well - see below.
+
+Rules around the endpoints (`include/ota_push.h`, `src/ota_push.cpp`) - the
+same state machine serves both routes, so a rule cannot be present on one and
+missing from the other:
 
 - **Only the allowed client.** `OTA_ALLOWED_CLIENT_IP` in `include/secrets.h`
   is the one address whose requests are even considered. A valid token is not
@@ -429,14 +452,62 @@ Rules around the endpoint (`include/ota_push.h`, `src/ota_push.cpp`):
   line, which is why `ota-push.sh` waits for the device to come back instead
   of trusting the exit code.)
 - **Nothing else is touched.** `Update` writes to the inactive OTA slot; NVS
-  and LittleFS are not part of that, so saved profiles survive a push. The
-  host test asserts exactly that against the real handler.
+  and LittleFS are not part of that, so saved profiles survive an **app** push.
+  The host test asserts exactly that against the real handler. (A filesystem
+  push is the exception, and it is the point of the next section.)
+- **One transfer at a time.** A second body arriving while one is being
+  written gets **409** - two uploads interleaving chunks into the same `Update`
+  is not survivable, and on the filesystem route the second one would unmount a
+  partition that is already being rewritten.
+- **Sizes belong to the route.** An image for `/api/update` may not exceed the
+  OTA slot (`OTA_PUSH_MAX_BYTES`); an image for `/api/update/fs` may not exceed
+  the filesystem partition (`OTA_PUSH_FS_MAX_BYTES`, `0x160000` - the size of
+  the `spiffs` partition in the board's default table, which is exactly what
+  `littlefs.bin` comes out as) and must be at least `OTA_PUSH_FS_MIN_BYTES`
+  (16 KiB), because a body of a few hundred bytes is not a filesystem and
+  writing it would leave the partition unmountable. Too large answers **413**,
+  too small **400**, both before a byte is written.
 
-### Filesystem OTA: the command decides, and LittleFS must be unmounted
+### The filesystem route: same checks, one more thing to get right
+
+`POST /api/update/fs` writes `littlefs.bin` with `Update.begin(total, U_SPIFFS)`
+- the command comes from the route, never from the body. Everything the app
+route does happens here too (client, token, checksum, window, 409, 413/400),
+and then the part that only a filesystem transfer has:
+
+- **LittleFS is unmounted before the first byte.** A mounted filesystem holds
+  its own metadata and buffers in RAM and goes on writing its view of the same
+  blocks underneath the incoming image; the transfer dies part-way, which is
+  what an interrupted write looks like from the outside. That was the
+  `[ERROR]: Error Uploading` after ~190 chunks on the espota path, and the push
+  route follows the same rule (`LittleFS.end()` in `ota_push_begin()`, before
+  the transfer is marked authorised).
+- **The profile endpoints answer 503 while it is unmounted** instead of reading
+  a half-written partition as if it were a filesystem - `web_fs_available()`
+  carries both sources (ArduinoOTA's `onStart()` and the push route).
+- **The filesystem is mounted again when the transfer ends**, before any
+  restart: after a verified image it is mounted as it is, after a failed one it
+  is formatted first (the partition is half-written either way, and that is what
+  `ArduinoOTA.onError()` does for the same reason). If the mount fails, the
+  endpoints keep answering 503 instead of serving whatever is there, and the
+  reboot after the transfer mounts it at boot.
+- **The transfer is verified before it is committed**, exactly like the app
+  image: SHA-256 over every byte on the device, `Update.abort()` on a mismatch,
+  and no restart unless `Update.end()` succeeded.
+
+### Filesystem OTA over espota: the command decides, and LittleFS must be unmounted
+
+**The reserve path** - the standard one is the push route above. The rule it
+established (unmount before the first byte) is the same rule the push route
+follows; what follows here is why, and what went wrong with it first.
 
 `sh tools/ota-upload.sh <ip> fs` sends `littlefs.bin` to the filesystem
-partition with `--spiffs`. This was broken, and the failure looked like a
-network problem: the transfer started, ran for ~190 chunks, and died with
+partition with `--spiffs`, i.e. through the same espota protocol as an app
+upload. It is kept because it works on a network where the device *can* dial
+back, but it is no longer the way the UI gets updated: espota needs the device
+to open a TCP connection back to the uploader, which is the direction that does
+not work here. This is the bug that made the original attempt die: the transfer
+started, ran for ~190 chunks, and died with
 `[ERROR]: Error Uploading` after about 27 s.
 
 The cause was **not** the network. `ArduinoOTA` passes the transfer command to
@@ -626,19 +697,31 @@ nothing listening on the network. The upload helper reads the value from
 `secrets.h` at upload time, so it appears nowhere in `platformio.ini`, on a
 command line, or in a shell history.
 
-**What does *not* travel with a firmware update: `data/`.** `ota-upload.sh`
-sends `firmware.bin` to the OTA slot and nothing else - the web UI lives in
-the LittleFS image on its own partition, so a UI change needs its own push.
-That push does not need USB either: `sh tools/ota-upload.sh <ip> fs` runs
-`pio run -e esp32-ota -t uploadfsota`, which rebuilds the image from `data/`
-and sends it with the same espota protocol using `--spiffs`. All three
-layers carry it: PlatformIO adds the flag for that target
-(`builder/main.py:460-461`), `espota.py` switches the command to SPIFFS
-(`tools/espota.py:345-347`), and the ESP32 ArduinoOTA accepts `U_SPIFFS`
-(`libraries/ArduinoOTA/src/ArduinoOTA.cpp:176`) - and the device runs a
-build of exactly that framework version. Verified in code on all three
-layers, **not yet run on hardware**: the first real UI change is where that
-gets proven. `uploadfs` over USB remains the fallback, not the first hand.
+**What does *not* travel with a firmware update: `data/`.** `ota-push.sh` on
+its own sends `firmware.bin` to the app slot and nothing else - the web UI
+lives in the LittleFS image on its own partition, so a UI change needs its own
+push. Since 0.10.0 that push is the **second route on the same endpoint**:
+
+```sh
+pio run -e esp32-ota -t buildfs       # rebuild the filesystem image from data/
+sh tools/ota-push.sh <ip> fs          # POST /api/update/fs
+```
+
+Changing `data/` and pushing only the app image is the failure this route
+exists to prevent, and it is silent: the device keeps serving the old page, and
+the app answers `/api/status` with fields the page it serves knows nothing
+about. `ota-push.sh fs` therefore compares the size of the page the device
+hands out with `data/index.html` **after** the transfer and fails loudly on a
+mismatch - "the image went in" and "the page changed" are two different claims.
+
+The espota route (`sh tools/ota-upload.sh <ip> fs`, which runs
+`pio run -e esp32-ota -t uploadfsota` and sends the image with `--spiffs`) is
+kept as the reserve for a network where the device can dial back: PlatformIO
+adds the flag for that target (`builder/main.py:460-461`), `espota.py` switches
+the command to SPIFFS (`tools/espota.py:345-347`), and the ESP32 ArduinoOTA
+accepts `U_SPIFFS` (`libraries/ArduinoOTA/src/ArduinoOTA.cpp:176`). `uploadfs`
+over USB remains the fallback, not the first hand: the first flash and any
+recovery have to be USB, but nothing routine does.
 
 Host-tested: OTA starts exactly once when the link comes up, is served while
 idle, is *not* served while a run is active, latches the element low on
@@ -658,6 +741,37 @@ refused with 403 and discarded with `Update.abort()`, leaving the running image
 as the boot target; a half-sent image aborts instead of committing; a complete
 transfer writes exactly `Content-Length` bytes, ends with `Update.end()`, leaves
 every profile byte-identical and only then asks for the restart.
+
+The filesystem route is driven through the same handler and the same state
+machine, so the whole matrix above is asserted on `/api/update/fs` too - plus
+the four things that only that route can get wrong:
+
+- **The route decides the partition.** The app route is asserted to ask
+  `Update.begin()` for `U_FLASH` and to leave LittleFS mounted; the filesystem
+  route for `U_SPIFFS`, whatever the body looks like. And because the library's
+  BackwardCompatible matcher also matches the URI `/api/update` against the path
+  `/api/update/fs`, the test asserts which handler the *device* would pick
+  (`AsyncWebServer::routeFor()` in the stub models both the matcher rule and the
+  first-match-wins order). With the app route registered first, that check
+  fails: a filesystem image would be written to the app slot and committed as
+  the boot image.
+- **Unmounted before the first byte.** Checked at the first chunk: the transfer
+  is in progress, one chunk is written, `Update.lastCommand` is `U_SPIFFS`, and
+  `LittleFS.mounted()` is already false - with `end:/` in the filesystem stub's
+  operation log, so it is the real `end()` and not just a flag.
+- **503 while unmounted, and mounted again afterwards.** The profile endpoints
+  answer 503 during the transfer (never a half-written partition served as a
+  filesystem) and 200 again after it; a rejected transfer, a wrong checksum and
+  a dropped connection each mount the filesystem again before any restart.
+- **Sizes per target.** The filesystem route refuses a body larger than the
+  partition (413) and one smaller than any filesystem can be (400), both before
+  `Update.begin()`, and neither unmounts anything.
+
+The endpoint also has a second binary, `test_ota_push_disabled.cpp`, built with
+`-DOTA_TOKEN=""`: both routes answer **503** to a well-formed, authenticated
+POST and open no partition at all, and both GET probes answer 404. That is the
+build a device without a configured token runs, and the one place where the
+route is allowed to admit it exists.
 
 The checksum test hashes with the same SHA-256 the device runs - the host
 stub in `stub/sha256.cpp` is a real implementation, checked against the
@@ -980,19 +1094,23 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-17: **989 checks, 0 failures** with the flag at 1 and **792
-checks, 0 failures** with it at 0, exit 0 both times, no compiler warnings from
-this code. The totals count every execution:
+Last run 2026-10-17 (0.10.0, the filesystem push route): **1091 checks, 0
+failures** with the flag at 1 and **976 checks, 0 failures** with it at 0, exit
+0 both times, no compiler warnings from this code. The totals count every
+execution:
 
-- flag 1, 12 binaries: 652 checks counted once each, plus the two the suite runs
+- flag 1, 11 binaries: 754 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
   `test_control` under ThreadSanitizer (104 again).
-- flag 0, 7 binaries: 451 checks counted once each, plus `test_mqtt_discovery`
+- flag 0, 7 binaries: 635 checks counted once each, plus `test_mqtt_discovery`
   (233 again) and `test_control` under ThreadSanitizer (108 again). `test_safety`
   and `test_ror_guidance` are flag-1 only (`test_safety` asserts exactly the ET
   trips the flag switches off, and RoR guidance steers on ET), and `test_ror`,
-  `test_fan` and `test_ota_push` link neither safety.cpp nor sensors.cpp, so the
-  flag cannot reach them - they run once, in the default pass.
+  `test_fan`, `test_fan_fallback` link neither safety.cpp nor sensors.cpp, so
+  the flag cannot reach them - they run once, in the default pass.
+  `test_ota_push` and `test_ota_push_disabled` are flag-independent too, but run
+  in BOTH passes on purpose: the endpoint answers the same in either build mode,
+  and a mode-dependent endpoint would be a trap.
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
   (57 checks, default pass only): trip on the hard limit, on sustained sensor
@@ -1101,23 +1219,37 @@ this code. The totals count every execution:
   `U_FLASH` leaves it mounted, the profile endpoints answer 503 while it is
   unmounted, and a failed transfer remounts before the restart. That is the
   regression test for the bug that made filesystem OTA die part-way.
-- `test_ota_push` - the push OTA endpoint (82 checks): the real
-  `POST /api/update` handler and the real state machine, against a stubbed
-  `Update` that records every call, dispatched with every chunk of the body the
-  way the library really does. A valid token from an address other than
-  `OTA_ALLOWED_CLIENT_IP` is refused with 404, and a wrong, missing or short
-  token and a malformed or missing checksum header likewise - always *before*
-  `Update.begin()`, so no byte of an unauthorised image is written and no file
-  is touched, and never as a 500 when the remaining chunks arrive. A run in
-  progress *or a live element* is refused with 409 with `Update.begin()` never
-  reached. A missing Content-Length is refused with 400 and an image larger
-  than the OTA slot with 413. An image whose SHA-256 does not match is refused
-  with 403 and discarded with `Update.abort()`, so the running image stays the
-  boot target - the rollback; a half-sent image aborts the same way. A complete
-  transfer writes exactly `Content-Length` bytes in order, ends with
-  `Update.end()` (never `abort()`), reads back byte-identical, leaves a stored
-  profile in LittleFS untouched and only then asks for the restart. A failed
-  `Update.begin()` or `Update.end()` answers 500.
+- `test_ota_push` - the two push OTA routes (163 checks, built and run in both
+  passes): the real `POST /api/update` and `POST /api/update/fs` handlers and
+  the real state machine, against a stubbed `Update` that records every call -
+  including the command, so `U_FLASH` and `U_SPIFFS` are distinguishable - and
+  an in-memory LittleFS that logs every operation. Dispatched with every chunk
+  of the body the way the library really does. A valid token from an address
+  other than `OTA_ALLOWED_CLIENT_IP` is refused with 404, and a wrong, missing
+  or short token and a malformed or missing checksum header likewise - always
+  *before* `Update.begin()`, so no byte of an unauthorised image is written, no
+  file is touched and nothing is unmounted, and never as a 500 when the
+  remaining chunks arrive. A run in progress *or a live element* is refused with
+  409 with `Update.begin()` never reached, and so is a second transfer while one
+  is being written. A missing Content-Length is refused with 400; an image
+  larger than the OTA slot (app route) or than the filesystem partition (fs
+  route) with 413; a body too small to be a filesystem with 400. An image whose
+  SHA-256 does not match is refused with 403 and discarded with `Update.abort()`,
+  so the running image stays the boot target - the rollback; a half-sent image
+  aborts the same way. A complete transfer writes exactly `Content-Length` bytes
+  in order, ends with `Update.end()` (never `abort()`), reads back
+  byte-identical, leaves a stored profile in LittleFS untouched and only then
+  asks for the restart. A failed `Update.begin()` or `Update.end()` answers 500.
+  The filesystem route repeats that matrix and adds: which handler the device
+  would pick for `/api/update/fs` (route order, see the OTA section),
+  `U_SPIFFS` as the command, LittleFS unmounted when the first byte lands (with
+  `end:/` in the operation log, not just a flag), the profile endpoints answering
+  503 during the transfer and 200 again afterwards, and a remount after a
+  rejected transfer, a wrong checksum and a dropped connection.
+- `test_ota_push_disabled` - the same routes with NO token configured
+  (21 checks, built and run in both passes): both routes answer 503 to a
+  well-formed, authenticated POST, open no partition, write no byte and touch no
+  file; both GET probes answer 404. The build a device without a token runs.
 - `test_ror_guidance` - optional rate-of-rise guidance (52 checks, default pass
   only): the target
   curve, the sign of the correction, a zero correction when disabled, the rate

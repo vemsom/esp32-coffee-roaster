@@ -4,9 +4,10 @@
 #   sh tools/ota-upload.sh 192.168.x.x        firmware (app-partitionen)
 #   sh tools/ota-upload.sh 192.168.x.x fs     webb-UI:t (data/ -> LittleFS)
 #
-# ÄR DEN HÄR VÄGEN DEFAULT? Nej, tools/ota-push.sh är den för firmware - den
-# ansluter TILL enheten och behöver ingen anslutning tillbaka. Det här skriptet
-# finns kvar för filsystemet (fs) och för nät där dial-back faktiskt fungerar.
+# ÄR DEN HÄR VÄGEN DEFAULT? Nej, tools/ota-push.sh är den - både för firmware
+# och för filsystemet (fs). Den ansluter TILL enheten och behöver ingen
+# anslutning tillbaka. Det här skriptet finns kvar för nät där dial-back faktiskt
+# fungerar, och som reserv om push-routen inte går att nå.
 #
 # ETT STORT FEL, och två små, värda att känna till:
 #
@@ -59,6 +60,7 @@ if [ "${2:-}" = "fs" ]; then
   FS=1
   IMAGE=".pio/build/esp32dev/littlefs.bin"
   echo "Mål: filsystemet (webb-UI:t) - firmware rörs inte."
+  echo "OBS: tools/ota-push.sh <ip> fs är den normala vägen (ingen dial-back)."
   if [ ! -f "$IMAGE" ]; then
     echo "Bygger filsystemsbilden (pio run -t buildfs)..."
     pio run -t buildfs >/dev/null

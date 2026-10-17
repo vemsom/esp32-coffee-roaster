@@ -30,6 +30,20 @@
 //     with Update.end(), touches no file (NVS and the profiles survive) and
 //     only then asks for the restart.
 //
+// And the second route, /api/update/fs, with the same checks plus what makes a
+// filesystem transfer different:
+//
+//   * the route decides the partition - U_FLASH for /api/update, U_SPIFFS for
+//     /api/update/fs - so an app image cannot land in the filesystem partition
+//     or the other way round by sending it to the wrong path;
+//   * U_SPIFFS unmounts LittleFS before the first byte is written (a mounted
+//     filesystem rewriting its own partition dies part-way, which is the bug
+//     the ArduinoOTA path already had), the profile endpoints answer 503 while
+//     it is unmounted instead of reading a half-written partition, and a
+//     failed transfer mounts it again before the restart;
+//   * a sizes check per target: an image larger than the filesystem partition,
+//     or too small to be a filesystem at all, is refused before any byte.
+//
 // Build: the test_ota_push line in run.sh. OTA_TOKEN and OTA_ALLOWED_CLIENT_IP
 // are throwaway values there, never the real ones.
 #include <Arduino.h>
@@ -183,9 +197,34 @@ int main() {
 
   const AsyncWebServer::Route *update = findRoute("/api/update", HTTP_POST);
   const AsyncWebServer::Route *probe = findRoute("/api/update", HTTP_GET);
+  const AsyncWebServer::Route *fsUpdate = findRoute("/api/update/fs", HTTP_POST);
+  const AsyncWebServer::Route *fsProbe = findRoute("/api/update/fs", HTTP_GET);
   check(update != nullptr, "POST /api/update is registered");
   check(probe != nullptr, "GET /api/update is registered (probe route)");
-  if (!update || !probe) return finish();
+  check(fsUpdate != nullptr, "POST /api/update/fs is registered (filesystem route)");
+  check(fsProbe != nullptr, "GET /api/update/fs is registered (probe route)");
+  if (!update || !probe || !fsUpdate || !fsProbe) return finish();
+
+  // Which handler the DEVICE would pick for each path. The library matches a
+  // registered URI with the rule "_uri == path || path.startsWith(_uri + \"/\")"
+  // and takes the first handler that matches, so "/api/update" is also a
+  // candidate for the path "/api/update/fs" - and if the app handler were
+  // registered first, a filesystem image posted to /api/update/fs would be
+  // written to the APP slot with U_FLASH and then committed as the boot image.
+  // Route order is the only thing preventing that, so it is asserted here.
+  {
+    const AsyncWebServer::Route *byPath = nullptr;
+    const AsyncWebServer::Route *appByPath = nullptr;
+    for (AsyncWebServer *s : asyncWebServers()) {
+      if (!byPath) byPath = s->routeFor("/api/update/fs", HTTP_POST);
+      if (!appByPath) appByPath = s->routeFor("/api/update", HTTP_POST);
+    }
+    check(byPath == fsUpdate,
+          "a POST to /api/update/fs reaches the FILESYSTEM handler, not the app one "
+          "(the library also matches /api/update against that path, and the first "
+          "route registered wins)");
+    check(appByPath == update, "a POST to /api/update still reaches the app handler");
+  }
 
   std::vector<uint8_t> image(64 * 1024, 0x42);
   image[0] = 0xE9;  // a plausible firmware header byte
@@ -378,6 +417,11 @@ int main() {
     check(isStatus(r, 200),
           "a complete transfer with the right token, address and checksum answers 200");
     check(Update.beginCalls == 1, "Update.begin() was called once");
+    check(Update.lastCommand == U_FLASH,
+          "the app route asks Update for U_FLASH (the inactive app slot)");
+    check(LittleFS.mounted(),
+          "and leaves LittleFS mounted - the app slot is a different partition");
+    check(Update.lastSize == image.size(), "Update.begin() was given Content-Length");
     check(Update.endCalls == 1 && Update.abortCalls == 0, "the transfer ended, it was not aborted");
     check(Update.bytes.size() == image.size(), "exactly Content-Length bytes reached the OTA slot");
     check(Update.bytes == image, "the bytes are the image, in order");
@@ -389,6 +433,252 @@ int main() {
     check(littlefs_stub::files()[profilePath] == profileJson,
           "the stored profile is byte-identical after a transfer");
     check(web_ota_reboot_pending(), "a finished transfer asks for a restart");
+  }
+
+  // ------------------------------ the filesystem route (/api/update/fs) ----
+  // The filesystem image is the web UI, and it goes to the OTHER partition.
+  // Same checks as the app route first - that is the point of one state
+  // machine - and then the three things only this route can get wrong: which
+  // command Update is asked for, that LittleFS is closed before the first
+  // byte, and that it is mounted again whatever happens to the transfer.
+  std::vector<uint8_t> fsImage(200 * 1024, 0x11);
+  fsImage[0] = 'l';  // "littlefs" superblock magic, for plausibility only
+
+  // ---- 1. the same protection matrix, on the new path ----------------------
+  {
+    Update.reset();
+    PushOptions foreign;
+    foreign.client = FOREIGN_CLIENT;
+    const size_t opsBefore = littlefs_stub::opCount();
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, foreign, 4096);
+    check(isStatus(r, 404), "fs route: a request from another address answers 404");
+    check(bodyHas(r, "Not Found"), "fs route: and looks exactly like an unknown path");
+    check(Update.beginCalls == 0 && Update.writeCalls == 0,
+          "fs route: no byte is written for a foreign client");
+    check(littlefs_stub::opCount() == opsBefore, "fs route: a refused upload touches no file");
+    check(LittleFS.mounted(), "fs route: and does not unmount the filesystem");
+  }
+  {
+    AsyncWebServerRequest request;
+    request.client()->setRemoteIP(String(FOREIGN_CLIENT));
+    fsProbe->onRequest(&request);
+    check(isStatus(request, 404), "fs route: GET from a stranger answers 404");
+  }
+  {
+    Update.reset();
+    PushOptions bad;
+    bad.token = "not-the-token";
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, bad, 4096);
+    check(isStatus(r, 404), "fs route: a wrong token answers 404, not 401");
+    check(Update.beginCalls == 0, "fs route: Update.begin() is never reached with a wrong token");
+    check(r.responseCode() != 500, "fs route: the chunks after a refusal do not turn it into a 500");
+    check(!ota_push_in_progress(), "fs route: the state machine is idle after a refused body");
+    check(LittleFS.mounted(), "fs route: a bad token leaves the filesystem mounted");
+  }
+  {
+    Update.reset();
+    PushOptions none;
+    none.token = nullptr;
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, none, 4096);
+    check(isStatus(r, 404), "fs route: a missing token answers 404");
+    check(Update.writeCalls == 0, "fs route: and writes no byte");
+    check(r.responseCode() != 500, "fs route: and the rest of the body does not change that");
+    check(LittleFS.mounted(), "fs route: and nothing is unmounted");
+  }
+  {
+    Update.reset();
+    PushOptions badSha;
+    badSha.sha = "not-a-sha256";
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, badSha, 4096);
+    check(isStatus(r, 404), "fs route: a malformed checksum header answers 404 before the body");
+    check(Update.beginCalls == 0, "fs route: and never reaches Update.begin()");
+    check(r.responseCode() != 500, "fs route: and the rest of the body does not change that");
+  }
+  {
+    Update.reset();
+    PushOptions noSha;
+    noSha.sendSha = false;
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, noSha, 4096);
+    check(isStatus(r, 404), "fs route: a missing checksum header answers 404");
+    check(Update.beginCalls == 0, "fs route: and never reaches Update.begin()");
+    check(r.responseCode() != 500, "fs route: and the rest of the body does not change that");
+  }
+  {
+    runActive = true;
+    Update.reset();
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, PushOptions(), 4096);
+    check(isStatus(r, 409), "fs route: a transfer during a run is refused with 409");
+    check(Update.beginCalls == 0, "fs route: Update.begin() is never reached while a run is active");
+    check(LittleFS.mounted(), "fs route: a refused transfer leaves the filesystem mounted");
+    check(r.responseCode() != 500, "fs route: the rest of the body does not turn 409 into a 500");
+    runActive = false;
+  }
+  {
+    heaterAsking = true;
+    Update.reset();
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, PushOptions(), 4096);
+    check(isStatus(r, 409), "fs route: a live element refuses the transfer with 409");
+    check(Update.beginCalls == 0, "fs route: and Update.begin() is never reached");
+    check(LittleFS.mounted(), "fs route: and nothing is unmounted for a refused transfer");
+    check(r.responseCode() != 500, "fs route: and the rest of the body does not change that");
+    heaterAsking = false;
+  }
+  {
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), fsImage);
+    std::vector<uint8_t> one(1, 0);
+    fsUpdate->onBody(&request, one.data(), 1, 0, 0);
+    check(isStatus(request, 400), "fs route: a body with no Content-Length is refused with 400");
+    check(Update.beginCalls == 0, "fs route: Update.begin() is never reached without a length");
+    check(LittleFS.mounted(), "fs route: and the filesystem is untouched");
+  }
+  {
+    // Larger than the filesystem partition, and the rest of the body still
+    // arrives: 413 must survive every chunk the way 404 does.
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), fsImage);
+    std::vector<uint8_t> chunk(4096, 0);
+    for (size_t off = 0; off < fsImage.size(); off += chunk.size()) {
+      const size_t len =
+          (off + chunk.size() > fsImage.size()) ? fsImage.size() - off : chunk.size();
+      fsUpdate->onBody(&request, chunk.data(), len, off, OTA_PUSH_FS_MAX_BYTES + 1);
+    }
+    check(isStatus(request, 413),
+          "fs route: an image larger than the filesystem partition stays at 413");
+    check(Update.writeCalls == 0, "fs route: and never writes a byte");
+    check(LittleFS.mounted(), "fs route: an oversized image does not unmount the filesystem");
+  }
+  {
+    // Too small to be a filesystem at all: refused before anything is opened.
+    Update.reset();
+    const size_t opsBefore = littlefs_stub::opCount();
+    std::vector<uint8_t> tiny(OTA_PUSH_FS_MIN_BYTES - 1, 0x5a);
+    AsyncWebServerRequest r = dispatch(*fsUpdate, tiny, PushOptions(), 256);
+    check(isStatus(r, 400), "fs route: a body too small to be a filesystem is refused with 400");
+    check(Update.beginCalls == 0, "fs route: and Update.begin() is never reached");
+    check(r.responseCode() != 500, "fs route: and the rest of the body does not turn that into a 500");
+    check(LittleFS.mounted(), "fs route: and the filesystem is still mounted");
+    check(littlefs_stub::opCount() == opsBefore, "fs route: and no file was touched");
+  }
+  {
+    // An app-sized image on the fs route is still written with U_SPIFFS: the
+    // route decides the partition, not the body. (The opposite - an app image
+    // in the filesystem partition - is prevented by the route, not by sniffing
+    // the bytes.)
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), image);
+    fsUpdate->onBody(&request, image.data(), image.size(), 0, image.size());
+    check(isStatus(request, 200), "fs route: an accepted body on this path answers 200");
+    check(Update.lastCommand == U_SPIFFS,
+          "fs route: the route asks Update for U_SPIFFS whatever the body looks like");
+    check(Update.endCalls == 1, "fs route: and commits it to that partition");
+    check(ota_push_fs_unmounted() == false,
+          "fs route: and mounts the filesystem again when the transfer ends");
+  }
+
+  // ---- 2. unmounted before the first byte, 503 while unmounted ------------
+  {
+    // The case that killed the ArduinoOTA filesystem transfer: a mounted
+    // LittleFS while its own partition is rewritten. Checked at the first
+    // chunk, i.e. at the moment the first byte has landed.
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), fsImage);
+    const size_t chunkSize = 4096;
+    fsUpdate->onBody(&request, fsImage.data(), chunkSize, 0, fsImage.size());
+    check(ota_push_in_progress(), "fs push: a transfer is in progress after the first chunk");
+    check(Update.writeCalls == 1, "fs push: the first chunk has been written");
+    check(Update.lastCommand == U_SPIFFS,
+          "fs push: Update was asked for U_SPIFFS, the filesystem partition");
+    check(!LittleFS.mounted(),
+          "fs push: LittleFS is already unmounted when the first byte lands");
+    bool sawEnd = false;
+    for (const std::string &op : littlefs_stub::opLog())
+      if (op == "end:/") sawEnd = true;
+    check(sawEnd, "fs push: the unmount is the real end() call, not just a flag");
+
+    // While it is unmounted the profile endpoints have nothing readable to
+    // read: 503, not a half-written partition served as a filesystem.
+    const AsyncWebServer::Route *list = findRoute("/api/profiles", HTTP_GET);
+    check(list != nullptr, "fs push: GET /api/profiles is registered");
+    if (list) {
+      AsyncWebServerRequest during;
+      list->onRequest(&during);
+      check(during.responseCode() == 503,
+            "fs push: listing profiles during the transfer answers 503");
+    }
+
+    // A second upload cannot start on top of the first one.
+    {
+      AsyncWebServerRequest second = makeRequest(PushOptions(), fsImage);
+      fsUpdate->onBody(&second, fsImage.data(), chunkSize, 0, fsImage.size());
+      check(isStatus(second, 409), "fs push: a second transfer during one answers 409");
+      check(Update.beginCalls == 1, "fs push: and does not open the partition a second time");
+      check(ota_push_in_progress(), "fs push: the first transfer is still running");
+    }
+
+    // Finish the transfer that is still open, chunk by chunk.
+    for (size_t off = chunkSize; off < fsImage.size(); off += chunkSize) {
+      const size_t len =
+          (off + chunkSize > fsImage.size()) ? fsImage.size() - off : chunkSize;
+      fsUpdate->onBody(&request, fsImage.data() + off, len, off, fsImage.size());
+    }
+    check(isStatus(request, 200), "fs push: a complete filesystem transfer answers 200");
+    check(Update.endCalls == 1 && Update.abortCalls == 0,
+          "fs push: and commits the image with Update.end()");
+    check(Update.bytes == fsImage,
+          "fs push: exactly the filesystem image reached the partition, in order");
+    check(!ota_push_fs_unmounted(), "fs push: the filesystem is mounted again afterwards");
+    check(LittleFS.mounted(), "fs push: and LittleFS really is mounted again");
+
+    // The profiles are readable again, which is what "mounted again" means.
+    if (list) {
+      AsyncWebServerRequest after;
+      list->onRequest(&after);
+      check(after.responseCode() == 200,
+            "fs push: listing profiles works again after the transfer");
+    }
+  }
+
+  // ---- 3. a failed filesystem transfer mounts it again --------------------
+  {
+    // The announced checksum is a valid SHA-256 that is not this image's: the
+    // transfer is written and then thrown away, and the partition - half
+    // rewritten and not committed - still has to be mounted again before the
+    // restart, or every profile call would answer 503 until the next boot.
+    Update.reset();
+    PushOptions wrongSha;
+    wrongSha.sha = "0000000000000000000000000000000000000000000000000000000000000000";
+    AsyncWebServerRequest r = dispatch(*fsUpdate, fsImage, wrongSha, 4096);
+    check(isStatus(r, 403), "fs push: an image that does not match its checksum is refused");
+    check(Update.endCalls == 0, "fs push: the image is never committed");
+    check(Update.abortCalls == 1, "fs push: the written data is discarded with Update.abort()");
+    check(ota_push_last_transfer_rejected(), "fs push: the state machine records the rejection");
+    check(!ota_push_fs_unmounted(),
+          "fs push: and the filesystem is mounted again before any restart");
+    check(LittleFS.mounted(), "fs push: LittleFS really is mounted after the failure");
+  }
+  {
+    // A connection that dies half way through a filesystem transfer.
+    Update.reset();
+    AsyncWebServerRequest request = makeRequest(PushOptions(), fsImage);
+    fsUpdate->onBody(&request, fsImage.data(), 4096, 0, fsImage.size());
+    check(!LittleFS.mounted(), "fs push: an interrupted transfer has the filesystem unmounted");
+    request.disconnect();
+    check(!ota_push_in_progress(), "fs push: disconnect clears the in-progress flag");
+    check(Update.abortCalls == 1, "fs push: and discards the partial image");
+    check(!ota_push_fs_unmounted(), "fs push: and mounts the filesystem again");
+  }
+
+  // ------------------------------ app route flags, on the same machine -----
+  {
+    // The app route on a machine whose filesystem is mounted: never unmounts.
+    Update.reset();
+    const size_t opsBefore = littlefs_stub::opCount();
+    AsyncWebServerRequest r = dispatch(*update, image, PushOptions(), 4096);
+    check(isStatus(r, 200), "app route: still answers 200 after the filesystem tests");
+    check(Update.lastCommand == U_FLASH, "app route: and still asks for U_FLASH");
+    check(LittleFS.mounted(), "app route: and does not unmount the filesystem");
+    check(littlefs_stub::opCount() == opsBefore, "app route: and touches no file");
   }
 
   // ---------------------------------- interrupted transfer ----------------

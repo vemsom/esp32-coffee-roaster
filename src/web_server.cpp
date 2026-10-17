@@ -202,10 +202,14 @@ static bool validProfileName(const String &name) {
 // rewrites that partition, so during one the profile endpoints must refuse
 // rather than read a half-written image as if it were a filesystem.
 //
-// Weak on purpose: web_server.cpp owns the check, but only main.cpp knows when
-// a transfer is running. Linking the server without main (the host tests for
-// the profile endpoints) gets "always available", which is the truth there.
-__attribute__((weak)) bool web_fs_available() { return true; }
+// Weak on purpose: web_server.cpp owns the check, but the transfer that
+// unmounts the filesystem can be started from two places - ArduinoOTA's
+// onStart() (main.cpp) and the push route (ota_push.cpp). The push side knows
+// its own state, so the default already refuses while a filesystem push is
+// running; main.cpp overrides it with the same answer AND its ArduinoOTA flag.
+// Linking the server without main (the host tests for the profile endpoints)
+// thus still gets a truthful answer.
+__attribute__((weak)) bool web_fs_available() { return !ota_push_fs_unmounted(); }
 
 static bool fsReady(AsyncWebServerRequest *request) {
   if (web_fs_available()) return true;
@@ -366,21 +370,30 @@ static void handleRoastResume(AsyncWebServerRequest *request) {
 
 // ------------------------------------------------------------------ push OTA ---
 
-// POST /api/update with the image as the body, X-OTA-Token and X-OTA-SHA256
-// as headers. Every check happens before a single byte of the image is read
-// (see include/ota_push.h and src/ota_push.cpp), the body is only accepted
-// while the machine is idle AND the element is off, and a finished transfer
-// restarts into the new image - but only after the response has been sent,
-// otherwise the client would see a broken connection on an upload that
-// actually succeeded.
+// POST /api/update (the app image) and POST /api/update/fs (the filesystem
+// image), with the image as the body, X-OTA-Token and X-OTA-SHA256 as headers.
+// Every check happens before a single byte of the image is read (see
+// include/ota_push.h and src/ota_push.cpp), the body is only accepted while the
+// machine is idle AND the element is off, and a finished transfer restarts into
+// the new image - but only after the response has been sent, otherwise the
+// client would see a broken connection on an upload that actually succeeded.
+//
+// The route decides the partition: this handler passes the target on, and the
+// state machine asks Update for U_FLASH or U_SPIFFS accordingly. There is no
+// way for a client to choose the wrong one short of posting to the wrong path.
 static volatile bool pushOtaReboot = false;
-
-
 
 static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decision) {
   int code = 400;
   const char *msg = "bad request";
   switch (decision) {
+    case OtaPushDisabled:
+      // No OTA_TOKEN in this build: the endpoint takes nobody's image. 503 says
+      // "switched off", which is the truth, and there is nothing here to guess
+      // at because no request can ever be accepted.
+      code = 503;
+      msg = "push OTA is disabled on this device (no token configured)";
+      break;
     case OtaPushHidden:
       // Not the allowed client, or a bad token/checksum: indistinguishable
       // from a path that does not exist. 401 would confirm that this route is
@@ -395,9 +408,13 @@ static void sendOtaError(AsyncWebServerRequest *request, OtaPushDecision decisio
       code = 409;
       msg = "refused: a run is active or the heater is still conducting";
       break;
+    case OtaPushTooSmall:
+      code = 400;
+      msg = "image too small to be a filesystem image";
+      break;
     case OtaPushTooLarge:
       code = 413;
-      msg = "image too large for the OTA slot";
+      msg = "image too large for the target partition";
       break;
     case OtaPushUpdateBeginFailed:
       code = 500;
@@ -427,7 +444,7 @@ static bool otaProbeIsTrusted(AsyncWebServerRequest *request) {
                                 sha ? sha->value().c_str() : nullptr);
 }
 
-// GET on the update path: same rule as a POST that is refused. A client that
+// GET on an update path: same rule as a POST that is refused. A client that
 // pokes at the URI without being able to upload anything sees "Not Found".
 static void handleOtaProbe(AsyncWebServerRequest *request) {
   if (otaProbeIsTrusted(request)) {
@@ -437,8 +454,20 @@ static void handleOtaProbe(AsyncWebServerRequest *request) {
   request->send(404, "text/plain", "Not Found");
 }
 
-static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
-                           size_t index, size_t total) {
+static void handleOtaFsProbe(AsyncWebServerRequest *request) {
+  if (otaProbeIsTrusted(request)) {
+    sendError(request, 405,
+              "POST the filesystem image here with X-OTA-Token and X-OTA-SHA256");
+    return;
+  }
+  request->send(404, "text/plain", "Not Found");
+}
+
+// Both update routes are one handler with a different target: the checks are
+// identical by construction, so a rule added to one cannot be missing from the
+// other. Only the partition Update is asked for differs.
+static void handleOtaBody(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                         size_t index, size_t total, OtaPushTarget target) {
   // index == 0 is the first chunk of the body and the only place where the
   // decision is made; later chunks belong to a transfer already accepted.
   if (index == 0) {
@@ -448,7 +477,7 @@ static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_
     const AsyncWebHeader *sha = request->getHeader("X-OTA-SHA256");
     OtaPushDecision decision = ota_push_begin(
         remote, token ? token->value().c_str() : nullptr,
-        sha ? sha->value().c_str() : nullptr, total);
+        sha ? sha->value().c_str() : nullptr, total, target);
     if (decision != OtaPushOk) {
       // The library keeps calling this handler for the remaining chunks of the
       // same body even after the response is sent, so the refusal has to be
@@ -497,6 +526,16 @@ static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_
   }
 }
 
+static void handleOtaUpdate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                           size_t index, size_t total) {
+  handleOtaBody(request, data, len, index, total, OtaPushTargetApp);
+}
+
+static void handleOtaFsUpdate(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                             size_t index, size_t total) {
+  handleOtaBody(request, data, len, index, total, OtaPushTargetFs);
+}
+
 bool web_ota_reboot_pending() { return pushOtaReboot; }
 
 // --------------------------------------------------------------- bootstrap ---
@@ -525,6 +564,26 @@ void web_server_init(WebServerCallbacks callbacks) {
 
   // Push OTA. Deliberately not under /api/status's neighbourhood: this one
   // replaces the running firmware, so it is its own path with its own token.
+  // /api/update writes the app slot; /api/update/fs writes the filesystem
+  // partition (and unmounts LittleFS for the duration). Separate routes, same
+  // checks: which partition is written follows from the path, never from the
+  // body, so an image cannot land in the wrong one.
+  //
+  // THE FILESYSTEM ROUTE IS REGISTERED FIRST, and that is not cosmetic.
+  // server.on(uri, ...) does not compare paths for equality: it registers a
+  // BackwardCompatible matcher whose rule is
+  //     _uri == path || path.startsWith(_uri + "/")
+  // and the first handler that matches wins (ESPAsyncWebServer, WebServer.cpp:
+  // canHandle / _addHandler order). So the path "/api/update/fs" matches the
+  // URI "/api/update" as well - if the app route were first, a filesystem image
+  // posted to /api/update/fs would be handed to the app handler, written with
+  // U_FLASH into the APP SLOT and, on a matching checksum, committed as the
+  // boot image. The device would then boot a filesystem as firmware.
+  // The host test asserts the resulting order (routeFor() in the stub models
+  // both rules).
+  server.on("/api/update/fs", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr,
+            handleOtaFsUpdate);
+  server.on("/api/update/fs", HTTP_GET, handleOtaFsProbe);
   server.on("/api/update", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr, handleOtaUpdate);
   server.on("/api/update", HTTP_GET, handleOtaProbe);
 

@@ -36,10 +36,20 @@
 //      becomes the boot image: Update.abort() throws the written data away and
 //      the current image keeps booting. See ota_push.cpp.
 //
+// Two routes, one rule set: /api/update writes the app slot (U_FLASH) and
+// /api/update/fs writes the filesystem partition (U_SPIFFS). Same client, same
+// token, same checksum, same window - only the partition differs, and it is
+// decided by the route so a body can never land in the wrong one. A filesystem
+// image is written while LittleFS is UNMOUNTED (a mounted filesystem holds its
+// own view of the blocks being rewritten), so the profile endpoints answer 503
+// from the moment the transfer starts until it is over.
+//
 // An empty token disables the endpoint completely - same principle as MQTT
 // (no user -> disabled) and ArduinoOTA (no password -> not started). There is
 // no fallback and no default: an unauthenticated POST must never be able to
-// replace the firmware.
+// replace the firmware. A disabled endpoint answers 503 on the POST route;
+// there is nothing to protect and nothing to guess at, because it accepts no
+// byte from anyone.
 // ---------------------------------------------------------------------------
 
 #include "config.h"
@@ -62,19 +72,44 @@
 // for this board and is refused before a byte is written.
 #define OTA_PUSH_MAX_BYTES (1400000u)
 
+// The filesystem partition in the board's default table (spiffs, 0x290000,
+// 0x160000 bytes). A filesystem image cannot be larger than the partition it
+// is written to, so an image meant for /api/update/fs is measured against this
+// instead of the app slot - the two routes accept different sizes because they
+// write different partitions.
+#define OTA_PUSH_FS_MAX_BYTES (0x160000u)
+
+// The other end of the same check: a filesystem image carries at least a
+// superblock and metadata, so a body of a few hundred bytes is not one. It is
+// refused as a bad request instead of being written over the partition and
+// leaving the device without a mountable filesystem.
+#define OTA_PUSH_FS_MIN_BYTES (16u * 1024u)
+
 // SHA-256 as hex: 64 characters, plus the terminator.
 #define OTA_SHA256_HEX_LEN 64
 
 #include <Arduino.h>
 
+// Which partition the image belongs in. The target is a property of the ROUTE,
+// never of the body: /api/update always asks Update for U_FLASH (the inactive
+// app slot) and /api/update/fs always asks for U_SPIFFS (the filesystem
+// partition). That is what keeps an app image out of the filesystem partition
+// and a filesystem image out of the app slot - a client cannot pick the wrong
+// one by sending a file to the wrong route.
+enum OtaPushTarget {
+  OtaPushTargetApp = 0,  // U_FLASH: the inactive OTA slot
+  OtaPushTargetFs = 1,   // U_SPIFFS: the filesystem partition, LittleFS unmounted
+};
+
 enum OtaPushDecision {
   OtaPushOk = 0,
-  OtaPushDisabled,           // no OTA_TOKEN configured
+  OtaPushDisabled,           // no OTA_TOKEN configured: answer 503
   OtaPushHidden,             // not the allowed client, or not the right window: answer 404
   OtaPushUnauthorized,       // no/bad X-OTA-SHA256: answer 403
   OtaPushBusy,               // a run is active or the element is asking for power
   OtaPushBadRequest,         // no usable Content-Length
-  OtaPushTooLarge,           // larger than the OTA slot
+  OtaPushTooSmall,           // smaller than any filesystem image can be
+  OtaPushTooLarge,           // larger than the target partition
   OtaPushUpdateBeginFailed,  // Update.begin() refused (slot, size)
   OtaPushHashMismatch,       // only known at the end of the transfer
 };
@@ -100,10 +135,17 @@ bool ota_push_enabled();
 bool ota_push_probe_trusted(const char *allowedClient, const char *token, const char *sha256);
 
 // Decision for an incoming request. allowedClient is the remote IP as a
-// string; token and sha256 are the two headers. Everything is checked here,
-// before a single byte of the body is read.
+// string; token and sha256 are the two headers; target is the partition the
+// route stands for. Everything is checked here, before a single byte of the
+// body is read. For OtaPushTargetFs this is also where LittleFS is unmounted,
+// so it happens before the first byte rather than during the transfer.
 OtaPushDecision ota_push_begin(const char *allowedClient, const char *token,
-                               const char *sha256, size_t total);
+                               const char *sha256, size_t total,
+                               OtaPushTarget target);
+
+// Which target the running (or last) transfer had. Only meaningful while
+// inProgress is true; reported so a status line can tell the two apart.
+OtaPushTarget ota_push_target();
 
 size_t ota_push_write(uint8_t *data, size_t len);
 
@@ -114,6 +156,13 @@ bool ota_push_finished(bool complete);
 bool ota_push_in_progress();
 size_t ota_push_bytes_written();
 const char *ota_push_sha256_hex();  // hex of what was actually received
+
+// True while a filesystem transfer has LittleFS unmounted: /profiles is not
+// readable (the partition is being rewritten), so the profile endpoints must
+// answer 503 instead of reading a half-written image as if it were a
+// filesystem. Cleared again as soon as the transfer is over - remounted before
+// the restart, formatted first if the transfer failed.
+bool ota_push_fs_unmounted();
 
 // True when the last transfer was thrown away because it did not verify.
 bool ota_push_last_transfer_rejected();

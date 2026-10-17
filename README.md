@@ -57,13 +57,19 @@ pio run --target uploadfs   # flash the web UI - without this there is no UI
 After the first flash, updates go over the network, no cable:
 
 ```sh
+pio run -e esp32-ota                    # build the app image
 sh tools/ota-push.sh 192.168.x.x        # firmware - the normal path
-sh tools/ota-upload.sh 192.168.x.x fs   # web UI only
+pio run -e esp32-ota -t buildfs         # build the web UI image (it lives in data/)
+sh tools/ota-push.sh 192.168.x.x fs     # web UI - the normal path
 ```
 
-Both work with no USB cable and no firewall rule. The `fs` form sends the
-filesystem image to its own partition; it runs on firmware that has the
-filesystem-transfer fix, so it completes instead of dying part-way.
+Both routes POST to the device over HTTP (`/api/update` and `/api/update/fs`),
+so no connection has to come back out of the IoT network and no firewall rule is
+needed. The `fs` form writes the filesystem image to its own partition; the
+device unmounts LittleFS for the duration and the script checks afterwards that
+the page it serves is the size of `data/index.html`. `tools/ota-upload.sh`
+(ArduinoOTA/espota) is kept as the reserve for a network where the device *can*
+dial back; `pio run --target uploadfs` over USB is the last resort.
 
 The push script connects to the roaster and POSTs the image to `/api/update`
 with the token from `include/secrets.h` (`OTA_TOKEN`) and a SHA-256 of the

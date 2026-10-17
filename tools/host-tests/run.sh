@@ -60,10 +60,15 @@
 #                        BT-only build has no ET reading to steer on (main.cpp
 #                        refuses to steer on a NaN ET, so it is inert there -
 #                        nothing to assert, and nothing that could steer).
-#   test_ota_push        the push-OTA endpoint. Links web_server.cpp but drives
-#                        only /api/update: it never links safety.cpp or
-#                        sensors.cpp, so the flag cannot reach it and it runs in
-#                        the default pass only.
+#   test_ota_push        the push-OTA endpoints. Links web_server.cpp but drives
+#                        only /api/update and /api/update/fs: it never links
+#                        safety.cpp or sensors.cpp, so the flag cannot reach it,
+#                        but it is built and run in BOTH passes anyway - an
+#                        endpoint whose behaviour depended on the build mode
+#                        would be a trap.
+#   test_ota_push_disabled  the same sources with NO token configured: the
+#                        build where both routes must answer 503 and open no
+#                        partition at all. Both passes.
 set -e
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -243,19 +248,36 @@ run_pass() {
         -DFAN_DUTY_MIN_PCT=60 -DFAN_DUTY_MAX_PCT=60 \
         "$here/test_fan.cpp" "$root/src/fan_control.cpp" \
         -o "$out/test_fan_fallback"
+  fi
 
-    # The push-OTA test links the REAL web_server.cpp (and the handler that
-    # replaces the firmware), the real ota_push.cpp, and a stubbed Update
-    # library that records what it was asked to do. OTA_TOKEN and
-    # OTA_ALLOWED_CLIENT_IP are throwaway values so the endpoint is enabled
-    # exactly as on a device with a token configured.
-    g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
-        -I "$here/stub" -I "$root/include" -I "$json_inc" \
-        -DOTA_TOKEN=\"host-test-push-token\" -DOTA_ALLOWED_CLIENT_IP=\"192.0.2.10\" \
-        "$here/test_ota_push.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
-        "$root/src/roast_profile.cpp" "$sha_src" \
-        -o "$out/test_ota_push"
+  # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
+  # image and the filesystem image), the real ota_push.cpp, and a stubbed
+  # Update library that records every call - including the command it was
+  # given, so the test can tell U_FLASH from U_SPIFFS. OTA_TOKEN and
+  # OTA_ALLOWED_CLIENT_IP are throwaway values so the endpoint is enabled
+  # exactly as on a device with a token configured.
+  #
+  # Built in BOTH passes: it links neither safety.cpp nor sensors.cpp, so the
+  # flag cannot reach it, but the same binary has to pass whichever mode the
+  # image is built with - a mode-dependent endpoint would be a trap.
+  g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+      -I "$here/stub" -I "$root/include" -I "$json_inc" $et_flag \
+      -DOTA_TOKEN=\"host-test-push-token\" -DOTA_ALLOWED_CLIENT_IP=\"192.0.2.10\" \
+      "$here/test_ota_push.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+      "$root/src/roast_profile.cpp" "$sha_src" \
+      -o "$out/test_ota_push$sfx"
 
+  # The same endpoint with NO token configured: the build where it has to
+  # refuse everything with 503 and never open a partition at all. The token is
+  # a compile-time constant, hence a second binary.
+  g++ -std=c++17 -Wall -Wextra -Wno-unused-parameter \
+      -I "$here/stub" -I "$root/include" -I "$json_inc" $et_flag \
+      -DOTA_TOKEN=\"\" -DOTA_ALLOWED_CLIENT_IP=\"192.0.2.10\" \
+      "$here/test_ota_push_disabled.cpp" "$root/src/web_server.cpp" "$root/src/ota_push.cpp" \
+      "$root/src/roast_profile.cpp" "$sha_src" \
+      -o "$out/test_ota_push_disabled$sfx"
+
+  if [ "$pass" = "et" ]; then
     # The RoR-guidance test links the real main.cpp and roast_profile.cpp, so
     # the profile curve and guidance logic run exactly as they ship.
     g++ -std=c++17 -Wall -Wextra -pthread \
@@ -287,6 +309,8 @@ run_pass() {
     exit 1
   fi
   run_test "$out/test_web_server$sfx"
+  run_test "$out/test_ota_push$sfx"
+  run_test "$out/test_ota_push_disabled$sfx"
   run_test "$out/test_control$sfx"
   # ThreadSanitizer cannot map its shadow under this kernel's ASLR entropy (it
   # aborts with "unexpected memory mapping"), so the sanitized binary runs with
@@ -303,7 +327,6 @@ run_pass() {
     run_test "$out/test_ror"
     run_test "$out/test_fan"
     run_test "$out/test_fan_fallback"
-    run_test "$out/test_ota_push"
     run_test "$out/test_ror_guidance"
   fi
 

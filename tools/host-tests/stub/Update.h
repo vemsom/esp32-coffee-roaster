@@ -4,16 +4,34 @@
 // prove: an accepted transfer writes exactly Content-Length bytes, a refused
 // one writes nothing, and no path ever reaches NVS (the stub has no NVS to
 // reach, which is the point - see test_ota_push.cpp).
+//
+// It also records the COMMAND passed to begin(), because that is what decides
+// which partition the image lands in: U_FLASH is the inactive app slot (the
+// filesystem is left alone) and U_SPIFFS is the filesystem partition (LittleFS
+// must be unmounted before the first byte). A test that only counted bytes
+// could not tell an app push from a filesystem push.
 #include <Arduino.h>
 #include <cstring>
 #include <vector>
 
+// The real library defines these in Update.h; the ArduinoOTA stub defines them
+// too and this header can be included after it, so keep the definitions
+// single.
+#ifndef U_FLASH
+#define U_FLASH 0
+#endif
+#ifndef U_SPIFFS
+#define U_SPIFFS 100
+#endif
+
 class UpdateClass {
  public:
-  bool begin(size_t size = 0, int command = 0, int ledPin = -1, uint8_t ledOn = 0,
+  bool begin(size_t size = 0, int command = U_FLASH, int ledPin = -1, uint8_t ledOn = 0,
              const char *label = nullptr) {
-    (void)command; (void)ledPin; (void)ledOn; (void)label;
+    (void)ledPin; (void)ledOn; (void)label;
     beginCalls++;
+    lastCommand = command;
+    lastSize = size;
     if (failBegin) return false;
     _size = size;
     _progress = 0;
@@ -53,6 +71,7 @@ class UpdateClass {
   void reset() {
     _size = 0; _progress = 0; _begun = false; _finished = false;
     beginCalls = writeCalls = endCalls = abortCalls = 0;
+    lastCommand = -1; lastSize = 0;
     bytes.clear();
     failBegin = failEnd = false;
   }
@@ -60,6 +79,8 @@ class UpdateClass {
   bool failBegin = false;
   bool failEnd = false;
   int beginCalls = 0, writeCalls = 0, endCalls = 0, abortCalls = 0;
+  int lastCommand = -1;    // the command of the last begin() call
+  size_t lastSize = 0;     // and the size it was given
   std::vector<uint8_t> bytes;
 
  private:

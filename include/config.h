@@ -329,7 +329,12 @@
 // etDisabled, the UI shows a standing warning pill. The version is bumped even
 // though the default build (flag 1) is unchanged, because the image on the
 // machine is a BT-only one and HA must be able to tell the two apart.
-#define FW_VERSION "0.9.0"
+// 0.10.0 = POST /api/update/fs: the filesystem image (the web UI) can now be
+// pushed over the network like the app image, instead of only by ArduinoOTA
+// (which needs the device to dial back to the uploader - it cannot here). New
+// endpoint, so a new release: an app image that answers /api/update/fs and one
+// that answers 404 there must be distinguishable after a push.
+#define FW_VERSION "0.10.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

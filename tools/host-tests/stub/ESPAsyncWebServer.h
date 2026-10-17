@@ -223,6 +223,25 @@ class AsyncWebServer {
   bool begun() const { return _begun; }
   const std::vector<Route> &routes() const { return _routes; }
 
+  // Which handler a request to this path would reach on the device. The real
+  // library does NOT compare strings: server.on(uri, ...) registers a
+  // BackwardCompatible matcher (WebServer.cpp:231) whose rule is
+  //   _uri == path || path.startsWith(_uri + "/")   (WebServer.cpp:336)
+  // and the FIRST registered handler that matches wins (WebServer.cpp:144).
+  // That makes the order of the routes load-bearing here: "/api/update" also
+  // matches the path "/api/update/fs". Reproducing both halves in the stub is
+  // what lets a host test prove a POST to /api/update/fs reaches the
+  // filesystem handler and not the app one - on the device the difference is
+  // which partition the image is written to.
+  const Route *routeFor(const char *path, WebRequestMethodComposite method) const {
+    const std::string p(path);
+    for (const Route &r : _routes) {
+      if (r.method != method) continue;
+      if (r.uri == path || p.rfind(r.uri + "/", 0) == 0) return &r;
+    }
+    return nullptr;
+  }
+
  private:
   uint16_t _port;
   bool _begun = false;

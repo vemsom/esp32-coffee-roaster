@@ -169,8 +169,11 @@ static volatile bool otaFsUnmounted = false;
 // a transfer would only add a way to block.
 //
 // This overrides the weak default in web_server.cpp, which is what makes the
-// host tests for the profile endpoints work without main.cpp.
-bool web_fs_available() { return !otaFsUnmounted; }
+// host tests for the profile endpoints work without main.cpp. Two sources can
+// unmount: ArduinoOTA's onStart() (the flag above) and the push route for the
+// filesystem image (ota_push_fs_unmounted()). Either one means /profiles has
+// nothing safe to read.
+bool web_fs_available() { return !otaFsUnmounted && !ota_push_fs_unmounted(); }
 
 static float cbGetHeaterDuty() {
   StateLockGuard guard;
