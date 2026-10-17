@@ -156,6 +156,7 @@ int main(int argc, char **argv) {
   bool commandTopicsFound = false;
   bool safetySeen = false;
   bool fanFaultSeen = false;
+  bool etDisabledSeen = false;
   bool profileSensorSeen = false;
   bool topicsInsideNamespace = true;
   int namesChecked = 0;
@@ -182,6 +183,7 @@ int main(int argc, char **argv) {
       {"elapsed", {STR_NAME_ELAPSED, "roast_time"}},
       {"safety", {STR_NAME_SAFETY, "safety_alarm"}},
       {"fan_fault", {STR_NAME_FAN_FAULT, "fan_interlock"}},
+      {"et_disabled", {STR_NAME_ET_DISABLED, "et_disabled"}},
       {"profile", {STR_NAME_PROFILE, "profile"}},
   };
 #else
@@ -196,6 +198,7 @@ int main(int argc, char **argv) {
       {"elapsed", {STR_NAME_ELAPSED, "rosttid"}},
       {"safety", {STR_NAME_SAFETY, "sakerhetslarm"}},
       {"fan_fault", {STR_NAME_FAN_FAULT, "flaktsparr"}},
+      {"et_disabled", {STR_NAME_ET_DISABLED, "et_avstangd"}},
       {"profile", {STR_NAME_PROFILE, "profil"}},
   };
 #endif
@@ -298,6 +301,15 @@ int main(int argc, char **argv) {
         fanFaultSeen = true;
         check(std::string(doc["device_class"].as<const char *>()) == "problem",
               "fan interlock entity uses device_class 'problem'");
+      } else if (objectId == std::string(MQTT_DEVICE_ID) + "_et_disabled") {
+        etDisabledSeen = true;
+        check(std::string(doc["device_class"].as<const char *>()) == "problem",
+              "ET-disabled entity uses device_class 'problem'");
+        // It has to read the flag from the status payload, not a copy of it:
+        // that is what makes it flip when a full build replaces this one.
+        check(std::string(doc["value_template"].as<const char *>()).find("etDisabled") !=
+                  std::string::npos,
+              "ET-disabled entity is driven by etDisabled in the status payload");
       }
     }
     if (objectId == std::string(MQTT_DEVICE_ID) + "_profile") {
@@ -322,9 +334,9 @@ int main(int argc, char **argv) {
 
   check(topicsInsideNamespace, "every topic lives under coffee_roaster/ or homeassistant/");
   check(!commandTopicsFound, "no entity has a command_topic");
-  check(discoveryCount == 11, "11 discovery configs published");
+  check(discoveryCount == 12, "12 discovery configs published");
   check(sensorCount == 9, "9 read-only sensors (bt, et, ror_bt, ror_et, heater, fan, mode, elapsed, profile)");
-  check(binarySensorCount == 2, "2 binary_sensors (safety + fan interlock)");
+  check(binarySensorCount == 3, "3 binary_sensors (safety, fan interlock + ET disabled)");
   check(rorEntityCount == 2, "2 rate-of-rise sensors (ror_bt + ror_et)");
   check(components.size() == 2, "only sensor and binary_sensor components");
   check(components.count("number") == 0 && components.count("select") == 0 &&
@@ -332,8 +344,9 @@ int main(int argc, char **argv) {
         "no controllable entity types published");
   check(safetySeen, "safety alarm entity published");
   check(fanFaultSeen, "fan interlock entity published");
+  check(etDisabledSeen, "ET-disabled entity published");
   check(profileSensorSeen, "profile reported as a sensor");
-  check(namesChecked == 11, "all 11 entities carry an expected friendly name");
+  check(namesChecked == 12, "all 12 entities carry an expected friendly name");
 
   // ---------------------------------------------------------- status JSON ---
   const CapturedPublish *statusPub = findPublish(status);
@@ -343,6 +356,12 @@ int main(int argc, char **argv) {
     check(!deserializeJson(doc, statusPub->payload), "status payload is valid JSON");
     check(doc["bt"].as<float>() == 187.5f, "status carries bt");
     check(doc["et"].as<float>() == 231.25f, "status carries et");
+    // etDisabled is what tells the two "no ET reading" states apart in HA: a
+    // dead module (false, the entity is unknown) and a build that does not read
+    // the channel at all (true). The expectation follows the build.
+    check(doc["etDisabled"].is<bool>() &&
+              doc["etDisabled"].as<bool>() == (SAFETY_ET_ENABLED == 0),
+          "status carries etDisabled, matching this build's SAFETY_ET_ENABLED");
     check(doc["rorBt"].as<float>() == 8.5f, "status carries rorBt");
     check(doc["rorEt"].as<float>() == -2.5f, "status carries rorEt, sign included");
     check(doc["heater"].as<float>() == 42.0f, "status carries heater");

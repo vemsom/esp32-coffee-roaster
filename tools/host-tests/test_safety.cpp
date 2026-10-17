@@ -10,6 +10,15 @@
 #include "config.h"
 #include <Preferences.h>
 
+// This file pins the behaviour of the DEFAULT build (SAFETY_ET_ENABLED 1): it
+// asserts that the ET channel trips (its over-temp limit, an ET sensor fault, a
+// frozen ET, and the cold BT/ET cross-check). All of those are switched off by
+// design in a BT-only build, so this file must not be built with the flag at 0 -
+// what a BT-only build does instead is asserted in test_safety_bt_only.cpp.
+#if !SAFETY_ET_ENABLED
+#error "test_safety asserts the ET trips - build it with SAFETY_ET_ENABLED=1 (see tools/host-tests/run.sh)"
+#endif
+
 // ---- Arduino stubs ----
 static unsigned long fakeMillis = 0;
 unsigned long millis() { return fakeMillis; }

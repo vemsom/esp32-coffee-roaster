@@ -179,6 +179,44 @@
 #define SENSOR_MAX_SPREAD_C        15.0
 #define SENSOR_SPREAD_MAX_COLD_C   60.0
 
+// ---- BT-only build mode: which channels the safety latch watches ----
+// 1 (the default) = both probes, exactly as described above and unchanged.
+// 0 = BT-only: the ET channel is not used at all. The ET converter is not read
+// (src/sensors.cpp reports NaN for it, the same "no reading" a dead module
+// gives), and the safety layer watches BT alone (src/safety.cpp).
+//
+// What is LOST with 0 - precisely, so this is never mistaken for a free switch:
+//   * every ET trip: SAFETY_SENSOR_ET, SAFETY_STUCK_ET and SAFETY_OVER_TEMP_ET
+//     can no longer latch, so SAFETY_MAX_ET_TEMP_C protects nothing
+//   * the cold BT/ET cross-check above (SENSOR_MAX_SPREAD_C /
+//     SENSOR_SPREAD_MAX_COLD_C): it needs two channels and cannot be evaluated
+//     with one, and it is the only check that sees a probe that is wrong but
+//     individually plausible
+//   * RoR guidance, which steers on rorEt: no ET is measured, so
+//     updateRorGuidance() in src/main.cpp stays inert (it refuses to steer on
+//     a NaN ET) and a profile step with rorTarget > 0 simply does not steer
+// What REMAINS, untouched: the BT plausibility window
+// (SENSOR_MIN_VALID_C..SENSOR_MAX_VALID_C), the BT jump check, the BT
+// stuck-probe detector (SENSOR_STUCK_MAX_MS), the BT ceiling
+// (SAFETY_MAX_TEMP_C 260 C), the fan interlock (FAN_MIN_FOR_HEATER_PCT) and
+// heater_emergency_off() semantics. The latch still clears only after
+// SAFETY_CLEAR_STREAK samples that are healthy and below the margin - with 0,
+// "healthy" means healthy on BT, because there is no second channel to be
+// healthy or not.
+//
+// The mode is made visible wherever the machine is observed: /api/status
+// reports etDisabled, the web UI shows a standing warning pill, Home Assistant
+// gets an ET-disabled problem sensor, and safetyReason reads
+// "et disabled - bt only" while the latch is clear instead of "none".
+//
+// It exists for one situation - a broken ET module while the machine still has
+// to run - and is a reduced-protection build by definition. Build it that way
+// on purpose, and build again with 1 as soon as the module is replaced:
+//   PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
+#ifndef SAFETY_ET_ENABLED
+#define SAFETY_ET_ENABLED  1
+#endif
+
 // ---- Fastskad sensor (stuck probe) ----
 // En MAX6675 som fryser pa ett plausibelt varde ar osynlig for alla andra
 // kontroller: ingen NaN, inget hopp, ingen korsskontroll. Den kan dock inte
@@ -208,6 +246,11 @@
 // - ar precis den kontrollen ser, och ET-gransen (SAFETY_MAX_ET_TEMP_C)
 // backar upp om ET ar frisk. Om elementet ar av finns ingen overhettning att
 // skydda mot, och det ar dar den haller inne.
+//
+// In a BT-only build (SAFETY_ET_ENABLED 0) that ET backup goes away with the
+// rest of the ET side: behind a frozen BT probe the BT ceiling
+// (SAFETY_MAX_TEMP_C) is then the only limit left, which is one of the reasons
+// that mode is a stopgap and not a destination.
 #define SENSOR_STUCK_MAX_MS       60000
 
 // ---- MQTT (Home Assistant MQTT-discovery) ----
@@ -281,7 +324,12 @@
 // 60..100). Same percent API and the same reported/HA values - only the duty
 // written to the LEDC channel changed - but that is a change in the fan
 // output, so the build has to be distinguishable in Home Assistant.
-#define FW_VERSION "0.8.0"
+// 0.9.0 = the explicit BT-only build mode (SAFETY_ET_ENABLED 0): the ET
+// channel is not read and its trips are switched off, /api/status reports
+// etDisabled, the UI shows a standing warning pill. The version is bumped even
+// though the default build (flag 1) is unchanged, because the image on the
+// machine is a BT-only one and HA must be able to tell the two apart.
+#define FW_VERSION "0.9.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

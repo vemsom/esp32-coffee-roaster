@@ -336,6 +336,16 @@ int main() {
             "the build id has no character that breaks JSON or a comparison");
       check(body.find(std::string("\"lang\":\"") + FW_LANG_CODE + "\"") != std::string::npos,
             "status still reports the build language (unchanged by this)");
+
+      // Which channels the safety latch watches. A reduced-protection image
+      // (SAFETY_ET_ENABLED 0) has to say so: `et` is null in both cases - a
+      // dead module and a switched-off channel look the same over the API - so
+      // null alone can never mean "not watched". This test runs in both build
+      // modes and the expectation follows the flag it was compiled with.
+      const bool wantEtDisabled = (SAFETY_ET_ENABLED == 0);
+      check(body.find(std::string("\"etDisabled\":") + (wantEtDisabled ? "true" : "false")) !=
+                std::string::npos,
+            "status reports etDisabled matching the build's SAFETY_ET_ENABLED");
     }
   }
 

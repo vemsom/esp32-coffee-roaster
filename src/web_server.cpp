@@ -35,6 +35,13 @@ static void handleStatus(AsyncWebServerRequest *request) {
     StateLockGuard guard;
     doc["bt"] = cb.getBT();
     doc["et"] = cb.getET();
+    // Is the ET channel in use at all? false is the normal build. true means
+    // this image was compiled BT-only (SAFETY_ET_ENABLED 0 in include/config.h):
+    // the ET converter is not read, `et` stays null, and its trips and the
+    // BT/ET cross-check are switched off. Reported so a reduced-protection
+    // image can never be taken for a full one from the outside - null on `et`
+    // alone says "no reading", not "not watched".
+    doc["etDisabled"] = (SAFETY_ET_ENABLED == 0);
     // Rate of rise, C/min, one decimal. Negative is a real value (cooling or
     // past the turning point), so it is passed straight through.
     doc["rorBt"] = cb.getRorBt();

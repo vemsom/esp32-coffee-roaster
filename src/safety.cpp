@@ -25,6 +25,13 @@
 //      false-tripping; see include/config.h for the reasoning and the
 //      numbers.
 //
+// SAFETY_ET_ENABLED (include/config.h) switches the whole ET side of that list
+// off. With it at 0 the build is BT-only: condition 3 has no second channel
+// left to compare against, condition 4 watches BT alone, and no ET reading can
+// trip anything below - see the flag's comment for exactly what is lost, what
+// still holds, and why the mode is a stopgap. Default is 1, i.e. the four
+// conditions and the texts, order and timings described here.
+//
 // The latch is deliberately one-way until the fault is gone: there is no
 // command, no web call and no MQTT message that clears it. It clears only
 // after SAFETY_CLEAR_STREAK consecutive samples that are all fault-free and
@@ -39,15 +46,19 @@ static bool latched = false;
 static SafetyFaultCode activeCode = SAFETY_OK;
 static unsigned long trippedAt = 0;
 static int faultStreakBT = 0;
+#if SAFETY_ET_ENABLED
 static int faultStreakET = 0;
 static int faultStreakSpread = 0;
+#endif
 static int healthyStreak = 0;
 
 // Stuck-probe bookkeeping: the value each channel last changed to, and when.
 static float stuckValueBT = NAN;
 static unsigned long stuckSinceBT = 0;
+#if SAFETY_ET_ENABLED
 static float stuckValueET = NAN;
 static unsigned long stuckSinceET = 0;
+#endif
 
 // A stuck alarm is released only by proof that the probe moves again - see
 // safety_update(). Set when a SAFETY_STUCK_* code is tripped or restored.
@@ -78,6 +89,19 @@ static const char *codeText(SafetyFaultCode c) {
     case SAFETY_SPREAD:       return "bt/et disagree";
     case SAFETY_STUCK_BT:     return "bt sensor stuck";
     case SAFETY_STUCK_ET:     return "et sensor stuck";
+    case SAFETY_OK:
+      // A clear latch normally reads "none". In a BT-only build the machine is
+      // running with a reduced safety net, and that has to be visible wherever
+      // the reason is read (the web UI, the HA attribute, the serial log)
+      // instead of being reported as a machine whose protection is intact.
+      // The ET texts above are kept as they are: an ET alarm written to NVS by
+      // a full build and restored by a BT-only one is still an ET alarm, and it
+      // says so while it is being cleared (which the BT streak does in 2.5 s).
+#if SAFETY_ET_ENABLED
+      return "none";
+#else
+      return "et disabled - bt only";
+#endif
     default:                  return "none";
   }
 }
@@ -120,7 +144,11 @@ static void trip(SafetyFaultCode c) {
     // The value it froze on, so a later sample that differs from *that* is
     // the proof that releases the latch (see safety_update).
     stuckPending = true;
+#if SAFETY_ET_ENABLED
     stuckPendingValue = (c == SAFETY_STUCK_ET) ? stuckValueET : stuckValueBT;
+#else
+    stuckPendingValue = stuckValueBT;  // the only stuck trip this build can take
+#endif
   }
   Serial.print("[SAFETY] LATCHED: ");
   Serial.println(codeText(c));
@@ -132,13 +160,17 @@ void safety_init() {
   activeCode = SAFETY_OK;
   trippedAt = 0;
   faultStreakBT = 0;
+#if SAFETY_ET_ENABLED
   faultStreakET = 0;
   faultStreakSpread = 0;
+#endif
   healthyStreak = 0;
   stuckValueBT = NAN;
   stuckSinceBT = 0;
+#if SAFETY_ET_ENABLED
   stuckValueET = NAN;
   stuckSinceET = 0;
+#endif
   stuckPending = false;
   stuckPendingValue = NAN;
 
@@ -164,12 +196,19 @@ void safety_init() {
   latched = true;
   activeCode = (SafetyFaultCode)code;
   trippedAt = millis();
-  if (isStuckCode(activeCode)) {
+  if (isStuckCode(activeCode) &&
+      (SAFETY_ET_ENABLED || activeCode == SAFETY_STUCK_BT)) {
     // A stuck alarm restored across a power cycle would otherwise clear on
     // the first healthy streak - the sample looks healthy, that is exactly
     // what "stuck" means - and the detector is disarmed at boot (no heat
     // yet), so nothing would re-trip it. Hold it until the probe reports a
     // value that differs from the one it is showing right now.
+    //
+    // The ET exemption is for a BT-only build: an ET alarm written to NVS by a
+    // full build can be restored here, and the proof (a value that differs
+    // from the frozen one) can never arrive because the ET channel is not read.
+    // Arming the proof rule for it would lock the heater out for good - the BT
+    // streak clears it instead, on the same terms as any other ET alarm.
     stuckPending = true;
     stuckPendingValue = NAN;
   }
@@ -182,39 +221,62 @@ void safety_init() {
 // sitting at room temperature while the other one is right), which the
 // per-channel plausibility window cannot see. Returns false as soon as either
 // probe is hot - once roasting has started, ET vs BT is real physics.
+//
+// Compiled out entirely in a BT-only build: the check is defined as an
+// agreement between two channels and cannot be evaluated with one. There is no
+// replacement for it - see include/config.h.
+#if SAFETY_ET_ENABLED
 static bool coldSpreadFault(const SensorReading &r) {
   if (isnan(r.bt) || isnan(r.et)) return false;
   if (r.bt >= SENSOR_SPREAD_MAX_COLD_C || r.et >= SENSOR_SPREAD_MAX_COLD_C) return false;
   return fabs(r.bt - r.et) > SENSOR_MAX_SPREAD_C;
 }
+#endif
 
 void safety_update(const SensorReading &r, bool heaterActive) {
   unsigned long now = millis();
 
   if (r.btFault) faultStreakBT++; else faultStreakBT = 0;
+#if SAFETY_ET_ENABLED
   if (r.etFault) faultStreakET++; else faultStreakET = 0;
   if (coldSpreadFault(r)) faultStreakSpread++; else faultStreakSpread = 0;
+#endif
 
   // Stuck-probe tracking runs on every sample, latched or not: while latched
   // it keeps watching so a healed probe can be seen to move again.
   const bool stuckBT =
       stuckForTooLong(r.bt, stuckValueBT, stuckSinceBT, heaterActive, now);
+#if SAFETY_ET_ENABLED
   const bool stuckET =
       stuckForTooLong(r.et, stuckValueET, stuckSinceET, heaterActive, now);
+#endif
 
   const bool btKnown = !isnan(r.bt);
-  const bool etKnown = !isnan(r.et);
   const bool overBT = btKnown && r.bt >= SAFETY_MAX_TEMP_C;
+#if SAFETY_ET_ENABLED
+  const bool etKnown = !isnan(r.et);
   const bool overET = etKnown && r.et >= SAFETY_MAX_ET_TEMP_C;
+#endif
 
+  // The trip ladder. Its order is deliberate and unchanged when the ET channel
+  // is enabled: a BT condition always wins over an ET one on the same sample.
+  // With SAFETY_ET_ENABLED 0 the ET rungs are gone: no ET reading can trip
+  // anything, whatever it says. The latch itself, the NVS persistence and the
+  // heater side of it are untouched either way.
   if (!latched) {
     if (overBT) { trip(SAFETY_OVER_TEMP_BT); return; }
+#if SAFETY_ET_ENABLED
     if (overET) { trip(SAFETY_OVER_TEMP_ET); return; }
+#endif
     if (faultStreakBT >= SENSOR_FAULT_MAX_COUNT) { trip(SAFETY_SENSOR_BT); return; }
+#if SAFETY_ET_ENABLED
     if (faultStreakET >= SENSOR_FAULT_MAX_COUNT) { trip(SAFETY_SENSOR_ET); return; }
     if (faultStreakSpread >= SENSOR_FAULT_MAX_COUNT) { trip(SAFETY_SPREAD); return; }
+#endif
     if (stuckBT) { trip(SAFETY_STUCK_BT); return; }
+#if SAFETY_ET_ENABLED
     if (stuckET) { trip(SAFETY_STUCK_ET); return; }
+#endif
     return;
   }
 
@@ -224,7 +286,11 @@ void safety_update(const SensorReading &r, bool heaterActive) {
   // the detector starts out disarmed). The latch releases once the frozen
   // channel reports something other than the value it froze on.
   if (stuckPending) {
+#if SAFETY_ET_ENABLED
     float frozen = (activeCode == SAFETY_STUCK_ET) ? r.et : r.bt;
+#else
+    float frozen = r.bt;  // only a BT stuck can be pending in this build
+#endif
     if (!isnan(frozen)) {
       if (isnan(stuckPendingValue)) {
         stuckPendingValue = frozen;
@@ -237,10 +303,20 @@ void safety_update(const SensorReading &r, bool heaterActive) {
   }
 
   const bool healthySample =
+#if SAFETY_ET_ENABLED
       !r.btFault && !r.etFault && btKnown && etKnown && !coldSpreadFault(r) &&
       !stuckPending &&
       r.bt <= SAFETY_MAX_TEMP_C - SAFETY_CLEAR_MARGIN_C &&
       r.et <= SAFETY_MAX_ET_TEMP_C - SAFETY_CLEAR_MARGIN_C;
+#else
+      // BT-only: the clear streak counts SAFETY_CLEAR_STREAK samples that are
+      // healthy on BT and below the BT margin. There is no second channel to
+      // be healthy or not, and an ET reading must never be able to hold the
+      // latch - that is the whole point of the mode: a dead ET can no longer
+      // pin the heater off.
+      !r.btFault && btKnown && !stuckPending &&
+      r.bt <= SAFETY_MAX_TEMP_C - SAFETY_CLEAR_MARGIN_C;
+#endif
 
   healthyStreak = healthySample ? healthyStreak + 1 : 0;
 

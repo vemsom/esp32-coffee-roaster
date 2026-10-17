@@ -38,6 +38,32 @@ least 10 %.
 These are the last line of defence, not the first. Software cannot see a loose
 mains conductor, a missing heatsink or a wrong wiring diagram.
 
+## BT-only builds (a missing ET channel)
+
+The firmware can be built with the environment probe switched off entirely:
+`SAFETY_ET_ENABLED 0` in `include/config.h` stops `src/sensors.cpp` from reading
+the ET converter at all and makes `src/safety.cpp` watch the bean probe alone.
+It exists for one situation - a broken ET module while the machine still has to
+run - and it is a **reduced-protection build, not a normal mode**:
+
+- **Gone:** every ET trip (`et over temp`, `et sensor fault`, `et sensor stuck`)
+  and the cold BT/ET cross-check, which needs two channels and cannot be
+  evaluated with one. Nothing replaces the cross-check: it is the only check
+  that can see a probe which is wrong while still plausible on its own.
+- **Kept, unchanged:** the BT plausibility window, the BT jump check, the BT
+  stuck-probe detector, the 260 C BT ceiling, the fan interlock and the latched
+  emergency stop. The alarm still clears only after 10 healthy samples in a row -
+  with the ET channel off, "healthy" means healthy on BT.
+- **Visible everywhere:** `/api/status` reports `etDisabled`, `safetyReason`
+  reads `et disabled - bt only` whenever the latch is clear, the web UI shows a
+  standing "ET AVSTÄNGD - endast BT" pill, and Home Assistant gets an
+  "ET disabled" problem sensor that is ON. A switched-off probe must never be
+  readable as a healthy one.
+
+Behind a frozen BT probe the 260 C ceiling is then the only limit left, and RoR
+guidance (which steers on ET) is inert. Do not roast unattended in this mode.
+Build again with the flag at 1 as soon as the ET module is replaced.
+
 ## Operating
 
 - Never leave a roast running unattended. The alarm assumes someone is there.

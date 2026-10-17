@@ -13,6 +13,11 @@
 //   * the fan interlock in manual AND profile mode
 //   * a probe pulled mid-run aborting a running manual heat
 //   * the MQTT status payload carrying both fault flags
+//
+// It runs in BOTH build modes (see run.sh): with SAFETY_ET_ENABLED 0 (a
+// BT-only build) the bench case above still has to trip - on BT's own checks,
+// since the ET backstop is gone - and a garbage ET reading must reach nothing.
+// The assertions that need an ET channel are guarded by the flag.
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoOTA.h>
@@ -23,6 +28,7 @@
 #include <Update.h>
 #include <mbedtls/sha256.h>
 #include <cstdio>
+#include <cmath>
 #include <string>
 #include <vector>
 #include <atomic>
@@ -270,6 +276,27 @@ int main() {
   check(!safety_faulted(), "latch clears once the probes read plausibly again");
   check(!heater_emergency_active(), "heater is re-armed after the clear streak");
 
+#if !SAFETY_ET_ENABLED
+  // BT-only build, end to end through the real loop(). The ET converter is not
+  // read at all - counted in the stub, because no value can show it: a dead and
+  // a switched-off ET both report null. And a reading that would trip a full
+  // build reaches nothing: 0 C on an ET data line is exactly what the firmware
+  // saw on the bench with a floating module.
+  g_probeBT = 20.0f;
+  g_probeET = 0.0f;
+  const int etReadsBefore = g_max6675EtReads;
+  runLoops(60);
+  check(g_max6675EtReads == etReadsBefore,
+        "the control loop never reads the ET converter in a BT-only build");
+  check(!safety_faulted(), "a 0 C ET cannot trip the latch in a BT-only build");
+  check(std::isnan(web.getET()), "the ET channel reports no reading with the flag off");
+
+  g_probeET = 999.0f;
+  runLoops(60);
+  check(!safety_faulted(), "nor can an absurd ET reading");
+  g_probeET = 20.0f;
+#endif
+
   // ------------------------------------------- fan interlock, manual mode ----
   // Fan at 0 %: the run may be armed but nothing may heat.
   check(web.startManual(200, 600, false, 0, 0), "manual run starts with a healthy state");
@@ -282,6 +309,17 @@ int main() {
   runLoops(10);   // long enough for an MQTT status tick while blocked
   check(statusHas("\"fanFault\":true"), "mqtt status carried fanFault while blocked");
   check(statusHas("\"safetyFault\":false"), "mqtt status does not report a sensor alarm");
+  // Which channels the safety layer is watching, in the same payload. A
+  // reduced-protection image (SAFETY_ET_ENABLED 0) has to say so: the ET entity
+  // reads as null in both cases - a dead module and a channel that is not read -
+  // so the null alone cannot say "not watched" instead of "no reading".
+#if SAFETY_ET_ENABLED
+  check(statusHas("\"etDisabled\":false"),
+        "mqtt status reports the ET channel as enabled");
+#else
+  check(statusHas("\"etDisabled\":true"),
+        "mqtt status reports the ET channel as disabled");
+#endif
 
   // Fan up to 100 %: heat is allowed.
   web.setFanSpeed(100);
@@ -431,8 +469,18 @@ int main() {
   }
   check(web.getRorBt() > 59.5f && web.getRorBt() < 60.5f,
         "rate of rise follows a 60 C/min ramp through loop()");
+#if SAFETY_ET_ENABLED
   check(web.getRorEt() > 59.5f && web.getRorEt() < 60.5f,
         "rate of rise reports the environment channel too");
+#else
+  // BT-only: no ET is read, so there is no history to fit and the ET rate stays
+  // at its last value (0, from ror_reset()) instead of inventing a number from
+  // a channel that is switched off. RoR guidance steers on this rate and is
+  // inert for the same reason - main.cpp refuses to steer on a NaN ET, which is
+  // covered in test_ror_guidance and documented in include/config.h.
+  check(web.getRorEt() == 0.0f,
+        "the ET rate stays empty when the ET channel is off");
+#endif
   check(statusHas("\"rorBt\":"), "mqtt status carries rorBt");
 
   // ------------------------------------------- push OTA mutual exclusion ----

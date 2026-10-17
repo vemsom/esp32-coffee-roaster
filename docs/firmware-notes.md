@@ -4,6 +4,9 @@ Status: **verified items below were re-confirmed on 2026-10-04** with a clean
 `pio run` (zero warnings) and the host-side test suite (943 checks, 0
 failures). Push-OTA and filesystem OTA are both verified against real hardware.
 Everything still listed as open is untested against real hardware.
+Re-confirmed again on 2026-10-17 with the two-pass suite (the firmware now has a
+BT-only build mode): **989 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
+**792 checks, 0 failures** with it at 0 - see "BT-only build mode" below.
 
 Build of record (2026-09-27, clean rebuild):
 
@@ -17,6 +20,90 @@ Flash: 73.3 %  (961 017 / 1 310 720 bytes)
 [SUCCESS] - no warnings, no errors
 FW_VERSION 0.6.0
 ```
+
+## BT-only build mode, SAFETY_ET_ENABLED 0 (2026-10-17)
+
+**Why.** The ET channel stopped reading entirely. On the machine (FW 0.7.0,
+build `eeb8dc5`) `/api/status` reported BT live (24.25-24.50) and `"et": null` -
+no valid reading since boot - with `safetyFault: true`, `safetyReason: "bt
+sensor fault"`, `heaterDuty: 0` and both run modes idle. The alarm could not be
+released: `safety_update()` clears only after `SAFETY_CLEAR_STREAK` (10) samples
+with **both** channels known and healthy, and an ET that never reads can never
+satisfy that. Nothing else releases it - no route, no MQTT message, no power
+cycle (the latch lives in NVS, namespace `safety`, and `safety_init()` restores
+it on boot). Manual start answered 409 and profile mode did nothing, so the
+machine was un-runnable. The fault is judged to sit in the ET MAX6675 **module**
+rather than in the thermocouple (BT is healthy and reads live), and until that
+module is replaced the roaster has to run on BT alone.
+
+**What was added.** `SAFETY_ET_ENABLED` in include/config.h - default 1, i.e.
+the behaviour documented everywhere else in this file is unchanged, and the
+macro is `#ifndef`-guarded so a build can set it:
+
+    PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
+
+With it at 0:
+
+- `src/sensors.cpp` does not read the ET converter at all - not "reads it and
+  ignores it". `et` is NaN, the same "no reading" a dead module gives, and
+  `etFault` is false: there is nothing to fault, and a fault could only feed a
+  detector that is switched off.
+- `src/safety.cpp` cannot trip `SAFETY_SENSOR_ET`, `SAFETY_STUCK_ET` or
+  `SAFETY_OVER_TEMP_ET`, and `coldSpreadFault()` (the `SENSOR_MAX_SPREAD_C`
+  cross-check) is compiled out, because an agreement between two channels cannot
+  be evaluated with one. The ET reason texts stay in `codeText()`: a latch
+  written to NVS by a full build can still be restored by a BT-only one, and it
+  should say what it actually was while it is being cleared.
+- The clear streak becomes "10 samples in a row that are healthy **on BT**".
+  That is what lets the machine start again at all. A stored ET alarm is released
+  by that same streak; a stored *stuck*-ET alarm deliberately does not arm the
+  "the probe moved again" proof rule, because the value that would release it can
+  never arrive when ET is not read - arming it would lock the heater out for
+  good.
+- Untouched: the BT plausibility window (`SENSOR_MIN_VALID_C`..`SENSOR_MAX_VALID_C`),
+  the BT jump check, the BT stuck detector (`SENSOR_STUCK_MAX_MS`), the BT
+  ceiling (`SAFETY_MAX_TEMP_C` 260 C), the fan interlock (`FAN_MIN_FOR_HEATER_PCT`)
+  and `heater_emergency_off()` semantics. The latch, its NVS persistence and the
+  heater side of it are the same code as before.
+
+**Reduced protection is visible, not implied.** `et: null` alone cannot say "not
+watched" - a dead module and a switched-off channel look identical over the API.
+A BT-only image therefore also reports:
+
+- `/api/status`: `etDisabled: true` (false in every other build), and
+  `safetyReason` reads `et disabled - bt only` whenever the latch is clear,
+  instead of `none`.
+- Web UI (data/index.html): a standing warning pill, `ET AVSTÄNGD – endast BT`
+  (English key `ET DISABLED – BT ONLY`), shown for as long as the firmware says
+  `etDisabled`. It is a condition rather than an alarm, so it does not blink with
+  the run state.
+- Home Assistant: a 12th discovery entity, `binary_sensor`
+  `coffee_roaster_et_disabled` ("ET disabled", sv "ET avstängd"),
+  `device_class: problem`, driven by `value_json.etDisabled`. It is published by
+  every build and is OFF in a full one, so nothing appears or disappears when the
+  image changes. Still report-only: no `command_topic`, no subscription - the
+  same rule as the rest of the MQTT layer.
+
+RoR guidance steers on `rorEt` and is therefore inert in this mode: main.cpp
+already refuses to steer on a NaN ET (`updateRorGuidance()`), so a profile step
+with `rorTarget > 0` simply does not steer and `rorEt` stays at its last value.
+
+**Host tests.** The suite runs twice, once per mode
+(`sh tools/host-tests/run.sh`, or `--et-enabled` / `--bt-only` for a single
+pass). `test_safety` keeps pinning every ET trip in the flag-1 pass; the BT-only
+behaviour is pinned by the new `test_safety_bt_only`, and `test_sensors`,
+`test_mqtt_discovery`, `test_web_server` and `test_control` are built once per
+mode. Two of the new checks are the ones that matter: the bench case (nothing
+wired, 0 C on every channel) still trips the latch in a BT-only build - carried
+by BT's own plausibility floor, since the ET backstop is gone - and the MAX6675
+stub counts (`g_max6675EtReads`) that the ET converter is never read at all,
+which no value could show, because the API reports a null ET either way.
+
+**Putting it back.** Build with the flag at 1 as soon as the ET module is
+replaced, and check the machine: `/api/status` must show `etDisabled: false` and
+a live `et` again. The flag is a stopgap - the cold cross-check and the 300 C ET
+ceiling are part of the safety net and should not be missing for longer than the
+repair takes.
 
 ## Verified on build / in source
 
@@ -665,13 +752,16 @@ subscribed):
     coffee_roaster/status          JSON, published every 2 s
     coffee_roaster/availability    "online" / "offline" (LWT, retained)
 
-Entities published in discovery (11 configs, all read-only, all under
+Entities published in discovery (12 configs, all read-only, all under
 `homeassistant/<component>/coffee_roaster_<object>/config`): bean temperature,
 environment temperature, rate of rise for bean and for environment
 temperature, heater duty, fan speed, mode, elapsed seconds and profile
-(sensors), plus the safety alarm and the fan interlock (binary_sensors, both
-device_class problem). Every config is retained and carries the device block,
-unique_id and availability topic.
+(sensors), plus the safety alarm, the fan interlock and the ET-disabled flag
+(binary_sensors, all device_class problem). Every config is retained and carries
+the device block, unique_id and availability topic. The ET-disabled entity is
+OFF in a build that reads the ET channel and ON in a BT-only build (see
+"BT-only build mode" above) - it is published by every build on purpose, so a
+change of image cannot add or remove an entity in Home Assistant.
 
 The two rate-of-rise sensors carry `unit_of_measurement` "C/min",
 `state_class` measurement and deliberately NO `device_class`: HA's
@@ -888,31 +978,60 @@ Tagged the same way as above: what it takes, not just what is left.
 
 `tools/host-tests/run.sh` compiles the firmware logic against stubbed Arduino/
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
-broker. Last run 2026-10-04: **943 checks, 0 failures**, exit 0, no compiler
-warnings. That total counts every execution. The ten test binaries account
-for 626 checks counted once each; the other 317 come from the two the suite
-runs twice, `test_mqtt_discovery` once per build language (214 again) and
-`test_control` under ThreadSanitizer (103 again):
+broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
+"BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
+Last run 2026-10-17: **989 checks, 0 failures** with the flag at 1 and **792
+checks, 0 failures** with it at 0, exit 0 both times, no compiler warnings from
+this code. The totals count every execution:
+
+- flag 1, 12 binaries: 652 checks counted once each, plus the two the suite runs
+  twice - `test_mqtt_discovery` once per build language (233 again) and
+  `test_control` under ThreadSanitizer (104 again).
+- flag 0, 7 binaries: 451 checks counted once each, plus `test_mqtt_discovery`
+  (233 again) and `test_control` under ThreadSanitizer (108 again). `test_safety`
+  and `test_ror_guidance` are flag-1 only (`test_safety` asserts exactly the ET
+  trips the flag switches off, and RoR guidance steers on ET), and `test_ror`,
+  `test_fan` and `test_ota_push` link neither safety.cpp nor sensors.cpp, so the
+  flag cannot reach them - they run once, in the default pass.
 
 - `test_safety` - safety latch, heater interlock and the stuck-probe detector
-  (57 checks): trip on the hard limit, on sustained sensor faults and on
-  BT/ET disagreement while cold; commands refused while latched; clear only
-  after the healthy streak. Plus persistence: a latch survives a reboot with
-  its reason intact, a corrupted or unreadable NVS record is repaired rather
-  than obeyed, and the degraded RAM-only path still trips. Plus the stuck
-  probe: idle frozen probes never trip, moving probes under heat never trip,
+  (57 checks, default pass only): trip on the hard limit, on sustained sensor
+  faults and on BT/ET disagreement while cold; commands refused while latched;
+  clear only after the healthy streak. Plus persistence: a latch survives a
+  reboot with its reason intact, a corrupted or unreadable NVS record is
+  repaired rather than obeyed, and the degraded RAM-only path still trips. Plus
+  the stuck probe: idle frozen probes never trip, moving probes under heat never trip,
   the exact window boundary trips on the right sample, a stalled reading while
   cooling never trips, a frozen channel trips while the other one moves, and a
   stuck alarm survives a power cycle without being laundered by healthy-looking
   samples.
-- `test_sensors` - the ET/BT offset (13 checks): the offset is applied exactly
-  once and only *after* the plausibility check, so a floating or open probe is
-  still a fault and a faulted channel returns its last good value with the
-  offset **not** applied. The cross-check side is asserted from the constants
-  rather than a pinned measurement: a raw pair separated by exactly the fitted
-  ET-BT difference calibrates onto one temperature, and a raw disagreement far
-  enough above `SENSOR_MAX_SPREAD_C` still trips after the offset was trimmed
-  to -6.5 C.
+- `test_safety_bt_only` - the BT-only build (39 checks, flag-0 pass only): no ET
+  reading can latch anything - missing, faulted for far longer than any streak,
+  above the 300 C ET limit, 0 C from a floating data line, or frozen for the
+  whole stuck window with the element asking for power - and the cold BT/ET
+  disagreement that trips a full build is not evaluated at all. BT still carries
+  the alarm: a never-connected BT trips on the 5th faulted sample, 260 C trips
+  the BT ceiling, a frozen BT under heat trips the stuck detector, and
+  `heater_set_duty(100)` cannot get past the latch. The clear streak counts BT:
+  nine healthy samples are not enough, the tenth clears it while ET stays dead,
+  and an ET fault arriving afterwards cannot re-latch it. Plus the NVS cases that
+  matter when this image is flashed over a latched machine: a stored ET sensor
+  alarm and a stored stuck-ET alarm are both restored, report their own reason,
+  and are released by the BT streak - the stuck one must *not* wait for an ET
+  value that can never arrive, which would lock the heater out for good.
+- `test_sensors` - the sensor layer (18 checks with the flag at 1, 14 with it at
+  0): the offset is applied exactly once and only *after* the plausibility check,
+  so a floating or open probe is still a fault and a faulted channel returns its
+  last good value with the offset **not** applied. The same BT behaviour is
+  asserted in both modes - a 0 C BT is a fault, a step above
+  `SENSOR_FAULT_MAX_JUMP_C` is a fault, and the next plausible value is accepted
+  again. The ET half is per mode: with the flag at 1 the ET offset and the
+  cross-check preconditions are pinned from the constants rather than a pinned
+  measurement (a raw pair separated by exactly the fitted ET-BT difference
+  calibrates onto one temperature, and a raw disagreement far enough above
+  `SENSOR_MAX_SPREAD_C` still trips after the offset was trimmed to -6.5 C); with
+  it at 0 the ET channel carries no value and no fault whatever the module does,
+  and the stub's read counter proves the converter is not read at all.
 - `test_ror` - rate of rise (22 checks): a constant 10 C/min and 6.5 C/min ramp
   holds its value to +-0.1 C/min across several windows (which wraps the
   128-entry sample ring); cooling keeps its sign (-5 stays -5); a signal
@@ -937,22 +1056,28 @@ runs twice, `test_mqtt_discovery` once per build language (214 again) and
   or invert the fan. The regression that matters is elsewhere: the fan
   interlock tests in `test_control` speak the requested percent and still pass
   unchanged, which is what guarantees the reporting side did not move.
-- `test_mqtt_discovery` - MQTT layer (214 checks): all 11 discovery configs are
+- `test_mqtt_discovery` - MQTT layer (233 checks): all 12 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
-  carries the expected fields (including `fanFault` and the signed `rorBt` /
-  `rorEt`); the two rate-of-rise sensors carry unit C/min and state_class
+  carries the expected fields (including `fanFault`, `etDisabled` and the signed
+  `rorBt` / `rorEt`); the ET-disabled entity is a `binary_sensor` with
+  device_class problem driven by `value_json.etDisabled`, published by both
+  builds so nothing appears or disappears when the image changes; the two
+  rate-of-rise sensors carry unit C/min and state_class
   measurement with no device_class; every payload fits the PubSubClient buffer
   (largest 648 B against the 900 B limit); and the report-only guarantees hold
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_web_server` - the profile HTTP API (56 checks): the real handlers,
+- `test_web_server` - the profile HTTP API (57 checks): the real handlers,
   dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
   that logs every operation. `name=../config` and `name=../../etc/passwd` over
   GET and DELETE answer 400 and provably cause **no** filesystem call at all,
   with a honeytoken file outside `/profiles` proving the traversal would
-  otherwise have found something.
-- `test_control` - the real src/main.cpp against stubbed hardware (103 checks):
+  otherwise have found something. It also asserts that `/api/status` reports
+  `etDisabled` matching the mode it was built in, since that field is the only
+  thing that separates a dead ET module from a channel that is not watched.
+- `test_control` - the real src/main.cpp against stubbed hardware (104 checks
+  with the flag at 1, 108 with it at 0):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions; a probe
@@ -993,7 +1118,8 @@ runs twice, `test_mqtt_discovery` once per build language (214 again) and
   `Update.end()` (never `abort()`), reads back byte-identical, leaves a stored
   profile in LittleFS untouched and only then asks for the restart. A failed
   `Update.begin()` or `Update.end()` answers 500.
-- `test_ror_guidance` - optional rate-of-rise guidance (52 checks): the target
+- `test_ror_guidance` - optional rate-of-rise guidance (52 checks, default pass
+  only): the target
   curve, the sign of the correction, a zero correction when disabled, the rate
   limit and clamp that keep a cold-probe transient under `HEATER_MAX_DUTY_PCT`,
   every duty request routed through `applyHeaterDuty()`, and the off-by-default

@@ -22,6 +22,12 @@ enum SafetyFaultCode {
   SAFETY_FAULT_COUNT,
 };
 
+// The three ET codes above are out of play in a BT-only build
+// (SAFETY_ET_ENABLED 0 in include/config.h): the ET channel is not read, so
+// nothing can trip them. They are kept here because a code written to NVS by a
+// full build can still be restored by a BT-only one - it then reports its own
+// reason and is cleared by the BT clear streak.
+
 void safety_init();
 // Call once per sensor sample, before any control update. heaterActive is
 // whether the element is being asked for power right now - it is what arms the

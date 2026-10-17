@@ -44,6 +44,7 @@
 #define STR_NAME_ELAPSED "Roast time"
 #define STR_NAME_SAFETY "Safety alarm"
 #define STR_NAME_FAN_FAULT "Fan interlock"
+#define STR_NAME_ET_DISABLED "ET disabled"
 #define STR_NAME_PROFILE "Profile"
 
 #else
@@ -60,6 +61,7 @@
 #define STR_NAME_ELAPSED "Rosttid"
 #define STR_NAME_SAFETY "Säkerhetslarm"
 #define STR_NAME_FAN_FAULT "Fläktspärr"
+#define STR_NAME_ET_DISABLED "ET avstängd"
 #define STR_NAME_PROFILE "Profil"
 
 #endif

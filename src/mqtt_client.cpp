@@ -183,6 +183,26 @@ static void publishDiscovery() {
     doc["icon"] = "mdi:fan-off";
     publishDiscoveryEntity("binary_sensor", "fan_fault", doc);
   }
+  // Reduced protection, reported as a problem too: this firmware was compiled
+  // BT-only (SAFETY_ET_ENABLED 0 in include/config.h), so the ET channel is not
+  // being read and its trips and the BT/ET cross-check are switched off. The
+  // entity is published by every build and is OFF in a full one, which is what
+  // keeps it from looking like a value that comes and goes; in a BT-only build
+  // it is permanently ON, because the reduced protection is a standing
+  // condition and no one may mistake a switched-off probe for a healthy one.
+  // Report-only like everything else here: no command_topic, no subscriptions.
+  {
+    JsonDocument doc;
+    snprintf(uniqueId, sizeof(uniqueId), "%s_et_disabled", MQTT_DEVICE_ID);
+    addDeviceBlock(doc, uniqueId, STR_NAME_ET_DISABLED);
+    doc["device_class"] = "problem";
+    doc["state_topic"] = STATUS_TOPIC;
+    doc["value_template"] = "{{ 'ON' if value_json.etDisabled else 'OFF' }}";
+    doc["payload_on"] = "ON";
+    doc["payload_off"] = "OFF";
+    doc["icon"] = "mdi:thermometer-off";
+    publishDiscoveryEntity("binary_sensor", "et_disabled", doc);
+  }
 
   // Profile is reported as a plain sensor. MQTT is report-only: no number,
   // no select, no buttons, no command topics - see docs/firmware-notes.md.
@@ -213,6 +233,11 @@ void mqtt_publish_status() {
     StateLockGuard guard;
     doc["bt"] = cb.getBT();
     doc["et"] = cb.getET();
+    // Same field, same meaning as in /api/status: true = this build does not
+    // watch the ET channel at all (SAFETY_ET_ENABLED 0). Reported here as well
+    // because the HA ET entity is `unknown` in both cases, so the two states
+    // would otherwise be indistinguishable in Home Assistant.
+    doc["etDisabled"] = (SAFETY_ET_ENABLED == 0);
     doc["rorBt"] = cb.getRorBt();
     doc["rorEt"] = cb.getRorEt();
     doc["heater"] = cb.getHeaterDuty();

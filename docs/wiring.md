@@ -76,6 +76,15 @@ CS     →          GPIO4                 CS     →          GPIO17
 - Lägg termokopplingsledningarna **väck från 230 V och från PWM-ledningen**
   (skruva, twistad par) — annars får du drifter i mätningen.
 
+> **Läget just nu (FW 0.9.0, 2026-10-17): ET-kanalen är AVSTÄNGD.** Modulen
+> rapporterar ingen giltig temperatur alls, så firmwaren är byggd med
+> `SAFETY_ET_ENABLED 0` (include/config.h): ET läses inte, dess larm och
+> BT/ET-korskontrollen är bortkopplade, och **BT-modulen (CS 4 / SO 19) är den
+> enda temperaturreferensen**. Webb-UI:t visar "ET AVSTÄNGD – endast BT" och
+> `/api/status` svarar `etDisabled: true`. Koppla inte om ET-modulen med
+> nätet på — maskinen ska vara strömlös när den rörs. Bygg om med flaggan 1 så
+> fort modulen är bytt, och se SAFETY.md för vad som är borta medan den är av.
+
 ## 2. Fläktmodul (MOSFET, PWM)
 
 ```

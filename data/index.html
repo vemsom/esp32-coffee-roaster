@@ -70,7 +70,7 @@
 </style>
 </head>
 <body>
-  <h1><span data-i18n="title">Kafferostaren</span> <span id="modePill" class="pill" data-i18n="modeIdle">idle</span> <span id="faultPill" class="pill fault" style="display:none" data-i18n="sensorFault">sensorfel</span> <span id="fanPill" class="pill warn" style="display:none" data-i18n="fanWord">fläkt</span> <span id="netPill" class="pill warn" style="display:none" data-i18n="networkWord">nätverk</span></h1>
+  <h1><span data-i18n="title">Kafferostaren</span> <span id="modePill" class="pill" data-i18n="modeIdle">idle</span> <span id="faultPill" class="pill fault" style="display:none" data-i18n="sensorFault">sensorfel</span> <span id="etPill" class="pill warn" style="display:none" data-i18n="etDisabledPill">ET AVSTÄNGD – endast BT</span> <span id="fanPill" class="pill warn" style="display:none" data-i18n="fanWord">fläkt</span> <span id="netPill" class="pill warn" style="display:none" data-i18n="networkWord">nätverk</span></h1>
 
   <div class="tabs">
     <div class="tab active" data-view="roast" data-i18n="tabRoast">Rostning</div>
@@ -280,6 +280,7 @@ const I18N = {
   sv: {
     title: 'Kafferostaren',
     sensorFault: 'sensorfel', fanWord: 'fläkt', networkWord: 'nätverk',
+    etDisabledPill: 'ET AVSTÄNGD – endast BT',
     tabRoast: 'Rostning', tabManual: 'Manuell', tabProfiles: 'Profiler', tabLog: 'Logg',
     labelBeanTemp: 'Böntemp (BT)', labelEnvTemp: 'Lufttemp (ET)',
     labelRorBt: 'Böntemperaturökning', labelRorEt: 'Miljötemperaturökning',
@@ -330,6 +331,7 @@ const I18N = {
   en: {
     title: 'Coffee roaster',
     sensorFault: 'sensor fault', fanWord: 'fan', networkWord: 'network',
+    etDisabledPill: 'ET DISABLED – BT ONLY',
     tabRoast: 'Roast', tabManual: 'Manual', tabProfiles: 'Profiles', tabLog: 'Log',
     labelBeanTemp: 'Bean temp (BT)', labelEnvTemp: 'Env temp (ET)',
     labelRorBt: 'Bean temp rise', labelRorEt: 'Environment temp rise',
@@ -571,6 +573,21 @@ async function pollStatus() {
     fanPill.textContent = t('fanFaultLine');
   } else {
     fanPill.style.display = 'none';
+  }
+
+  // Reduced protection, shown for as long as this firmware is running: the
+  // image was built without the ET channel (etDisabled in /api/status, i.e.
+  // SAFETY_ET_ENABLED 0), so ET reads nothing and its trips and the BT/ET
+  // cross-check are off. This is a standing condition, not an alarm - it stays
+  // visible while the machine runs - because a switched-off probe must never
+  // be readable as a healthy one. It replaces nothing: "et" sharing a null
+  // with a probe that has never read is exactly the ambiguity it removes.
+  const etPill = $('etPill');
+  if (s.etDisabled) {
+    etPill.style.display = '';
+    etPill.textContent = t('etDisabledPill');
+  } else {
+    etPill.style.display = 'none';
   }
 
   renderNet();
