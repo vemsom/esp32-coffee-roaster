@@ -25,9 +25,13 @@ which quietly made the regulator P-only and parked BT ~20 C under its setpoint;
 KD 2.0 differentiated the 250 ms sample and switched duty between 0 and 100;
 and the 24 V supply cut out when the fan was switched straight on at 100 %. See
 "PID and the control input filter" below. The device reported FW 0.11.0
-`build b1c4fbc` when this was built, so the note that the 0.11.0 image was still
-unflashed had gone stale in the meantime; the image flashed here carries 0.11.0
-and these fixes.
+`build b1c4fbc` when this was written, so the note that the 0.11.0 image was
+still unflashed had gone stale in the meantime. Both hashes named here are
+pre-rewrite: the scrub of the LAN address turned `b1c4fbc` into `5ca4af8`. The
+image on the machine now carries these fixes - `/api/status`: fw 0.11.1,
+`build 343fd5c` (rewritten to `21341bc`), built 2026-10-17T18:15:08Z. A flashed
+image keeps the build string it was compiled with, so the device is the one
+place the old hash survives.
 
 Build of record (2026-09-27, clean rebuild):
 
