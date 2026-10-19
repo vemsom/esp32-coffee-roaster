@@ -110,6 +110,9 @@ static unsigned long roastPauseStarted = 0;
 static unsigned long roastPausedTotal = 0;
 
 // ---- Cool mode state (fan-only timer, independent of heater control) ----
+// Reached three ways: the cooling panel, "Avbryt och kyl" on a running roast
+// (cbStopRoastAndCool) and a profile whose last step has run out
+// (finishProfileLocked). All three go through startCoolLocked().
 static bool coolActive = false;
 static int coolSpeed = 0;
 static unsigned long coolDurationSeconds = 0;
@@ -373,12 +376,20 @@ static const char *cbGetProfileName() {
 // take the lock for the whole mutation. cbStartRoast() reaches into LittleFS
 // while holding it - state lock first, filesystem second, never the other way
 // round (see state_lock.h).
-static void cbSetFanSpeed(int percent) {
-  StateLockGuard guard;
+// The body of the fan command. The caller holds the state lock: two paths want
+// to set the fan from inside a critical section they already own (the stop-
+// and-cool transition and the end of a profile), and re-entering the recursive
+// lock there would blur what "one lock" means.
+static void setFanSpeedLocked(int percent) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   currentFanSpeed = percent;
   fan_set_speed(percent);
+}
+
+static void cbSetFanSpeed(int percent) {
+  StateLockGuard guard;
+  setFanSpeedLocked(percent);
 }
 
 static bool cbStartCool(int speed, unsigned long durationSeconds);  // defined below
@@ -422,14 +433,24 @@ static void cbStopManual() {
   if (wasManual) maybeStartAutoCool();
 }
 
-static bool cbStartCool(int speed, unsigned long durationSeconds) {
-  StateLockGuard guard;
+// Starts the fan-only cool timer. The caller holds the state lock - this is the
+// one body behind the cooling panel, "Avbryt och kyl" and the end of a profile,
+// so all three leave exactly the same state behind. It deliberately does NOT
+// touch the fan: updateCool() applies coolSpeed on the next sample, and the two
+// paths that must have the fan running immediately set it themselves in the
+// same critical section (they are already inside one).
+static bool startCoolLocked(int speed, unsigned long durationSeconds) {
   if (speed <= 0 || durationSeconds == 0) return false;
   coolSpeed = speed;
   coolDurationSeconds = durationSeconds;
   coolStartMillis = millis();
   coolActive = true;
   return true;
+}
+
+static bool cbStartCool(int speed, unsigned long durationSeconds) {
+  StateLockGuard guard;
+  return startCoolLocked(speed, durationSeconds);
 }
 
 static void cbStopCool() {
@@ -468,8 +489,11 @@ static bool cbStartRoast(const String &profileName) {
   return true;
 }
 
-static void cbStopRoast() {
-  StateLockGuard guard;
+// The state part of a stop, shared by the plain stop and stop-and-cool. The
+// caller holds the state lock. It leaves the fan alone on purpose: Stop keeps
+// the behaviour it has always had (the fan stays where the run left it until
+// something else commands it), and a stop that wants air says so itself.
+static void stopRoastLocked() {
   if (controlMode == MODE_PROFILE) controlMode = MODE_IDLE;
   roastStartMillis = 0;
   roastPaused = false;
@@ -477,6 +501,32 @@ static void cbStopRoast() {
   roastPausedTotal = 0;
   resetRorGuidance();
   applyHeaterDuty(0);
+}
+
+static void cbStopRoast() {
+  StateLockGuard guard;
+  stopRoastLocked();
+}
+
+// "Avbryt och kyl": stop the roast and start the cool-down in ONE critical
+// section, so no scheduler pass can put the fan through 0 % in between - which
+// is exactly what two separate requests (/api/roast/stop followed by
+// /api/cool/start) leave room for. Returns false and changes nothing when the
+// values are out of range: a stop without cooling is the plain Stop button, and
+// silently falling back to it would look like the roaster ignored the command
+// while the beans kept cooking.
+static bool cbStopRoastAndCool(int speed, unsigned long durationSeconds) {
+  StateLockGuard guard;
+  if (speed < COOL_SPEED_MIN_PCT || speed > COOL_SPEED_MAX_PCT ||
+      durationSeconds == 0) {
+    return false;
+  }
+  stopRoastLocked();
+  if (!startCoolLocked(speed, durationSeconds)) return false;
+  // Applied here rather than on the next control cycle: the fan is already
+  // spinning at the profile's speed, so this is a level change, not a start.
+  setFanSpeedLocked(speed);
+  return true;
 }
 
 // Pause freezes the roast clock. The PID keeps regulating the setpoint that
@@ -493,6 +543,32 @@ static void cbResumeRoast() {
   if (controlMode != MODE_PROFILE || !roastPaused) return;
   roastPausedTotal += millis() - roastPauseStarted;
   roastPaused = false;
+}
+
+// The profile's last step has run out. What happens next is the profile's own
+// choice: coolFan/coolMinutes set -> the existing fan-only cool timer starts in
+// the same critical section as the stop, so the fan goes from the last step's
+// speed straight to the cool speed; absent or 0 -> the profile ends the way it
+// always did (heat off), and the fan is stopped here because nothing else would
+// ever command it again.
+//
+// Called with the state lock held, from updateControl() - loop() takes it once
+// per sample around that call. A manual stop never comes through here: an
+// aborted roast is an intentional act, and "Avbryt och kyl" is the command for
+// the case where the beans should still get air.
+static void finishProfileLocked() {
+  const int speed = (int)(activeProfile.coolFanPct() + 0.5f);
+  float minutes = activeProfile.coolMinutes();
+  if (minutes > COOL_MINUTES_MAX) minutes = COOL_MINUTES_MAX;
+  const unsigned long seconds = (unsigned long)(minutes * 60.0f + 0.5f);
+
+  stopRoastLocked();
+  if (speed >= COOL_SPEED_MIN_PCT && speed <= COOL_SPEED_MAX_PCT && seconds > 0 &&
+      startCoolLocked(speed, seconds)) {
+    setFanSpeedLocked(speed);
+  } else {
+    setFanSpeedLocked(0);
+  }
 }
 
 // Stops an active run because the safety latch tripped. The fan is left alone
@@ -599,6 +675,16 @@ static void updateControl() {
 
   if (controlMode == MODE_PROFILE) {
     unsigned long elapsed = roastElapsedSeconds();
+    // The last step has run out: the profile is over. Until this check existed
+    // the run simply held its final setpoint forever, so a profile never ended
+    // by itself; it ends here instead, and hands over to the profile's own
+    // cool-down if it has one. A pause holds the clock, so a paused profile
+    // holds its last setpoint exactly as a pause does everywhere else.
+    const unsigned long profileEnd = activeProfile.totalSeconds();
+    if (!roastPaused && profileEnd > 0 && elapsed >= profileEnd) {
+      finishProfileLocked();
+      return;
+    }
     // Fan first: the interlock has to see this cycle's fan value, or the very
     // first duty request of a profile run would be judged against a stale fan.
     if (activeProfile.hasFan()) {
@@ -912,6 +998,7 @@ void setup() {
     cbStopCool,
     cbStartRoast,
     cbStopRoast,
+    cbStopRoastAndCool,
     cbPauseRoast,
     cbResumeRoast,
   };

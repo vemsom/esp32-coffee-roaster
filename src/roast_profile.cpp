@@ -1,4 +1,5 @@
 #include "roast_profile.h"
+#include "config.h"
 #include <FS.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -7,6 +8,36 @@ void RoastProfile::clear() {
   _steps.clear();
   _hasFan = false;
   _startTemp = 20;
+  _coolFanPct = 0;
+  _coolMinutes = 0;
+}
+
+// Cooling is a pair: a fan speed without a time (or the other way round) is
+// not a cool-down, it is a half-filled form, so either value being 0 turns the
+// whole thing off. Anything else is clamped to the same limits the web UI and
+// the cooling panel work with, so a hand-edited profile cannot carry a value
+// that no other part of the firmware would accept.
+void RoastProfile::setCool(float fanPct, float minutes) {
+  if (!(fanPct > 0.0f) || !(minutes > 0.0f)) {  // also catches NaN
+    _coolFanPct = 0;
+    _coolMinutes = 0;
+    return;
+  }
+  if (fanPct < (float)COOL_SPEED_MIN_PCT) fanPct = (float)COOL_SPEED_MIN_PCT;
+  if (fanPct > (float)COOL_SPEED_MAX_PCT) fanPct = (float)COOL_SPEED_MAX_PCT;
+  if (minutes < COOL_MINUTES_MIN) minutes = COOL_MINUTES_MIN;
+  if (minutes > COOL_MINUTES_MAX) minutes = COOL_MINUTES_MAX;
+  _coolFanPct = fanPct;
+  _coolMinutes = minutes;
+}
+
+// The end of the last step. Used by src/main.cpp to decide that the profile is
+// over - the curve functions themselves keep holding their last value past the
+// end, which is what the roast graph draws.
+unsigned long RoastProfile::totalSeconds() const {
+  unsigned long total = 0;
+  for (const auto &s : _steps) total += s.rampSeconds + s.holdSeconds;
+  return total;
 }
 
 void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
@@ -129,6 +160,10 @@ bool RoastProfile::loadFromFile(const String &path) {
 
   clear();
   _startTemp = doc["startTemp"] | 20.0f;
+  // The cool-down that follows the last step. Absent, 0 or a half-filled pair
+  // all mean "no automatic cooling", which is what every profile written
+  // before these fields existed says - so those keep behaving as they did.
+  setCool(doc["coolFan"] | 0.0f, doc["coolMinutes"] | 0.0f);
 
   if (doc["steps"].is<JsonArray>()) {
     for (JsonObject s : doc["steps"].as<JsonArray>()) {
@@ -172,6 +207,14 @@ bool RoastProfile::saveToFile(const String &path) const {
       o["rorStart"] = s.rorStart;
       o["rorEnd"] = s.rorEnd;
     }
+  }
+
+  // The profile's own cool-down, only when it asks for one: a profile without
+  // it has to stay byte-for-byte identical to what it was before the fields
+  // existed (same rule as rorTarget above).
+  if (_coolFanPct > 0.0f && _coolMinutes > 0.0f) {
+    doc["coolFan"] = _coolFanPct;
+    doc["coolMinutes"] = _coolMinutes;
   }
 
   File f = LittleFS.open(path, "w");

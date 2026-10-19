@@ -37,6 +37,21 @@ public:
   float rorTargetAt(unsigned long elapsedSeconds) const;
   // Index of the step that is active at elapsed seconds, or -1 if none.
   int stepIndexAt(unsigned long elapsedSeconds) const;
+  // Length of the whole profile: the sum of every step's ramp and hold. 0 for
+  // an empty profile (and for a profile whose steps add up to 0 s), which
+  // src/main.cpp reads as "this profile has no end to detect".
+  unsigned long totalSeconds() const;
+  // Cool-down that follows the profile by itself: fan-only, started when the
+  // last step has run out (src/main.cpp). coolFanPct is 1-100 %, coolMinutes
+  // is minutes. Both are 0 by default, and 0 (or anything below the limits in
+  // include/config.h) means "no automatic cooling" - the profile ends the way
+  // it always did, with the heat off and the fan stopped.
+  float coolFanPct() const { return _coolFanPct; }
+  float coolMinutes() const { return _coolMinutes; }
+  // Clamped to the limits in include/config.h (0 = off, otherwise
+  // COOL_SPEED_MIN_PCT..COOL_SPEED_MAX_PCT and COOL_MINUTES_MIN..MAX), so a
+  // hand-edited profile cannot carry a value the UI could never produce.
+  void setCool(float fanPct, float minutes);
   bool hasFan() const { return _hasFan; }
   float startTemp() const { return _startTemp; }
   void setStartTemp(float t) { _startTemp = t; }
@@ -47,4 +62,6 @@ private:
   std::vector<ProfileStep> _steps;
   float _startTemp = 20;
   bool _hasFan = false;
+  float _coolFanPct = 0;
+  float _coolMinutes = 0;
 };

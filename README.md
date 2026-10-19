@@ -193,6 +193,30 @@ the RoR estimate is still warming up, or the fan interlock is holding the
 element off. The web UI and MQTT status show the current RoR target, error and
 whether guidance is active.
 
+## Cooling
+
+The cool-down is fan-only: no element, no PID, no profile. Three ways to get it:
+
+- **"Avbryt och kyl"** on the roast tab: stops the roast and starts the cooling
+  with the fan % and minutes in the two fields next to it. It is **one** request
+  (`POST /api/roast/stop-and-cool`), so the fan goes from the roast speed
+  straight to the cool speed and never passes through 0 % in between. Plain
+  **Stop** is unchanged and starts no cooling.
+- **A profile can ask for it.** Give the profile `coolFan` and `coolMinutes` and
+  the cooling starts by itself when the last step has run out. Both are 0 (or
+  absent) in every profile written before this existed, and that means today's
+  behaviour: the run ends, the element goes off, the fan stops. The fields are
+  editable in the profile editor, and the file format is documented in
+  [docs/profiles.md](docs/profiles.md).
+- **The cooling panel** (manual tab) as before, with an optional "start
+  automatically when the manual run is over".
+
+Stopping a roast **by hand** mid-profile never starts a cooling of its own - not
+even when the profile carries `coolFan`/`coolMinutes`. That is what "Avbryt och
+kyl" is for; the profile's values belong to the profile running to its end. The
+pause is unchanged by all of this: it freezes the roast clock and keeps the
+element at the setpoint that was active.
+
 ## Safety limits
 
 The heater sits behind a latched alarm that no command can silence. It trips on:

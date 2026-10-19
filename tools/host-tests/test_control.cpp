@@ -134,11 +134,23 @@ void test_web_server_cb_captured(WebServerCallbacks callbacks) {
 }
 
 // ---- canned RoastProfile (the real one reads LittleFS) ---------------------
+// The step the canned profile loads is configurable because totalSeconds() now
+// ends a run: a test that wants the end of the profile inside its own wall
+// clock shrinks it, and every other section leaves it at 10 minutes so nothing
+// reaches the end by accident. Same for the profile's cool-down, which is 0
+// (= none, today's behaviour) unless a section asks for one.
 static float g_profileFan = 80.0f;
+static unsigned long g_profileRampSeconds = 0;
+static unsigned long g_profileHoldSeconds = 600;
+static float g_profileCoolFan = 0.0f;
+static float g_profileCoolMinutes = 0.0f;
+
 bool RoastProfile::loadFromFile(const String &) {
   _hasFan = true;
   _startTemp = 20;
-  _steps = { ProfileStep{ 0, 600, 200, g_profileFan, 0.0f, 0.0f, 0.0f } };
+  _steps = { ProfileStep{ g_profileRampSeconds, g_profileHoldSeconds, 200, g_profileFan,
+                          0.0f, 0.0f, 0.0f } };
+  setCool(g_profileCoolFan, g_profileCoolMinutes);
   return true;
 }
 bool RoastProfile::saveToFile(const String &) const { return true; }
@@ -153,7 +165,30 @@ void RoastProfile::addStep(unsigned long rampSeconds, unsigned long holdSeconds,
   _steps.push_back(ProfileStep{ rampSeconds, holdSeconds, temp, fan, rorTarget, rorStart, rorEnd });
   _hasFan = true;
 }
-void RoastProfile::clear() { _steps.clear(); _hasFan = false; }
+void RoastProfile::clear() {
+  _steps.clear();
+  _hasFan = false;
+  _coolFanPct = 0;
+  _coolMinutes = 0;
+}
+// The canned profile is the test's own knob: it takes the pair as given, and
+// the 0-means-off rule is the one the real setCool() documents. The clamping of
+// out-of-range numbers is exercised against the REAL implementation in
+// test_web_server, where a profile really is written and read back.
+void RoastProfile::setCool(float fanPct, float minutes) {
+  if (!(fanPct > 0.0f) || !(minutes > 0.0f)) {
+    _coolFanPct = 0;
+    _coolMinutes = 0;
+    return;
+  }
+  _coolFanPct = fanPct;
+  _coolMinutes = minutes;
+}
+unsigned long RoastProfile::totalSeconds() const {
+  unsigned long total = 0;
+  for (const auto &s : _steps) total += s.rampSeconds + s.holdSeconds;
+  return total;
+}
 float RoastProfile::targetAt(unsigned long) const { return 200; }
 float RoastProfile::fanAt(unsigned long) const { return g_profileFan; }
 float RoastProfile::rorTargetAt(unsigned long) const { return 0.0f; }
@@ -372,6 +407,194 @@ int main() {
   check(!web.getFanFault() && web.getHeaterDuty() > 0, "auto mode heats with airflow");
   check(ssrState == HIGH, "element conducts in auto mode");
   web.stopRoast();
+  runLoops(2);
+
+  // ------------------------------- stop and cool: one command, one lock -----
+  // The point of the combined command is that the fan never passes through
+  // 0 % between "stop" and "start cooling". With two requests the control loop
+  // can sample in between, and the beans sit in a 200 C drum with no air while
+  // the operator waits for the second one to land. Two things are asserted
+  // here: the fan is re-commanded before the call returns, and the whole
+  // transition is ONE state-lock acquisition - the only way a single-threaded
+  // test can see "same critical section".
+  check(web.startRoast(String("cool")), "roast starts for the stop-and-cool test");
+  runLoops(4);
+  check(web.getHeaterDuty() > 0 && ssrState == HIGH, "the roast heats before the stop");
+
+  const unsigned long lockBeforeStopCool = state_lock_acquisitions();
+  const bool stopCoolOk = web.stopRoastAndCool(60, 120);
+  check(stopCoolOk, "stop-and-cool accepts 60 % for 120 s");
+  check(state_lock_acquisitions() == lockBeforeStopCool + 1,
+        "the whole stop-and-cool transition runs under ONE state lock");
+  check(!web.getRoastActive(), "the roast is no longer active");
+  check(web.getCoolActive(), "cooling is active in the same instant");
+  check(web.getCoolSpeed() == 60, "cooling runs at the requested fan speed");
+  check(web.getCoolRemainingSeconds() == 120, "cooling runs for the requested time");
+  check(web.getFanSpeed() == 60,
+        "the fan was re-commanded to the cool speed before the call returned");
+  check(web.getElapsedSeconds() == 0, "the roast clock was cleared");
+
+  bool fanDropped = false;
+  for (int i = 0; i < 4; i++) {
+    runLoops(1);
+    if (web.getFanSpeed() != 60) fanDropped = true;
+  }
+  check(!fanDropped, "the fan stays at the cool speed on every sample after it");
+  check(web.getCoolActive(), "the cool-down is still running a second later");
+  check(web.getHeaterDuty() == 0 && ssrState == LOW, "nothing heats during the cool-down");
+
+  // The invalid cases are refused whole and change nothing: 0 % is "off", not a
+  // cool speed, and 0 minutes is "no time". Falling back to a plain stop would
+  // look like the roaster ignored the button while the beans kept cooking.
+  web.stopCool();
+  check(web.startRoast(String("cool")), "a roast starts for the refused stop-and-cool");
+  runLoops(4);
+  const unsigned long lockBeforeRefused = state_lock_acquisitions();
+  check(!web.stopRoastAndCool(0, 120), "stop-and-cool refuses a 0 % fan");
+  check(!web.stopRoastAndCool(60, 0), "stop-and-cool refuses a 0 s cool-down");
+  check(state_lock_acquisitions() == lockBeforeRefused + 2,
+        "each refused call takes the lock and does nothing else");
+  check(web.getRoastActive(), "a refused stop-and-cool leaves the roast running");
+  check(!web.getCoolActive(), "and starts no cooling");
+
+  // Plain Stop is untouched: it still starts no cooling, so the two buttons can
+  // never be the same button.
+  web.stopRoast();
+  check(!web.getRoastActive(), "plain Stop still stops the roast");
+  check(!web.getCoolActive(), "plain Stop still starts no cooling");
+  runLoops(2);
+
+  // The same transition through the REAL route the button hits, so the HTTP
+  // handler and the control layer are proven to be wired to each other (the
+  // route's contract on its own is covered in test_web_server).
+  {
+    const AsyncWebServer::Route *stopCool =
+        findRoute("/api/roast/stop-and-cool", HTTP_POST);
+    check(stopCool != nullptr, "the stop-and-cool route is registered in the control test");
+    if (stopCool) {
+      check(web.startRoast(String("cool")), "a roast starts for the route test");
+      runLoops(4);
+      const char *json = "{\"coolSpeed\":75,\"coolMinutes\":3}";
+      std::vector<uint8_t> body(json, json + strlen(json));
+      const unsigned long lockBeforeRoute = state_lock_acquisitions();
+      AsyncWebServerRequest req;
+      stopCool->onBody(&req, body.data(), body.size(), 0, body.size());
+      // Read the counter here, before any getter: every getter is a callback
+      // and takes the lock itself, so a count taken after them would measure
+      // the reads as well as the transition.
+      const unsigned long locksTaken = state_lock_acquisitions() - lockBeforeRoute;
+      check(req.responseCode() == 200, "the route answers 200 for that roast");
+      check(!web.getRoastActive() && web.getCoolActive(),
+            "and the roast is stopped with the cooling running");
+      check(web.getCoolSpeed() == 75 && web.getCoolRemainingSeconds() == 180,
+            "with the values from the request");
+      check(locksTaken == 1,
+            "the route's transition is still a single lock acquisition");
+      web.stopCool();
+      runLoops(2);
+    }
+  }
+
+  // ------------------------- the profile's own cool-down (end of the run) ---
+  // A profile carries coolFan/coolMinutes. When its last step has run out the
+  // run ends by itself and the same fan-only cool timer starts - no request,
+  // no operator. The canned profile is 5 s long here so the end arrives inside
+  // the test's own clock.
+  g_profileRampSeconds = 0;
+  g_profileHoldSeconds = 5;
+  g_profileCoolFan = 100.0f;
+  g_profileCoolMinutes = 1.0f;
+  check(web.startRoast(String("autocool")), "profile with a cool-down starts");
+  // Eight samples = 2 s: long enough for the fan to spin back up past the
+  // heater interlock (the cool-down before this section stopped it, and the
+  // duty slews at FAN_SLEW_PCT_PER_SEC), still short of the 5 s profile.
+  runLoops(8);
+  check(web.getRoastActive(), "the profile runs while its last step has time left");
+  check(web.getHeaterDuty() > 0, "and it heats");
+  runLoops(13);   // 13 more samples take the clock past 5 s: the last step
+                  // runs out inside this, and the cool-down has just started
+  check(!web.getRoastActive(), "the profile ends by itself when the last step runs out");
+  check(web.getCoolActive(), "its cool-down starts with no extra request");
+  check(web.getCoolSpeed() == 100, "the cool-down uses the profile's fan value");
+  check(web.getCoolRemainingSeconds() >= 59 && web.getCoolRemainingSeconds() <= 60,
+        "the cool-down uses the profile's minutes");
+  check(web.getHeaterDuty() == 0 && ssrState == LOW, "the element is off in the cool-down");
+  check(web.getFanSpeed() == 100, "the fan keeps running at the cool speed");
+
+  // 0 (or absent) in both fields = today's behaviour: the run ends, the element
+  // goes off and the fan stops. No cool-down is invented for a profile that
+  // never asked for one.
+  //
+  // The first cool-down is still running at this point (60 s of it), and a
+  // cool-down owns the fan until it ends - so it is stopped here, exactly as an
+  // operator would before starting the next profile.
+  web.stopCool();
+  runLoops(2);
+  g_profileCoolFan = 0.0f;
+  g_profileCoolMinutes = 0.0f;
+  check(web.startRoast(String("nocool")), "profile without a cool-down starts");
+  runLoops(22);
+  check(!web.getRoastActive(), "that profile ends as well");
+  check(!web.getCoolActive(), "no cooling is started when both fields are 0");
+  check(web.getFanSpeed() == 0, "and the fan is stopped");
+  check(web.getHeaterDuty() == 0 && ssrState == LOW, "the element is off");
+
+  // A half-filled pair is not a cool-down either: a speed without a time is a
+  // form someone left half-done, not an instruction.
+  g_profileCoolFan = 100.0f;
+  g_profileCoolMinutes = 0.0f;
+  check(web.startRoast(String("halfcool")), "half-filled cool fields: the profile starts");
+  runLoops(22);
+  check(!web.getCoolActive() && web.getFanSpeed() == 0,
+        "a fan speed without minutes starts no cooling");
+
+  // A manual stop in the middle is NOT the end of a profile: the operator said
+  // stop, and cooling is what "Avbryt och kyl" is for. Nothing is started
+  // behind his back - not then, and not on a later sample either.
+  g_profileCoolFan = 100.0f;
+  g_profileCoolMinutes = 5.0f;
+  g_profileHoldSeconds = 600;
+  check(web.startRoast(String("manualstop")), "profile with a cool-down starts again");
+  runLoops(4);
+  web.stopRoast();
+  check(!web.getRoastActive() && !web.getCoolActive(),
+        "a manual Stop mid-profile starts no profile cooling");
+  runLoops(4);
+  check(!web.getCoolActive(), "and none appears on a later sample either");
+
+  // ------------------------------------ pause is untouched (regression) -----
+  // The pause freezes the roast clock and keeps the PID on the setpoint that
+  // was active at the pause instant. That is unchanged by this work, and it is
+  // also why a paused profile must not "end" past its last step: the clock is
+  // stopped, so the end is not reached until it runs again.
+  g_profileHoldSeconds = 6;
+  check(web.startRoast(String("pause")), "pause-test profile starts");
+  runLoops(8);   // 2 s in
+  check(web.getRoastActive() && web.getHeaterDuty() > 0, "the profile heats before the pause");
+  web.pauseRoast();
+  const unsigned long pausedElapsed = web.getElapsedSeconds();
+  runLoops(20);  // 5 s of wall clock - past the profile's 6 s
+  check(web.getRoastPaused(), "the pause holds");
+  check(web.getElapsedSeconds() == pausedElapsed,
+        "the roast clock does not advance while paused");
+  check(web.getRoastActive(), "a paused profile does not end, even past its last step");
+  check(!web.getCoolActive(), "and no cool-down starts while it is paused");
+  check(web.getHeaterDuty() > 0, "the heat keeps regulating the held step while paused");
+  web.resumeRoast();
+  runLoops(20);  // the clock runs again: the end is passed for real now
+  check(!web.getRoastActive(), "the profile ends once the clock passes the end");
+  check(web.getCoolActive(), "and its cool-down starts then");
+  web.stopCool();
+  runLoops(2);
+
+  // Back to the settings the rest of the file assumes: the 10-minute step, no
+  // profile cool-down, and the fan where the profile run above left it (the
+  // manual sections below rely on there being airflow).
+  g_profileRampSeconds = 0;
+  g_profileHoldSeconds = 600;
+  g_profileCoolFan = 0.0f;
+  g_profileCoolMinutes = 0.0f;
+  web.setFanSpeed(80);
   runLoops(2);
 
   // ------------------------------- the filter is in the control path only ----

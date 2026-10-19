@@ -291,6 +291,10 @@ static void handleProfileGet(AsyncWebServerRequest *request) {
   JsonDocument doc;
   doc["name"] = name;
   doc["startTemp"] = p.startTemp();
+  // The profile's own cool-down, always present (0 = none) so the editor can
+  // show the fields without guessing what a missing key means.
+  doc["coolFan"] = p.coolFanPct();
+  doc["coolMinutes"] = p.coolMinutes();
   JsonArray steps = doc["steps"].to<JsonArray>();
   for (const auto &s : p.steps()) {
     JsonObject o = steps.add<JsonObject>();
@@ -330,6 +334,11 @@ static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, s
 
   RoastProfile p;
   p.setStartTemp(doc["startTemp"] | 20.0f);
+  // Optional cool-down after the last step. Absent or 0 = none, which is what
+  // every profile written before this field existed means. RoastProfile::
+  // setCool() clamps to the limits in include/config.h, so a hand-written
+  // number cannot carry a value the rest of the firmware would refuse.
+  p.setCool(doc["coolFan"] | 0.0f, doc["coolMinutes"] | 0.0f);
   for (JsonObject s : doc["steps"].as<JsonArray>()) {
     float rorTarget = s["rorTarget"] | 0.0f;
     if (rorTarget > 0.0f) {
@@ -387,6 +396,42 @@ static void handleRoastStart(AsyncWebServerRequest *request, uint8_t *data, size
 
 static void handleRoastStop(AsyncWebServerRequest *request) {
   cb.stopRoast();
+  sendOk(request);
+}
+
+// "Avbryt och kyl": POST /api/roast/stop-and-cool with {"coolSpeed":..,
+// "coolMinutes":..}. One request, one call, one state lock - the fan goes from
+// the run's speed straight to the cool speed and never through 0 %, which is
+// the reason this is not "POST stop, then POST cool/start" from the UI.
+//
+// The values are checked against the same limits the cooling panel and a
+// profile use (include/config.h). An out-of-range request is refused whole
+// rather than clamped or half-applied: a stop that silently skipped the
+// cooling would look like the roaster ignored the button while the beans kept
+// cooking, and Stop is right next to it for that.
+static void handleRoastStopAndCool(AsyncWebServerRequest *request, uint8_t *data, size_t len,
+                                   size_t index, size_t total) {
+  JsonDocument doc;
+  if (deserializeJson(doc, data, len)) {
+    sendError(request, 400, "invalid json");
+    return;
+  }
+  int speed = doc["coolSpeed"] | 0;
+  float minutes = doc["coolMinutes"] | 0.0f;
+  unsigned long seconds = (unsigned long)(minutes * 60.0f + 0.5f);
+  if (speed < COOL_SPEED_MIN_PCT || speed > COOL_SPEED_MAX_PCT ||
+      minutes < COOL_MINUTES_MIN || minutes > COOL_MINUTES_MAX || seconds == 0) {
+    char msg[128];
+    snprintf(msg, sizeof(msg),
+             "coolSpeed must be %d-%d %% and coolMinutes %.1f-%.0f",
+             COOL_SPEED_MIN_PCT, COOL_SPEED_MAX_PCT, COOL_MINUTES_MIN, COOL_MINUTES_MAX);
+    sendError(request, 400, msg);
+    return;
+  }
+  if (!cb.stopRoastAndCool(speed, seconds)) {
+    sendError(request, 409, "could not stop and cool");
+    return;
+  }
   sendOk(request);
 }
 
@@ -591,6 +636,11 @@ void web_server_init(WebServerCallbacks callbacks) {
 
   server.on("/api/roast/start", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr, handleRoastStart);
   server.on("/api/roast/stop", HTTP_POST, handleRoastStop);
+  // Not a prefix of the route above (the matcher needs a "/" after the URI),
+  // so the order of these two does not matter - but Stop stays exactly what it
+  // was, and this one is a different button with its own values.
+  server.on("/api/roast/stop-and-cool", HTTP_POST, [](AsyncWebServerRequest *r) {}, nullptr,
+            handleRoastStopAndCool);
   server.on("/api/roast/pause", HTTP_POST, handleRoastPause);
   server.on("/api/roast/resume", HTTP_POST, handleRoastResume);
 

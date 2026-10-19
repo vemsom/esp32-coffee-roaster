@@ -38,6 +38,13 @@ public:
   float fanAt(unsigned long elapsedSeconds) const;
   float rorTargetAt(unsigned long elapsedSeconds) const;
   int stepIndexAt(unsigned long elapsedSeconds) const;
+  // Profile length, and the cool-down that follows the last step (see
+  // include/roast_profile.h). Declared here because main.cpp calls them; a test
+  // that supplies a canned profile has to define every one of them.
+  unsigned long totalSeconds() const;
+  float coolFanPct() const { return _coolFanPct; }
+  float coolMinutes() const { return _coolMinutes; }
+  void setCool(float fanPct, float minutes);
   bool hasFan() const { return _hasFan; }
   float startTemp() const { return _startTemp; }
   void setStartTemp(float t) { _startTemp = t; }
@@ -48,4 +55,6 @@ private:
   std::vector<ProfileStep> _steps;
   float _startTemp = 20;
   bool _hasFan = false;
+  float _coolFanPct = 0;
+  float _coolMinutes = 0;
 };

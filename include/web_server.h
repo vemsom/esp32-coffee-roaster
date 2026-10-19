@@ -54,6 +54,11 @@ struct WebServerCallbacks {
   void (*stopCool)();
   bool (*startRoast)(const String &profileName);
   void (*stopRoast)();
+  // Stops the roast AND starts the fan-only cool-down in one call, under one
+  // state lock: the fan must not pass through "off" between the two, which is
+  // what two separate requests leave room for. Returns false (and changes
+  // nothing) when the values are out of range.
+  bool (*stopRoastAndCool)(int speed, unsigned long durationSeconds);
   void (*pauseRoast)();
   void (*resumeRoast)();
 };

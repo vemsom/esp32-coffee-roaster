@@ -49,6 +49,15 @@ SerialStub Serial;
 static int failures = 0;
 static int checks = 0;
 
+// What the stop-and-cool endpoint handed the control layer. The endpoint's job
+// is the contract: validate, then call once with seconds. What the call DOES is
+// tested in test_control against the real main.cpp, so here the callback only
+// records and answers.
+static int g_stopCoolCalls = 0;
+static int g_stopCoolSpeed = -1;
+static unsigned long g_stopCoolSeconds = 0;
+static bool g_stopCoolAccept = true;
+
 static void check(bool cond, const char *what) {
   checks++;
   if (cond) {
@@ -167,6 +176,12 @@ int main() {
   callbacks.getPidD = []() { return 0.0f; };
   callbacks.getPidIntegral = []() { return 16.7f; };
   callbacks.getFilteredBT = []() { return 23.5f; };
+  callbacks.stopRoastAndCool = [](int speed, unsigned long seconds) {
+    g_stopCoolCalls++;
+    g_stopCoolSpeed = speed;
+    g_stopCoolSeconds = seconds;
+    return g_stopCoolAccept;
+  };
   web_server_init(callbacks);
   check(asyncWebServers().size() == 1 && asyncWebServers()[0]->begun(),
         "web_server_init starts the server");
@@ -297,6 +312,102 @@ int main() {
   AsyncWebServerRequest noNameDelete = dispatchQuery(*deleteProfile, nullptr, String());
   check(isStatus(noNameDelete, 400) && bodyHas(noNameDelete, "missing name"),
         "DELETE without a name keeps answering 'missing name'");
+
+  // ---------------------------------------- stop and cool (one endpoint) ------
+  // POST /api/roast/stop-and-cool is the button, and it must not be reachable
+  // through, or collide with, the plain Stop route. The device-side effect (the
+  // fan never passing through 0 %) is main.cpp's job and is asserted in
+  // test_control; here it is the contract: the values, their limits, one call.
+  {
+    const AsyncWebServer::Route *stopCool = findRoute("/api/roast/stop-and-cool", HTTP_POST);
+    check(stopCool != nullptr, "POST /api/roast/stop-and-cool is registered");
+    check(asyncWebServers()[0]->routeFor("/api/roast/stop-and-cool", HTTP_POST) == stopCool,
+          "the new route is reached, not the plain Stop route beside it");
+    check(findRoute("/api/roast/stop", HTTP_POST) != nullptr,
+          "and the plain Stop route is still registered");
+
+    if (stopCool) {
+      g_stopCoolCalls = 0;
+      AsyncWebServerRequest ok = dispatchBody(*stopCool, "{\"coolSpeed\":60,\"coolMinutes\":2}");
+      check(isStatus(ok, 200), "stop-and-cool with valid values answers 200");
+      check(g_stopCoolCalls == 1 && g_stopCoolSpeed == 60 && g_stopCoolSeconds == 120,
+            "it calls the control layer once, with the speed and the time in seconds");
+
+      const int callsBefore = g_stopCoolCalls;
+      struct Bad { const char *json; const char *what; };
+      const Bad bad[] = {
+          {"{\"coolSpeed\":0,\"coolMinutes\":2}", "0 % is not a fan speed"},
+          {"{\"coolSpeed\":101,\"coolMinutes\":2}", "101 % is over the top"},
+          {"{\"coolSpeed\":60,\"coolMinutes\":0.2}", "below the shortest cool-down"},
+          {"{\"coolSpeed\":60,\"coolMinutes\":121}", "past the longest cool-down"},
+          {"{\"coolSpeed\":60}", "minutes missing entirely"},
+          {"not json", "a body that is not JSON"},
+      };
+      for (const Bad &b : bad) {
+        AsyncWebServerRequest refused = dispatchBody(*stopCool, b.json);
+        check(isStatus(refused, 400), std::string("stop-and-cool refuses ") + b.what);
+      }
+      check(g_stopCoolCalls == callsBefore,
+            "a refused request never reaches the control layer (nothing is stopped)");
+
+      // The control layer can still refuse (an out-of-range value that got
+      // past the browser, or a state it will not stop in): that is a 409, and
+      // it has to be visible rather than reported as a success.
+      g_stopCoolAccept = false;
+      AsyncWebServerRequest denied = dispatchBody(*stopCool, "{\"coolSpeed\":60,\"coolMinutes\":2}");
+      check(isStatus(denied, 409), "a refusal from the control layer answers 409");
+      g_stopCoolAccept = true;
+    }
+  }
+
+  // ------------------------------- profile cool-down fields (per profile) -----
+  // The profile's own cool-down: written by POST /api/profiles, read back by
+  // GET /api/profile, and only in the file when it is actually set - a profile
+  // that never had these fields must stay byte-for-byte what it was.
+  {
+    AsyncWebServerRequest post = dispatchBody(
+        *postProfiles,
+        "{\"name\":\"cooled\",\"startTemp\":170,\"coolFan\":80,\"coolMinutes\":4.5,"
+        "\"steps\":[{\"ramp\":30,\"hold\":120,\"temp\":190,\"fan\":70}]}");
+    check(isStatus(post, 200), "POST create with a cool-down answers 200");
+
+    AsyncWebServerRequest get = dispatchQuery(*getProfile, "name", String("cooled"));
+    check(isStatus(get, 200), "GET of the cooled profile answers 200");
+    check(bodyHas(get, "\"coolFan\":80"), "the cool-down fan speed comes back");
+    check(bodyHas(get, "\"coolMinutes\":4.5"), "the cool-down minutes come back");
+
+    // The file itself carries them, at profile level - that is the format the
+    // docs and a hand-edited profile follow.
+    auto cooledFile = littlefs_stub::files().find(profilePath("cooled"));
+    check(cooledFile != littlefs_stub::files().end() &&
+              cooledFile->second.find("\"coolFan\":80") != std::string::npos &&
+              cooledFile->second.find("\"coolMinutes\":4.5") != std::string::npos,
+          "the stored profile file carries coolFan and coolMinutes");
+
+    // Out of range: clamped to the limits the cooling panel uses, not stored as
+    // written, so a hand-edited number cannot mean something the UI could not.
+    AsyncWebServerRequest clamped = dispatchBody(
+        *postProfiles,
+        "{\"name\":\"clamped\",\"startTemp\":170,\"coolFan\":999,\"coolMinutes\":999,"
+        "\"steps\":[{\"ramp\":30,\"hold\":120,\"temp\":190,\"fan\":70}]}");
+    check(isStatus(clamped, 200), "POST create with out-of-range cool values answers 200");
+    AsyncWebServerRequest clampedGet = dispatchQuery(*getProfile, "name", String("clamped"));
+    check(bodyHas(clampedGet, "\"coolFan\":100"),
+          "an over-large fan speed is clamped to the maximum");
+    check(bodyHas(clampedGet, "\"coolMinutes\":120"),
+          "an over-long cool-down is clamped to the maximum");
+
+    // A profile that asks for no cool-down: reported as 0/0 over the API, and
+    // absent from the file.
+    AsyncWebServerRequest plain = dispatchQuery(*getProfile, "name", String("morning"));
+    check(isStatus(plain, 200), "GET of the profile without a cool-down answers 200");
+    check(bodyHas(plain, "\"coolFan\":0") && bodyHas(plain, "\"coolMinutes\":0"),
+          "a profile without a cool-down reports 0/0");
+    check(fileEquals(profilePath("morning"),
+                     "{\"startTemp\":170,\"steps\":[{\"ramp\":30,\"hold\":120,"
+                     "\"temp\":190,\"fan\":70}]}"),
+          "and its file stays byte-for-byte what it was before the fields existed");
+  }
 
   // ------------------------------------------- build identity in /api/status --
   // The reason this exists: after an OTA push the question is "did the image I

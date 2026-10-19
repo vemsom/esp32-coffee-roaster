@@ -397,7 +397,15 @@
 // out on the fan's start current). New tuning and a new fan output, so a new
 // release: this is the first image whose control loop behaves differently on
 // the same profile and the same setpoint.
-#define FW_VERSION "0.11.1"
+// 0.12.0 = cooling at the end of a run. A profile can carry coolFan/coolMinutes
+// and the run ends by itself when its last step has run out, handing over to
+// the fan-only cool-down in the same control cycle; POST /api/roast/stop-and-cool
+// stops a roast and starts that cooling in ONE request (so the fan never passes
+// through 0 % between two); the profile editor exposes the two fields. Until
+// now a profile never ended on its own - it held its last setpoint until someone
+// pressed Stop - so a profile with the fields set makes a different decision on
+// the same file, and the new endpoint does not exist in 0.11.1. New release.
+#define FW_VERSION "0.12.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is
@@ -477,3 +485,28 @@
 
 // ---- Profil-lagring ----
 #define PROFILES_DIR "/profiles"
+
+// ---- Kylning (fläkt-only) ----
+// The cool-down is a fan-only timer: no heater, no PID, no profile - the fan
+// runs at `speed` for `minutes` and then stops (updateCool(), src/main.cpp).
+// It is reachable from three places, and they all have to accept the same
+// values: the cooling panel, "Avbryt och kyl" on a running roast, and the
+// per-profile values that start it by themselves when the last step runs out.
+// So the limits live here, once, instead of a second set in web_server.cpp.
+//
+// 1 % is the lowest speed the fan API accepts (0 means off, not a speed), and
+// 100 % is the top of the percent scale - the duty curve itself is
+// FAN_DUTY_MIN_PCT..FAN_DUTY_MAX_PCT. 0.5 min is the shortest cool-down that
+// still moves any air through a drum at 200 C; 120 min is the ceiling the
+// cooling panel has always had.
+#define COOL_SPEED_MIN_PCT    1
+#define COOL_SPEED_MAX_PCT    100
+#define COOL_MINUTES_MIN      0.5f
+#define COOL_MINUTES_MAX      120.0f
+
+// The defaults for "Avbryt och kyl" (100 % / 5 min) are the `value=` of the two
+// fields in data/index.html, not constants here: the page is a LittleFS file and
+// cannot include this header. They are 100 % because a cool-down is about
+// getting the beans down as fast as the fan can do it, and 5 min because that is
+// what the cooling panel already defaults to. Both are editable in the UI, and a
+// profile carries its own pair instead of these.

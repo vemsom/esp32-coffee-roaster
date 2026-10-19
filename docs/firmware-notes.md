@@ -33,6 +33,15 @@ image on the machine now carries these fixes - `/api/status`: fw 0.11.1,
 image keeps the build string it was compiled with, so the device is the one
 place the old hash survives.
 
+**2026-10-19, 0.12.0: cooling at the end of a run** - "Avbryt och kyl" stops a
+roast and starts the fan-only cool-down in ONE request, a profile can carry
+`coolFan`/`coolMinutes` so the cooling starts by itself when its last step runs
+out, and both are editable in the web UI. See "Cooling at the end of a run
+(0.12.0)" below for what changed, what was verified, and the test to run on the
+machine. **No image has been flashed with this yet** - the device still runs
+0.11.1 (see the paragraph above), so the host-suite numbers are the only
+verification so far.
+
 Build of record (2026-09-27, clean rebuild):
 
 ```text
@@ -45,6 +54,125 @@ Flash: 73.3 %  (961 017 / 1 310 720 bytes)
 [SUCCESS] - no warnings, no errors
 FW_VERSION 0.6.0
 ```
+
+## Cooling at the end of a run (0.12.0, 2026-10-19)
+
+**What was asked for.** Two things, from a roast: a single "cancel and cool"
+action (today's stop leaves the fan where it was and starts nothing), and a
+per-profile cool-down that runs by itself when the last step is done. The pause
+had to stay exactly as it is, and no cooling must be reachable mid-roast.
+
+**What changed.**
+
+1. `POST /api/roast/stop-and-cool` (body `{"coolSpeed":1-100,"coolMinutes":0.5-120}`,
+   defaults in the UI: 100 % / 5 min). It calls one new callback,
+   `stopRoastAndCool(speed, seconds)`, which does `stopRoastLocked()` +
+   `startCoolLocked()` + one fan command inside **one** `StateLockGuard`. Plain
+   `POST /api/roast/stop` is byte-for-byte what it was (same handler, same
+   callback) and starts no cooling; the routes cannot collide, the library's
+   matcher needs a `/` after the URI and this one is `stop-and-cool`.
+2. Profiles carry `coolFan` (1-100 %) and `coolMinutes` (0.5-120) at profile
+   level. `RoastProfile::totalSeconds()` (sum of every step's ramp + hold) plus a
+   check in `updateControl()` is what ends a run now: at `elapsed >= total`, with
+   the clock not paused, the run ends and - if the pair is set - the same
+   fan-only cool timer starts in the same control cycle. Without the pair the
+   element goes off and the fan stops: the behaviour a profile end was always
+   described as having. Both fields are clamped to the limits above in
+   `RoastProfile::setCool()`, so a hand-written 999 is stored as 120.
+3. The web UI: *Avbryt och kyl* (blue, next to the red Stop) with its own fan %
+   and minutes fields on the roast tab, and *Kylning efter sista steget* (fan %
+   + minutes, saved with the profile) in the profile editor. Export/import carry
+   the pair too, so a bundle round-trips.
+
+**Decisions worth stating.**
+
+- **A manual stop never starts the profile's cool-down.** Pressing Stop
+  mid-roast ends the run and nothing else. The profile's values belong to the
+  profile *running to its end*; the case "beans are dropped early but should
+  still get air" is exactly what *Avbryt och kyl* is for, and there the operator
+  picks the values by hand. This is why `cbStopRoast()` is not `finishProfileLocked()`.
+- **A profile that never ends does not exist any more.** Before this, a profile
+  held its last setpoint until someone stopped it - `targetAt()`/`fanAt()` keep
+  returning the last value past the end of the curve, and nothing compared the
+  roast clock against the profile's length. Ending a run at its last step is the
+  point of the feature (there has to be *an* end for the cool-down to attach
+  to), and it is what the UI has always drawn: the target curve stops there.
+- **A pause near the end holds the run.** `roastElapsedSeconds()` excludes
+  paused time, so a paused profile cannot reach its end - which also means the
+  pause behaves exactly as documented: clock frozen, PID holding the step.
+- **A safety abort starts no cooling** (`abortRunForSafety()` untouched): the
+  fan is left running so the beans get air while the fault is handled, and the
+  operator decides what happens after.
+- **A running cool-down owns the fan** until it ends. Starting a new run while
+  one is running is not special-cased (unchanged behaviour): the cool timer
+  writes the fan every sample, so it wins over the new run's fan value. Not a
+  regression, not something this change introduced - but it is what the host
+  test tripped over first, so it is written down here.
+
+**Verified in source and on the host (2026-10-19).**
+
+- `pio run -e esp32dev`: **SUCCESS**, RAM 16.1 %, flash 74.7 % - the image builds.
+- Host suite, both passes, exit 0: **1335 checks, 0 failures** with
+  `SAFETY_ET_ENABLED 1` and **1203 checks, 0 failures** with it at 0 (before this
+  change: 1201 / 1069). The new checks live where the real code is:
+  - `test_control` (links the real `main.cpp` + `web_server.cpp`, 173 checks):
+    stop-and-cool in ONE lock acquisition with the fan re-commanded before the
+    call returns and never 0 % on any sample after it; the same command refusing
+    0 % / 0 s and leaving the roast running; plain Stop starting no cooling; a
+    5 s profile with `coolFan`/`coolMinutes` ending by itself and handing over to
+    the cool timer; the 0/0 and half-filled cases ending with fan 0 and no
+    cooling; a manual stop mid-profile starting none; and the pause regression
+    (clock frozen, heat held, no end, no cooling while paused - then both once
+    it resumes).
+  - `test_web_server` (links the real `web_server.cpp` + `roast_profile.cpp`,
+    88 checks): the new route is registered and not shadowed by
+    `/api/roast/stop`; valid values reach the callback once with seconds; the
+    six out-of-range/absent/garbage bodies answer 400 without reaching the
+    callback; a refusal from the control layer answers 409; and the profile
+    fields round-trip through a real file, are clamped (999 -> 100/120), and a
+    profile without them writes a byte-for-byte identical file.
+- **Not verified on hardware.** I have no access to the machine (no HA, no
+  network keys, and the roaster is not on my segment), so nothing here is
+  claimed about the real fan, the real SSR or the real timing. It also has not
+  been flashed: the device still runs 0.11.1.
+
+**What to run on the machine, and what to look for.** Flash BOTH images - the
+endpoint is in the app image, the button and the fields are in the web UI, which
+travels in the filesystem image (`pio run -e esp32-ota -t buildfs` then
+`sh tools/ota-push.sh <ip> fs`; export the profiles from the UI first if there
+are any on the device, the filesystem image replaces them with the one built
+from `data/`).
+
+1. *Avbryt och kyl, mid-roast.* Start a profile, let BT climb past 100 C, then
+   set the two fields next to the buttons to 100 % / 2 min and press **Avbryt och
+   kyl**. Expect the pill to go straight from *rostning* to *kylning*: Värme 0,
+   Fläkt at 100 %, the cooling timer counting down from 2:00 and the fan stopping
+   when it reaches 0. The fan must never sit at 0 % in between. Without a browser
+   the same request is
+   `curl -s -X POST -H 'Content-Type: application/json' -d '{"coolSpeed":100,"coolMinutes":2}' http://<ip>/api/roast/stop-and-cool`
+   -> `{"ok":true}`; `/api/status` then has `coolActive: true`, `coolSpeed: 100`
+   and `heaterDuty: 0`, and the fan % must not read 0 in a status poll right
+   after it.
+2. *The profile does it by itself.* Editor: a short profile (e.g. ramp 1 min +
+   hold 1 min at 150 C, fan 50), Kylvarvtal 100, Kylminuter 1, save as
+   `kyltest`. `curl -s "http://<ip>/api/profile?name=kyltest"` has to show
+   `"coolFan":100,"coolMinutes":1`. Start it and wait: the run should end at the
+   end of the last step with no Stop press, and the cooling take over for a
+   minute.
+3. *The old behaviour is still the old behaviour.* The same profile with 0/0
+   (or any profile saved before today): at its end the heat goes off and the fan
+   stops, with no cooling and no countdown.
+4. *A manual stop is still a manual stop.* Start `kyltest` and press **Stop**
+   after ~20 s: the run ends, nothing cools, the fan stays where the step left
+   it (Stop has always left the fan alone - it is *Avbryt och kyl* that starts
+   air).
+5. *The pause is untouched.* During a roast press Pausa: the timer freezes, the
+   heat keeps holding the step, and the roast continues where it was on resume.
+   Pressed near the end it holds there rather than ending.
+
+Report back what the fan actually does in step 1 and 2 (the values on the Fläkt
+card and the cooling countdown), and whether the run in step 2 really ends by
+itself at the last step. Those two are the parts a host test cannot answer.
 
 ## BT-only build mode, SAFETY_ET_ENABLED 0 (2026-10-17)
 
@@ -1373,19 +1501,21 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-17 (0.11.1, the PID clamp, KD 0, the input filter and the fan
-ramp): **1201 checks, 0 failures** with the flag at 1 and **1069 checks, 0
-failures** with it at 0, exit 0 both times. The only compiler warnings are the
+Last run 2026-10-19 (0.12.0, stop-and-cool and the per-profile cool-down):
+**1323 checks, 0 failures** with the flag at 1 and **1191 checks, 0
+failures** with it at 0, exit 0 both times. (The run before it, on 0.11.1 -
+the PID clamp, KD 0, the input filter and the fan ramp - read 1201 / 1069.)
+The only compiler warnings are the
 pre-existing `-Wunused-parameter` ones from `web_server.cpp`'s handler
 signatures (they mirror the library's, so they are compiled with
 `-Wno-unused-parameter` in the builds that use them); nothing from the files
 this change touched. The totals count every execution:
 
-- flag 1, 14 binaries: 850 checks counted once each, plus the two the suite runs
+- flag 1, 14 binaries: 923 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
-  `test_control` under ThreadSanitizer (118 again).
-- flag 0, 9 binaries: 714 checks counted once each, plus `test_mqtt_discovery`
-  (233 again) and `test_control` under ThreadSanitizer (122 again). `test_safety`
+  `test_control` under ThreadSanitizer (167 again).
+- flag 0, 9 binaries: 787 checks counted once each, plus `test_mqtt_discovery`
+  (233 again) and `test_control` under ThreadSanitizer (171 again). `test_safety`
   is flag-1 only (it asserts exactly the ET trips the flag switches off), and
   `test_ror`, `test_fan`, `test_fan_fallback`, `test_fan_immediate` and
   `test_pid` link neither safety.cpp nor sensors.cpp, so the flag cannot reach
@@ -1494,7 +1624,7 @@ this change touched. The totals count every execution:
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_web_server` - the profile HTTP API (64 checks): the real handlers,
+- `test_web_server` - the profile HTTP API (88 checks): the real handlers,
   dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
   that logs every operation. `name=../config` and `name=../../etc/passwd` over
   GET and DELETE answer 400 and provably cause **no** filesystem call at all,
@@ -1505,9 +1635,16 @@ this change touched. The totals count every execution:
   `rorSource`, which has to follow the build mode the same way - and the PID
   diagnostics (`pidP`, `pidI`, `pidD`, `pidIntegral`, `btFiltered`) and
   `fanActual`, each with a value of its own so a field wired to the wrong getter
-  cannot pass by accident.
-- `test_control` - the real src/main.cpp against stubbed hardware (118 checks
-  with the flag at 1, 122 with it at 0):
+  cannot pass by accident. Since 0.12.0 it also covers the cooling contract:
+  `POST /api/roast/stop-and-cool` is registered, is not shadowed by
+  `/api/roast/stop`, hands the control layer exactly one call with the speed and
+  the time in seconds, answers 400 to the six out-of-range/absent/garbage bodies
+  **without reaching that call at all**, answers 409 when the control layer
+  refuses, and the profile's `coolFan`/`coolMinutes` round-trip through a real
+  file, are clamped to the limits, and leave a profile without them
+  byte-for-byte unchanged.
+- `test_control` - the real src/main.cpp against stubbed hardware (167 checks
+  with the flag at 1, 171 with it at 0):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions - including
@@ -1537,7 +1674,16 @@ this change touched. The totals count every execution:
   LittleFS before the image lands (and really calls `end()`, not just a flag),
   `U_FLASH` leaves it mounted, the profile endpoints answer 503 while it is
   unmounted, and a failed transfer remounts before the restart. That is the
-  regression test for the bug that made filesystem OTA die part-way.
+  regression test for the bug that made filesystem OTA die part-way. Since
+  0.12.0 it also covers the cooling end to end: stop-and-cool is **one** state
+  lock acquisition with the fan re-commanded before the call returns and never
+  0 % on any later sample; the same command refuses 0 % / 0 s and leaves the
+  roast running; plain Stop still starts no cooling; a 5 s profile carrying
+  `coolFan`/`coolMinutes` ends by itself and hands over to the cool timer; the
+  0/0 and half-filled profiles end with the heat off and the fan stopped and no
+  cooling; a manual Stop mid-profile starts none, then or later; and the pause
+  is unchanged - clock frozen, heat holding the step, no end and no cooling
+  while paused, both once it resumes.
 - `test_ota_push` - the two push OTA routes (163 checks, built and run in both
   passes): the real `POST /api/update` and `POST /api/update/fs` handlers and
   the real state machine, against a stubbed `Update` that records every call -

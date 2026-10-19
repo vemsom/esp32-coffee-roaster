@@ -47,6 +47,10 @@
   button:hover { background: #333; }
   button.primary { background: var(--green); border-color: var(--green); }
   button.danger { background: var(--red); border-color: var(--red); }
+  /* The cool-down action, in the same blue as the cooling state pill: it is not
+     a Stop (that stays red and means "stop, no air moved") and it must not be
+     mistaken for one. */
+  button.cool { background: #1f5f8a; border-color: #1f5f8a; }
   button.small { padding: 4px 8px; font-size: 12px; }
   .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: flex-end; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -105,7 +109,17 @@
         <button class="primary" id="startBtn" data-i18n="btnStartRoast">Starta rostning</button>
         <button id="pauseBtn" style="display:none;" data-i18n="btnPause">Pausa</button>
         <button class="danger" id="stopBtn" data-i18n="btnStop">Stopp</button>
+        <div style="min-width:110px;">
+          <label data-i18n="labelFanPct">Fläkt (%)</label>
+          <input type="number" id="stopCoolSpeed" value="100" min="1" max="100" step="5">
+        </div>
+        <div style="min-width:110px;">
+          <label data-i18n="labelMinutes">Tid (minuter)</label>
+          <input type="number" id="stopCoolMinutes" value="5" min="0.5" max="120" step="0.5">
+        </div>
+        <button class="cool" id="stopCoolBtn" data-i18n="btnStopAndCool">Avbryt och kyl</button>
       </div>
+      <div class="hint" data-i18n="hintStopAndCool">Stoppar rostningen och startar kylningen (endast fläkt) i samma kommando – fläkten stannar aldrig emellan. Stopp till vänster startar ingen kylning.</div>
     </div>
 
     <canvas id="chart" height="600"></canvas>
@@ -196,6 +210,18 @@
           <button class="primary" id="saveProfileBtn" data-i18n="btnSaveProfile">Spara profil</button>
           <button id="clearProfileBtn" data-i18n="btnClearProfile">Rensa profil</button>
         </div>
+        <div class="panel-heading" data-i18n="headingProfileCool">Kylning efter sista steget (endast fläkt)</div>
+        <div class="controls">
+          <div style="min-width:120px;">
+            <label data-i18n="labelCoolFan">Kylvarvtal (%)</label>
+            <input type="number" id="editCoolFan" value="0" min="0" max="100" step="5">
+          </div>
+          <div style="min-width:120px;">
+            <label data-i18n="labelCoolMinutes">Kylminuter (min)</label>
+            <input type="number" id="editCoolMinutes" value="0" min="0" max="120" step="0.5">
+          </div>
+        </div>
+        <div class="hint" data-i18n="hintProfileCool">0 i båda (eller tomt) = ingen kylning efter profilen – värme och fläkt stannar när sista steget är klart. Fyller du i båda startar kylningen automatiskt när profilen är slut. Glöms kylvärdena bort i en gammal profil är beteendet alltså oförändrat.</div>
         <div class="hint" data-i18n-html="hintEditor">Varje rad är ett steg med <b>ramp</b> (linjär uppvärmning) och <b>håll</b> (konstant temperatur), båda i minuter. Rostningen startar på 20 °C vid 0 min. Steg 1: ramp 8 + håll 2 @ 190° = 8 min uppvärmning 20→190°, sedan 2 min på 190°. Klicka i grafen för att lägga till ett steg, dra en grön punkt för att ändra temperaturen.</div>
       </div>
     </div>
@@ -258,6 +284,9 @@ const state = {
                          // Swedish, so nothing flips before the first /api/status
   activeProfile: null,   // { name, startTemp, steps:[{ramp,hold,temp,fan}] } (seconds)
   editSteps: [],         // [{ ramp, hold, temp, fan }] all times in seconds
+  // The profile's own cool-down: fan % and minutes, both 0 = none. Kept next to
+  // the steps because it is saved with them, in the same file.
+  editCool: { fan: 0, minutes: 0 },
   loadedProfileName: '', // name of the profile currently open in the editor
   dragging: -1,
   lastContact: 0,        // Date.now() of the last successful status poll
@@ -296,6 +325,11 @@ const I18N = {
     btnStartRoast: 'Starta rostning', btnPause: 'Pausa', btnResume: 'Återuppta',
     btnStop: 'Stopp', btnStart: 'Starta', btnSetFan: 'Sätt fläkt',
     btnStartCool: 'Starta kylning', btnNewProfile: 'Ny profil',
+    btnStopAndCool: 'Avbryt och kyl',
+    labelCoolFan: 'Kylvarvtal (%)', labelCoolMinutes: 'Kylminuter (min)',
+    headingProfileCool: 'Kylning efter sista steget (endast fläkt)',
+    hintStopAndCool: 'Stoppar rostningen och startar kylningen (endast fläkt) i samma kommando – fläkten stannar aldrig emellan. Stopp till vänster startar ingen kylning.',
+    hintProfileCool: '0 i båda (eller tomt) = ingen kylning efter profilen – värme och fläkt stannar när sista steget är klart. Fyller du i båda startar kylningen automatiskt när profilen är slut. Glöms kylvärdena bort i en gammal profil är beteendet alltså oförändrat.',
     btnExportAll: 'Exportera alla', btnImport: 'Importera',
     btnSaveProfile: 'Spara profil', btnClearProfile: 'Rensa profil',
     btnAddStep: 'Lägg till steg', btnExportCsv: 'Exportera CSV', btnClear: 'Rensa',
@@ -348,6 +382,11 @@ const I18N = {
     btnStartRoast: 'Start roast', btnPause: 'Pause', btnResume: 'Resume',
     btnStop: 'Stop', btnStart: 'Start', btnSetFan: 'Set fan',
     btnStartCool: 'Start cooling', btnNewProfile: 'New profile',
+    btnStopAndCool: 'Stop and cool',
+    labelCoolFan: 'Cool fan (%)', labelCoolMinutes: 'Cool minutes (min)',
+    headingProfileCool: 'Cooling after the last step (fan only)',
+    hintStopAndCool: 'Stops the roast and starts the cooling (fan only) in one command – the fan never stops in between. Stop to the left starts no cooling.',
+    hintProfileCool: '0 in both (or empty) = no cooling after the profile – heat and fan stop when the last step is done. Fill in both and the cooling starts by itself when the profile is over. A profile that never had these values behaves exactly as before.',
     btnExportAll: 'Export all', btnImport: 'Import',
     btnSaveProfile: 'Save profile', btnClearProfile: 'Clear profile',
     btnAddStep: 'Add step', btnExportCsv: 'Export CSV', btnClear: 'Clear',
@@ -759,11 +798,35 @@ async function loadProfileIntoEditor(name) {
       temp: s.temp,
       fan: s.fan || 0,
     }));
+    // The profile's cool-down: absent in an older profile, which reads as 0/0
+    // = no cooling, exactly what that profile has always meant.
+    state.editCool = { fan: p.coolFan || 0, minutes: p.coolMinutes || 0 };
+    showEditCool();
     state.loadedProfileName = name;
     $('editName').value = name;
     drawEditor(); renderPoints(); loadProfiles();
   } catch (e) { alert(t('errLoadProfile', { msg: e.message })); }
 }
+
+// The two cool-down fields follow state.editCool, so a loaded profile, a new
+// profile and a cleared one all show the same way.
+function showEditCool() {
+  $('editCoolFan').value = state.editCool.fan;
+  $('editCoolMinutes').value = state.editCool.minutes;
+}
+
+function readEditCool() {
+  const fan = parseFloat($('editCoolFan').value) || 0;
+  const minutes = parseFloat($('editCoolMinutes').value) || 0;
+  return { fan: Math.max(0, Math.min(100, fan)), minutes: Math.max(0, Math.min(120, minutes)) };
+}
+
+['editCoolFan', 'editCoolMinutes'].forEach((id) => {
+  $(id).addEventListener('change', () => {
+    state.editCool = readEditCool();
+    showEditCool();
+  });
+});
 
 function renderPoints() {
   const tbody = $('pointsTable').querySelector('tbody');
@@ -926,6 +989,21 @@ $('pauseBtn').addEventListener('click', () => {
   api(state.status.roastPaused ? '/api/roast/resume' : '/api/roast/pause', { method: 'POST' });
 });
 
+// "Avbryt och kyl": ONE request that stops the roast and starts the cooling, so
+// the fan never passes through 0 % while the page makes up its mind about a
+// second one. The values are the same fan % / minutes the cooling panel uses,
+// and the fields default to 100 % / 5 min.
+$('stopCoolBtn').addEventListener('click', async () => {
+  const coolSpeed = parseInt($('stopCoolSpeed').value, 10) || 0;
+  const coolMinutes = parseFloat($('stopCoolMinutes').value) || 0;
+  try {
+    await api('/api/roast/stop-and-cool', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ coolSpeed, coolMinutes }),
+    });
+  } catch (e) { alert(t('errStartCool', { msg: e.message })); }
+});
+
 $('manualStartBtn').addEventListener('click', async () => {
   const temp = parseFloat($('manualTemp').value);
   const minutes = parseFloat($('manualMinutes').value);
@@ -969,6 +1047,8 @@ $('newProfileBtn').addEventListener('click', () => {
     { ramp: 480, hold: 120, temp: 190, fan: 50 },   // 8 min ramp, 2 min hold
     { ramp: 120, hold: 480, temp: 215, fan: 80 },   // 2 min ramp, 8 min hold
   ];
+  state.editCool = { fan: 0, minutes: 0 };          // no cooling after the profile
+  showEditCool();
   state.loadedProfileName = '';
   $('editName').value = '';
   drawEditor(); renderPoints(); loadProfiles();
@@ -980,7 +1060,9 @@ async function exportProfiles() {
   for (const name of state.profileNames) {
     try {
       const p = await api('/api/profile?name=' + encodeURIComponent(name));
-      profiles.push({ name: p.name, startTemp: p.startTemp, steps: p.steps });
+      profiles.push({ name: p.name, startTemp: p.startTemp,
+                      coolFan: p.coolFan || 0, coolMinutes: p.coolMinutes || 0,
+                      steps: p.steps });
     } catch (e) { /* skip unreadable profile */ }
   }
   const data = { version: 1, exported: new Date().toISOString(), profiles };
@@ -1007,7 +1089,9 @@ async function importProfiles(file) {
     try {
       await api('/api/profiles', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: p.name, startTemp: p.startTemp || START_TEMP, steps: p.steps }),
+        body: JSON.stringify({ name: p.name, startTemp: p.startTemp || START_TEMP,
+                               coolFan: p.coolFan || 0, coolMinutes: p.coolMinutes || 0,
+                               steps: p.steps }),
       });
       ok++;
     } catch (e) { fail++; }
@@ -1035,6 +1119,10 @@ $('saveProfileBtn').addEventListener('click', async () => {
   const steps = state.editSteps.map((s) => ({
     ramp: Math.round(s.ramp), hold: Math.round(s.hold), temp: s.temp, fan: s.fan,
   }));
+  // The profile's cool-down travels with the steps. Both 0 = none, which is
+  // what the firmware stores as "no field at all".
+  const cool = readEditCool();
+  state.editCool = cool;
 
   // Warn before overwriting an existing profile, unless it is the one already
   // open in the editor.
@@ -1045,7 +1133,8 @@ $('saveProfileBtn').addEventListener('click', async () => {
   try {
     await api('/api/profiles', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, startTemp: START_TEMP, steps }),
+      body: JSON.stringify({ name, startTemp: START_TEMP, coolFan: cool.fan,
+                             coolMinutes: cool.minutes, steps }),
     });
     state.loadedProfileName = name;
     await loadProfiles();
@@ -1058,6 +1147,8 @@ $('saveProfileBtn').addEventListener('click', async () => {
 // x in the saved-profiles list).
 $('clearProfileBtn').addEventListener('click', () => {
   state.editSteps = [];
+  state.editCool = { fan: 0, minutes: 0 };
+  showEditCool();
   state.loadedProfileName = '';
   $('editName').value = '';
   drawEditor(); renderPoints(); loadProfiles();
