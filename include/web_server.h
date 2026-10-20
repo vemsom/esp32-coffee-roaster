@@ -16,11 +16,6 @@ struct WebServerCallbacks {
   // the heat interlock exists for - is visible from outside.
   float (*getFanActual)();
   bool  (*getRoastActive)();
-  // The duty ceiling the running profile's bean weight produces, in percent
-  // (include/duty_ceiling.h). Reported next to the run state so a roast can be
-  // read back afterwards and say whether the ceiling was actually the binding
-  // limit. 0 = no profile is running / the profile states no weight.
-  float (*getDutyCeiling)();
   unsigned long (*getElapsedSeconds)();
   bool  (*getRoastPaused)();
   bool  (*getManualActive)();
@@ -37,6 +32,12 @@ struct WebServerCallbacks {
   int   (*getRorGuidance)();    // index of the RoR-driven step, -1 = none
   float (*getRorTarget)();      // RoR target in C/min
   float (*getRorError)();       // RoR target minus the measured rate (see ROR_GUIDANCE_ON_BT)
+  // The correction the guidance is applying RIGHT NOW, in percent (signed). It
+  // is the number the rate limit acts on, and since 0.15.0 it can no longer be
+  // read off the heater duty: the duty is the feed-forward + the (bipolar) PID
+  // + this, clipped, so the guidance is only one part of it - and in a cold-probe
+  // transient the other two pin the sum at 0 % while this climbs.
+  float (*getRorCorrection)();
   bool  (*getRorActive)();      // true when correction is being applied
   // PID diagnostics, so the loop can be trimmed against a machine that is
   // running (see include/pid.h): the three contributions as last applied

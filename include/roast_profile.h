@@ -52,11 +52,12 @@ public:
   // COOL_SPEED_MIN_PCT..COOL_SPEED_MAX_PCT and COOL_MINUTES_MIN..MAX), so a
   // hand-edited profile cannot carry a value the UI could never produce.
   void setCool(float fanPct, float minutes);
-  // The charge in the drum, in grams. 0 = not stated, which means "no duty
-  // ceiling" - exactly the behaviour every profile had before the field
-  // existed. Anything else is clamped to BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G
-  // in setBeanWeight(), so a hand-edited profile cannot ask for a weight the
-  // editor could not produce. See include/duty_ceiling.h for what it does.
+  // The charge in the drum, in grams. METADATA since 0.15.0: it is stored,
+  // validated and exported with the profile, and it does not touch the control
+  // loop (0.14.0's duty ceiling that read it is gone - see
+  // include/feed_forward.h for what replaced it). 0 = not stated. Anything else
+  // is clamped to BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G in setBeanWeight(), so a
+  // hand-edited profile cannot ask for a weight the editor could not produce.
   int beanWeight() const { return _beanWeight; }
   void setBeanWeight(int grams);
   bool hasFan() const { return _hasFan; }
@@ -71,5 +72,5 @@ private:
   bool _hasFan = false;
   float _coolFanPct = 0;
   float _coolMinutes = 0;
-  int _beanWeight = 0;   // grams, 0 = not stated (no duty ceiling)
+  int _beanWeight = 0;   // grams, 0 = not stated (metadata, see beanWeight())
 };

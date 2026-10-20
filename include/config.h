@@ -419,17 +419,29 @@
 // finished roast's time base, and the PID is trimmed (KP 1.2 / KI 0.04, see the
 // PID block below). Control behaviour differs on the same profile, so a new
 // release.
-// 0.14.0 = the bean weight in the profile, and a duty ceiling that follows it.
-// A profile can carry `beanWeight` (grams); with 20 g in the drum the duty is
-// capped at DUTY_CEIL_AT_REF_PCT (28 %) instead of 100 %, rising linearly to
-// 100 % at 100 g and up, floored at DUTY_CEIL_FLOOR_PCT. Same element, same
-// settling time, ~5x the heat per gram at 20 g: the loop used to saturate and
-// swing (+-15-20 C at a 70-80 s period). The ceiling only caps the control
-// loop's request - the safety latch, the fan interlock and applyHeaterDuty()
-// are untouched. /api/status reports `dutyCeiling` next to `roastActive`. A
-// profile without the field behaves exactly as in 0.13.0, but the field
-// existing means the same file can make a different decision, so a new release.
-#define FW_VERSION "0.14.0"
+// 0.14.0 (the ceiling was removed again in 0.15.0, below) = the bean weight in
+// the profile, and a duty ceiling that followed it. A profile could carry
+// `beanWeight` (grams); with 20 g in the drum the duty was capped at 28 %
+// instead of 100 %, rising linearly to 100 % at 100 g and up, floored at 20 %.
+// Same element, same settling time, ~5x the heat per gram at 20 g: the belief
+// was that the loop saturated and swung (+-15-20 C at a 70-80 s period). The
+// ceiling only capped the control loop's request - the safety latch, the fan
+// interlock and applyHeaterDuty() were untouched. /api/status reported
+// `dutyCeiling` next to `roastActive`.
+// 0.15.0 = the duty ceiling is GONE and the loop has a feed-forward instead.
+// Three roasts with 0.14.0 (20 / 40 / 62.8 g, same curve) showed duty max 97 /
+// 95 / 91 % and 0 s at or above 99 %: the loop never saturated, so a ceiling of
+// 28 % at 20 g would have bound the PID far below the power the roast actually
+// used - the ceiling's premise was wrong, and the swing it was meant to remove
+// had already gone with the 0.13.0 gain trim. What is left is the lag: BT trails
+// the target curve by 12-14 C at 30 s and 8-10 C at 120 s, the same at every
+// charge, because a PID cannot ask for heat before an error exists. That part is
+// known in advance and is now fed forward (include/feed_forward.h, fitted to the
+// same three roasts): duty_ff = 0.09*slope + 0.41*(BT-22) + 20.2, added under the
+// PID's own output and clipped once to 0..100. `beanWeight` stays as profile
+// metadata and no longer touches the control loop; /api/status no longer reports
+// dutyCeiling. Control behaviour differs on the same profile, so a new release.
+#define FW_VERSION "0.15.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is
@@ -522,34 +534,58 @@
 #define FAN_SLEW_PCT_PER_SEC  25.0
 #endif
 
-// ---- Bönvikt och duty-tak ----
-// Vikten i trumman bestämmer hur mycket effekt som är rimlig att lägga på.
-// Samma 1,1 kW-element som värmer 100 g bönor värmer 20 g med ~5x effekten per
-// gram: reglerloopen hinner aldrig se att den redan ligger för högt, mättas och
-// svänger (första rosten 2026-10-20: +-15-20 C kring målkurvan, period 70-80 s).
-// Taket är alltså en FÖRSTA åtgärd - det tar bort det värsta överskjutandet utan
-// att röra PID-konstanterna. RoR-följning (rikta rampen i stället för att jaga
-// den) är nästa steg om kurvan fortfarande inte följer.
+// ---- Bönvikt (metadata) ----
+// Vikten i trumman, i gram, som profilfält: BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G.
+// 0 eller utelämnat = inte angivet.
 //
-// Bara PID:ns utsignal begränsas (updateControl(), src/main.cpp). Säkerhets-
-// latchen, fläktspärren och applyHeaterDuty()s egna gränser står orörda, och
-// tvingade lägen (manuell körning, kylning) har inget tak alls.
+// Fältet styr INGENTING i reglerloopen sedan 0.15.0. 0.14.0 lät det sätta ett
+// duty-tak (28 % vid 20 g, linjärt mot 100 % vid 100 g), och det taket byggde på
+// en felaktig premiss: att loopen mättade på små charger. Tre rostningar med
+// samma kurva (20 / 40 / 62,8 g, 2026-10-20) visade duty max 97 / 95 / 91 % och
+// 0 s med duty >= 99 % - den mjuka kurvan gick aldrig i taket, så ett tak på
+// 28 % vid 20 g hade bundit PID:en långt under den effekt rosten faktiskt
+// använde. Svängningen taket skulle lösa var i själva verket för hög
+// förstärkning, och den försvann med KP 2.0 -> 1.2 / KI 0.15 -> 0.04 (0.13.0).
 //
-// Vikten är ett profilfält i gram: BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G. 0
-// eller utelämnat = inget tak (oförändrat beteende för alla profiler som
-// skrevs innan fältet fanns).
+// Vikten finns kvar som profilfält - den valideras, dokumenteras och följer med
+// i export/import (docs/profiles.md) - men den påverkar inte styrningen.
 #define BEAN_WEIGHT_MIN_G          5
 #define BEAN_WEIGHT_MAX_G          2000
-// Taket som funktion av vikten (include/duty_ceiling.h):
-//   w <= 20 g            -> linjärt vidare nedåt från DUTY_CEIL_AT_REF_PCT
-//                           (28 % vid 20 g, bandet 25-30 %), dock aldrig under
-//                           DUTY_CEIL_FLOOR_PCT (20 %)
-//   20 g < w < 100 g     -> linjär interpolering 28 -> 100 %
-//   w >= 100 g           -> 100 % (dagens beteende)
-#define DUTY_CEIL_REF_WEIGHT_G     20
-#define DUTY_CEIL_AT_REF_PCT       28.0f
-#define DUTY_CEIL_FULL_WEIGHT_G    100
-#define DUTY_CEIL_FLOOR_PCT        20.0f
+
+// ---- Feed-forward på rampen (0.15.0) ----
+// The real answer to the lag the ceiling was meant for (include/feed_forward.h).
+// A PID only sees the temperature error, so on a linear ramp it cannot ask for
+// heat until the roast is already behind and the integral has to catch up with a
+// curve that keeps moving - measured as +12..+14 C at 30 s and +8..+10 C at 120 s,
+// the same at 20, 40 and 62.8 g (mass-independent, so it is not the charge).
+//
+// Fitted to those three roasts: 313 samples at 10 s intervals, ramp samples only
+// (holds, pauses and the cool-down excluded), one least-squares fit per term over
+// all three charges together:
+//
+//   duty_ff = 0.09 * slope + 0.41 * (BT - 22) + 20.2      [percent, clipped 0..100]
+//
+// Mean error 2.5 percentage points, R^2 0.97. The three terms have a meaning
+// each, which is why they are kept separate instead of one slope/BT table:
+//   * FF_SLOPE_GAIN_PCT_PER_C_PER_MIN - percent of duty per C/min of requested
+//     rise: the heat that goes into climbing at the profile's own rate.
+//   * FF_LOSS_GAIN_PCT_PER_C - percent of duty per C the drum sits above
+//     ambient: the standing loss (element vs drum vs air), i.e. what a HOLD
+//     needs. At 200 C that term alone is 73 %, which is why a hold sits high.
+//   * FF_OFFSET_PCT - the constant the fit needs at ambient (fan, wall, probe).
+//   * FF_AMBIENT_C - 22 C is the room temperature the fit was made at (the
+//     drum's starting point in all three roasts was 24-25 C, the workshop holds
+//     ~22). It is an input to the loss term, not a measured machine constant: if
+//     the roaster moves to a 15 C room, this is the number to change.
+//
+// A check that the fit is not a coincidence: 45 C/min at BT 60 gives 40 %
+// (measured 38-42 %), 12 C/min at BT 180 gives 86 % (measured 81-91 %).
+// tools/host-tests/test_feed_forward.cpp pins both, the clipping, the hold
+// behaviour and a simulated before/after.
+#define FF_SLOPE_GAIN_PCT_PER_C_PER_MIN  0.09f
+#define FF_LOSS_GAIN_PCT_PER_C           0.41f
+#define FF_OFFSET_PCT                   20.2f
+#define FF_AMBIENT_C                    22.0f
 
 // ---- Profil-lagring ----
 #define PROFILES_DIR "/profiles"

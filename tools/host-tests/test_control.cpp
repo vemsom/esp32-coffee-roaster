@@ -227,6 +227,22 @@ static void runLoops(int samples) {
   }
 }
 
+// Moves both probes to 'target' in steps under SENSOR_FAULT_MAX_JUMP_C, running
+// the loop in between: a probe that teleports 180 C in one sample is an
+// implausible jump sustained for SENSOR_FAULT_MAX_COUNT samples, i.e. exactly the
+// fault the safety layer is supposed to latch. Used to get the probes to a roast
+// temperature (and back) without tripping it. Call it in MODE_IDLE, where no
+// heat is applied and the stuck-probe check is off.
+static void warmProbesTo(float target) {
+  while (fabs(target - g_probeBT) > 0.01f) {
+    const float step = SENSOR_FAULT_MAX_JUMP_C * 0.75f;
+    const float delta = target - g_probeBT;
+    g_probeBT += (fabs(delta) > step) ? (delta > 0 ? step : -step) : delta;
+    g_probeET = g_probeBT;
+    runLoops(1);
+  }
+}
+
 // Same, with both probes drifting upwards together: real probes never sit on
 // an identical value forever, and the stuck-sensor check (safety.cpp) would
 // notice if they did. Used by the concurrency stress test.
@@ -420,76 +436,81 @@ int main() {
   web.stopRoast();
   runLoops(2);
 
-  // --------------------------- bean weight caps the duty (0.14.0) -----------
-  // The element is the same 1.1 kW whatever is in the drum, so a 20 g charge
-  // gets ~5x the heat per gram that 100 g does. The profile's beanWeight caps
-  // the control loop's request at 28 % there, rising to 100 % at 100 g. Nothing
-  // else may change: the interlock still wins, manual mode has no ceiling, and
-  // a profile without the field behaves as before.
+  // -------------------- feed-forward, and no bean-weight cap (0.15.0) -------
+  // The 0.14.0 duty ceiling is gone: three roasts showed the loop never
+  // saturated (duty max 97 / 95 / 91 %, 0 s at or above 99 %), so a cap of 28 %
+  // at 20 g would have bound the PID far below the power the roast used. What
+  // is left is the lag, and that is fed forward instead (include/feed_forward.h):
+  // duty = duty_ff + PID, clipped once to 0..100.
+  //
+  // The canned curve is a hold at 200 C, so the requested slope is 0 and the
+  // model reduces to its loss term. With the probe AT the setpoint the PID's
+  // contribution is ~0, which makes the feed-forward the only thing the duty can
+  // be: 0.41 * (200 - FF_AMBIENT_C) + FF_OFFSET_PCT = 93.2 %.
+  const float ffHold = FF_LOSS_GAIN_PCT_PER_C * (200.0f - FF_AMBIENT_C) + FF_OFFSET_PCT;
+  warmProbesTo(200.0f);                 // in idle: no heat, no stuck-probe check
   g_profileBeanWeight = 20;
-  check(web.startRoast(String("ceiling-20")), "a 20 g profile starts");
-  web.setFanSpeed(100);
+  g_profileRampSeconds = 0;             // a hold: slope 0
+  g_profileFan = 100.0f;
+  check(web.startRoast(String("ff-hold")), "a profile starts on the feed-forward test");
   runLoops(6);
-  check(web.getRoastActive(), "the 20 g profile is running");
-  check(web.getDutyCeiling() >= 25.0f && web.getDutyCeiling() <= 30.0f,
-        "status reports a 25-30 % duty ceiling for 20 g");
-  check(web.getHeaterDuty() <= web.getDutyCeiling() + 0.001f,
-        "the duty request never passes the ceiling");
-  check(web.getHeaterDuty() == web.getDutyCeiling(),
-        "under the ceiling the loop asks for exactly the ceiling, not less");
-  check(!web.getFanFault(), "and the ceiling is not the interlock: air is fine");
+  check(web.getRoastActive(), "the profile is running");
+  check(fabs(web.getHeaterDuty() - ffHold) <= 1.0f &&
+            web.getHeaterDuty() > 30.0f,
+        "in a hold the duty is the feed-forward's loss term (~93 %), not a 28 % cap");
+  check(web.getHeaterDuty() <= HEATER_MAX_DUTY_PCT,
+        "and it is still inside the 0-100 % range every request has");
 
-  // The ceiling is not a safety limit: the fan interlock still takes the
-  // element to 0 %, and it does so regardless of what the ceiling says. The
-  // profile drives the fan itself, so the low speed comes from the profile.
+  // A hold must not produce a hack: the same request cycle after cycle while the
+  // curve and the probe stand still (the slope term is 0, the loss term is
+  // constant).
+  const float holdDutyFirst = web.getHeaterDuty();
+  runLoops(4);
+  check(fabs(web.getHeaterDuty() - holdDutyFirst) <= 0.2f,
+        "a hold asks for the same duty cycle after cycle: no step, no hack");
+
+  // The charge is metadata now: the same profile at 20 g and at 500 g has to
+  // ask for the same duty. Under 0.14.0 the 20 g one would have been capped at
+  // 28 % and the 500 g one would not - the two numbers are the whole point.
+  const float duty20g = web.getHeaterDuty();
+  web.stopRoast();
+  runLoops(2);
+  g_profileBeanWeight = 500;
+  check(web.startRoast(String("ff-hold-500")), "the same curve starts at 500 g");
+  runLoops(6);
+  const float duty500g = web.getHeaterDuty();
+  check(fabs(duty20g - duty500g) <= 0.05f,
+        "20 g and 500 g ask for exactly the same duty: the weight no longer steers");
+
+  // Feed-forward is not a safety limit: the fan interlock still takes the
+  // element to 0 %, feed-forward or not. The profile drives the fan itself, so
+  // the low speed comes from the profile.
   g_profileFan = 5.0f;
   runLoops(4);
   check(web.getFanFault() && web.getHeaterDuty() == 0 && ssrState == LOW,
-        "the fan interlock still cuts the element under a ceiling");
-  g_profileFan = 80.0f;
+        "the fan interlock still cuts the element to 0 % under a feed-forward");
+  g_profileFan = 100.0f;
   runLoops(4);
-  check(web.getHeaterDuty() == web.getDutyCeiling(),
-        "and the ceiling is back in charge once the air returns");
-
+  check(!web.getFanFault() && web.getHeaterDuty() > 30.0f,
+        "and the feed-forward is back in charge once the air returns");
   web.stopRoast();
   runLoops(2);
-  check(web.getDutyCeiling() == 0.0f, "no profile running reports no ceiling");
-
-  // 100 g and up: the ceiling is 100 %, i.e. today's behaviour.
-  g_profileBeanWeight = 100;
-  check(web.startRoast(String("ceiling-100")), "a 100 g profile starts");
-  runLoops(6);
-  check(web.getDutyCeiling() == HEATER_MAX_DUTY_PCT,
-        "100 g reports 100 %, so nothing is capped");
-  check(web.getHeaterDuty() > 30.0f,
-        "and the duty really is allowed past the 20 g ceiling");
-  web.stopRoast();
-  runLoops(2);
-
-  // A profile without the field (0) keeps the pre-0.14.0 behaviour exactly.
   g_profileBeanWeight = 0;
-  check(web.startRoast(String("no-weight")), "a profile without a weight starts");
-  runLoops(6);
-  check(web.getDutyCeiling() == HEATER_MAX_DUTY_PCT,
-        "no stated weight means no ceiling");
-  check(web.getHeaterDuty() > 30.0f, "and the duty is unlimited there");
-  web.stopRoast();
-  runLoops(2);
+  g_profileRampSeconds = 0;
 
-  // Manual mode has no bean weight and therefore no ceiling: the ceiling must
-  // never leak out of a profile run into a forced mode. Stop left the fan off,
-  // so bring it back the way an operator would - the interlock refuses heat
-  // without air, and that is older than this feature.
+  // Manual mode gets no feed-forward (there is no requested curve to feed
+  // forward from). The same probe at the same setpoint therefore asks for ~0 %:
+  // the whole difference between this and the 93 % above is the feed-forward.
   web.setFanSpeed(100);
   runLoops(4);
-  check(web.startManual(200, 600, false, 0, 0), "a manual run starts after a profile");
-  runLoops(4);
-  check(web.getDutyCeiling() == 0.0f, "manual mode reports no ceiling");
-  check(web.getHeaterDuty() > 30.0f,
-        "and manual mode is not capped by the previous profile's weight");
+  check(web.startManual(200, 600, false, 0, 0), "a manual run starts after the profile");
+  runLoops(6);
+  check(web.getHeaterDuty() <= 1.0f,
+        "manual mode at the setpoint asks for nothing: the feed-forward is profile-only");
   web.stopManual();
   runLoops(2);
-  g_profileBeanWeight = 0;
+  warmProbesTo(20.0f);                  // back to room temperature, in idle
+  g_profileFan = 80.0f;
 
   // ------------------------------- stop and cool: one command, one lock -----
   // The point of the combined command is that the fan never passes through

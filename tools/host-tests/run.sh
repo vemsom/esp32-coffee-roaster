@@ -23,10 +23,13 @@
 #                        against the shipped ones over a first-order-plus-dead-
 #                        time plant identified from the measured 70-78 s /
 #                        +-15-20 C oscillation. Pure logic. Default pass only.
-#   test_duty_ceiling    the bean-weight duty ceiling (0.14.0): 25-30 % at 20 g,
-#                        100 % at 100 g and up, linear between, 20 % floor, 0 g
-#                        = no ceiling - and that the PID's lowered output limit
-#                        is what its integral is clamped against. Pure logic.
+#   test_feed_forward    the ramp feed-forward that replaced the 0.14.0 duty
+#                        ceiling (0.15.0): the model's two control points, the
+#                        clipping, the requested slope taken from the profile's
+#                        own curve, the hold (slope 0 -> loss term, no hack at the
+#                        edge), and a simulated before/after over the identified
+#                        plant - plus the counter-example that pins why the PID's
+#                        trim runs bipolar in profile mode. Pure logic.
 #                        Default pass only.
 #   test_safety          safety latch + heater interlock, stubbed Arduino.
 #                        DEFAULT PASS ONLY: it asserts the ET trips (ET
@@ -300,15 +303,15 @@ run_pass() {
         "$here/test_pid_tuning.cpp" \
         -o "$out/test_pid_tuning"
 
-    # The bean-weight duty ceiling (0.14.0, include/duty_ceiling.h) and the
-    # PID's movable output limit that makes the controller honour it: the curve
-    # (25-30 % at 20 g, 100 % at 100 g, linear between, 20 % floor, 0 g = no
-    # ceiling) and that a lowered outMax is what the integral is clamped
-    # against. Pure logic over its own clock, no flag, one pass.
+    # The ramp feed-forward (0.15.0, include/feed_forward.h) and the PID output
+    # range a trim needs: the model's control points and clipping, the requested
+    # slope from the profile's own curve, the hold and its edges, and a simulated
+    # before/after on the plant the 0.13.0 trim was reasoned against. Pure logic
+    # over its own clock, no flag, one pass.
     g++ -std=c++17 -Wall -Wextra \
         -I "$here/stub" -I "$root/include" \
-        "$here/test_duty_ceiling.cpp" \
-        -o "$out/test_duty_ceiling"
+        "$here/test_feed_forward.cpp" \
+        -o "$out/test_feed_forward"
   fi
 
   # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
@@ -403,7 +406,7 @@ run_pass() {
     run_test "$out/test_fan_immediate"
     run_test "$out/test_pid"
     run_test "$out/test_pid_tuning"
-    run_test "$out/test_duty_ceiling"
+    run_test "$out/test_feed_forward"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the

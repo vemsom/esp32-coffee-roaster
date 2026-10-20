@@ -96,17 +96,24 @@ public:
     return output;
   }
 
-  // The upper output limit is movable at run time. The bean-weight duty
-  // ceiling (include/duty_ceiling.h) is a decision the controller has to know
-  // about, not a clamp applied after it: if only the request were clipped, the
-  // integral would keep growing against a ceiling it cannot see, and the loop
-  // would pay for that with an overshoot the moment the setpoint is reached.
-  // Moving _outMax here reuses the anti-windup above unchanged - it already
-  // tests the output against _outMax.
-  void setOutMax(double outMax) {
-    if (outMax < _outMin) outMax = _outMin;
+  // The output range is movable at run time. Two callers use it, and the reason
+  // is the feed-forward (include/feed_forward.h):
+  //
+  //   * profile mode runs it bipolar, -100..100: the PID is a trim on top of
+  //     the feed-forward base, so it has to be able to SUBTRACT. With a range of
+  //     0..100 a base that is a few percentage points above what the plant needs
+  //     can never be pulled down - the P and I terms hit the 0 % floor, the
+  //     integral stops (conditional integration below), and the base alone holds
+  //     the drum too hot for as long as the run lasts. The anti-windup still
+  //     works against the 100 % limit, in both directions.
+  //   * manual mode keeps 0..100: there is no feed-forward there, so its trim is
+  //     positive-only exactly as it was before 0.15.0.
+  void setOutRange(double outMin, double outMax) {
+    if (outMax < outMin) outMax = outMin;
+    _outMin = outMin;
     _outMax = outMax;
   }
+  double outMin() const { return _outMin; }
   double outMax() const { return _outMax; }
 
   // The contributions as they were last applied (percent, except integral,

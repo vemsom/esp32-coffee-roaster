@@ -227,7 +227,7 @@
             <input type="number" id="editBeanWeight" value="0" min="0" max="2000" step="1">
           </div>
         </div>
-        <div class="hint" data-i18n="hintBeanWeight">0 = inget tak (oförändrat beteende). Anger du vikten begränsas värmen: 28 % vid 20 g, 100 % vid 100 g och däröver, linjärt däremellan. Skyddslarm och fläktspärr påverkas inte.</div>
+        <div class="hint" data-i18n="hintBeanWeight">Bara anteckning: vikten sparas med profilen men påverkar inte styrningen. Värmen ligger på samma kurva oavsett charge.</div>
         <div class="panel-heading" data-i18n="headingProfileCool">Kylning efter sista steget (endast fläkt)</div>
         <div class="controls">
           <div style="min-width:120px;">
@@ -311,8 +311,8 @@ const state = {
   // The profile's own cool-down: fan % and minutes, both 0 = none. Kept next to
   // the steps because it is saved with them, in the same file.
   editCool: { fan: 0, minutes: 0 },
-  // The charge in grams, saved with the steps. 0 = not stated = no duty
-  // ceiling, which is how every profile written before this field behaved.
+  // The charge in grams, saved with the steps. Metadata only since 0.15.0: the
+  // duty ceiling that read it is gone, and the control loop never looks at it.
   editBeanWeight: 0,
   loadedProfileName: '', // name of the profile currently open in the editor
   dragging: -1,
@@ -356,7 +356,7 @@ const I18N = {
     errStopCool: 'Kunde inte stoppa kylningen: {msg}',
     labelCoolFan: 'Kylvarvtal (%)', labelCoolMinutes: 'Kylminuter (min)',
     headingBeanWeight: 'Bönvikt', labelBeanWeight: 'Bönvikt (g)',
-    hintBeanWeight: '0 = inget tak (oförändrat beteende). Anger du vikten begränsas värmen: 28 % vid 20 g, 100 % vid 100 g och däröver, linjärt däremellan. Skyddslarm och fläktspärr påverkas inte.',
+    hintBeanWeight: 'Bara anteckning: vikten sparas med profilen men påverkar inte styrningen. Värmen ligger på samma kurva oavsett charge.',
     headingProfileCool: 'Kylning efter sista steget (endast fläkt)',
     hintStopAndCool: 'Stoppar rostningen och startar kylningen (endast fläkt) i samma kommando – fläkten stannar aldrig emellan. Stopp till vänster startar ingen kylning.',
     hintProfileCool: '0 i båda (eller tomt) = ingen kylning efter profilen – värme och fläkt stannar när sista steget är klart. Fyller du i båda startar kylningen automatiskt när profilen är slut. Glöms kylvärdena bort i en gammal profil är beteendet alltså oförändrat.',
@@ -416,7 +416,7 @@ const I18N = {
     errStopCool: 'Could not stop the cooling: {msg}',
     labelCoolFan: 'Cool fan (%)', labelCoolMinutes: 'Cool minutes (min)',
     headingBeanWeight: 'Bean weight', labelBeanWeight: 'Bean weight (g)',
-    hintBeanWeight: '0 = no ceiling (unchanged behaviour). With a weight the heat is capped: 28 % at 20 g, 100 % at 100 g and above, linearly in between. The safety alarm and the fan interlock are not affected.',
+    hintBeanWeight: 'Note only: the weight is saved with the profile and does not affect the control loop. The heat follows the same curve whatever the charge.',
     headingProfileCool: 'Cooling after the last step (fan only)',
     hintStopAndCool: 'Stops the roast and starts the cooling (fan only) in one command – the fan never stops in between. Stop to the left starts no cooling.',
     hintProfileCool: '0 in both (or empty) = no cooling after the profile – heat and fan stop when the last step is done. Fill in both and the cooling starts by itself when the profile is over. A profile that never had these values behaves exactly as before.',
@@ -882,8 +882,7 @@ async function loadProfileIntoEditor(name) {
     // = no cooling, exactly what that profile has always meant.
     state.editCool = { fan: p.coolFan || 0, minutes: p.coolMinutes || 0 };
     showEditCool();
-    // The charge: absent in an older profile, which reads as 0 = no ceiling -
-    // exactly what that profile has always done.
+    // The charge: absent in an older profile, which reads as 0 = not stated.
     state.editBeanWeight = p.beanWeight || 0;
     showEditBeanWeight();
     state.loadedProfileName = name;
@@ -914,7 +913,8 @@ function readEditCool() {
 
 // The bean weight follows the same pattern as the cool-down pair: one value in
 // state, one function each way, clamped to what the firmware accepts
-// (BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G in include/config.h, 0 = no ceiling).
+// (BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G in include/config.h). It is metadata
+// since 0.15.0 - saved with the profile, not read by the control loop.
 function showEditBeanWeight() {
   $('editBeanWeight').value = state.editBeanWeight;
 }
@@ -1158,7 +1158,7 @@ $('newProfileBtn').addEventListener('click', () => {
   ];
   state.editCool = { fan: 0, minutes: 0 };          // no cooling after the profile
   showEditCool();
-  state.editBeanWeight = 0;                        // no charge stated = no ceiling
+  state.editBeanWeight = 0;                        // no charge stated
   showEditBeanWeight();
   state.loadedProfileName = '';
   $('editName').value = '';
@@ -1236,7 +1236,7 @@ $('saveProfileBtn').addEventListener('click', async () => {
   // what the firmware stores as "no field at all".
   const cool = readEditCool();
   state.editCool = cool;
-  // The charge travels with them. 0 = no ceiling, which the firmware stores as
+  // The charge travels with them. 0 = not stated, which the firmware stores as
   // "no field at all".
   const beanWeight = readEditBeanWeight();
   state.editBeanWeight = beanWeight;

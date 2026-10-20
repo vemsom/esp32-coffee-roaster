@@ -45,9 +45,9 @@ public:
   float coolFanPct() const { return _coolFanPct; }
   float coolMinutes() const { return _coolMinutes; }
   void setCool(float fanPct, float minutes);
-  // The charge in grams (0 = not stated = no duty ceiling). Declared here
-  // because main.cpp calls it for the ceiling; the canned profile holds it in
-  // a test knob.
+  // The charge in grams (metadata, see include/roast_profile.h). Declared here
+  // because main.cpp and web_server.cpp read it; the canned profile holds it in
+  // a test knob. Nothing in the control loop uses it.
   int beanWeight() const { return _beanWeight; }
   void setBeanWeight(int grams);
   bool hasFan() const { return _hasFan; }

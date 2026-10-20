@@ -31,7 +31,7 @@ there.
 | Field | Unit | Meaning |
 | --- | --- | --- |
 | `startTemp` | °C | The temperature the roast starts from at 0 min. Default 20 (room temperature) if the field is absent. |
-| `beanWeight` | g | The charge in the drum, 5-2000. **0 or absent = no duty ceiling** (see below). |
+| `beanWeight` | g | The charge in the drum, 5-2000. **Metadata since 0.15.0** - stored and validated, but it does not affect the control loop (see below). |
 | `steps` | array | Ordered list of steps, at least one. See below. |
 | `coolFan` | % | Fan speed of the cool-down that starts by itself when the last step has run out. 1-100. **0 or absent = no cooling.** |
 | `coolMinutes` | minutes | Length of that cool-down. 0.5-120. **0 or absent = no cooling.** |
@@ -56,31 +56,33 @@ The file is written by the firmware as minutes-in-the-UI but **seconds on
 disk** (`ramp`/`hold`), because that is what the control loop works in. The
 editor converts both ways.
 
-## Bean weight and the duty ceiling (0.14.0)
+## Bean weight: a note on the profile, not a control
 
-`beanWeight` is the charge in the drum, in grams. It does not change the curve;
-it caps how much heat the control loop may ask for, because the element is the
-same 1.1 kW whether the drum holds 20 g or 100 g:
+`beanWeight` is the charge in the drum, in grams. It is clamped to 5-2000 g when
+the profile is written and read, it is exported and imported with the rest of the
+profile, and it is shown in the editor - **it does not steer the roast**.
 
-| Weight | Max duty |
-| --- | --- |
-| 5 g | 20 % (the floor) |
-| 20 g | 28 % |
-| 40 g | 46 % |
-| 60 g | 64 % |
-| 100 g and above | 100 % (no cap) |
+That is a change from 0.14.0, which used it to cap the control loop's duty (28 % at
+20 g, rising to 100 % at 100 g and above). The cap was removed in 0.15.0 because
+the loop never saturated: three roasts with the same curve (2026-10-20) measured
 
-Linear between 20 g and 100 g, and the same line continues below 20 g until the
-20 % floor. **0 or absent means no ceiling**, which is what every profile
-written before the field existed says - those behave exactly as they did.
+| Weight | duty max | time at or above 99 % duty |
+| --- | --- | --- |
+| 20 g | 97 % | 0 s |
+| 40 g | 95 % | 0 s |
+| 62.8 g | 91 % | 0 s |
 
-The ceiling only limits the control loop's request. The safety latch, the fan
-interlock and the element's own limits are untouched, and a manual run or a
-cool-down never has a ceiling. While a profile runs, `/api/status` reports the
-ceiling as `dutyCeiling` (percent; `0` when no profile is running), so a
-finished roast can be read back and say whether the ceiling was what limited it.
-RoR-following is the next step if a curve still does not track - see
-`docs/firmware-notes.md`, "0.14.0".
+so a cap of 28 % at 20 g would have bound the PID far below the power the roast
+actually used. What the roasts did show is a lag: BT trailing the target curve by
+12-14 °C at 30 s and 8-10 °C at 120 s in all three passes. That is answered by a
+**feed-forward** over the PID instead (`include/feed_forward.h`), which uses the
+profile's own curve and the bean temperature - not the charge.
+
+`0` (or absent) means "not stated", and a profile without the field keeps a file
+without it, so an old profile is byte-for-byte unchanged.
+
+See `docs/firmware-notes.md`, "0.15.0", for the measurements and how the
+feed-forward is wired.
 
 ## Timeline
 
@@ -121,7 +123,7 @@ reaching the fan as something the fan cannot do.
 | Request | What it does |
 | --- | --- |
 | `GET /api/profiles` | Names of the stored profiles, as a JSON array. |
-| `GET /api/profile?name=<name>` | One profile in the format above, plus `name`. `coolFan`/`coolMinutes` are always present (`0` = none), and so is `beanWeight` (`0` = no duty ceiling). |
+| `GET /api/profile?name=<name>` | One profile in the format above, plus `name`. `coolFan`/`coolMinutes` are always present (`0` = none), and so is `beanWeight` (`0` = not stated). |
 | `POST /api/profiles` | Create/overwrite one profile. Body: the object above plus `"name"`. |
 | `DELETE /api/profile?name=<name>` | Remove one profile. |
 | `POST /api/roast/start` | `{"profile":"<name>"}` - start a roast on that profile. |

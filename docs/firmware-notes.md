@@ -74,8 +74,155 @@ at all when the field is absent. Same reason as the trim: a 20 g charge in a
 `dutyCeiling`. See "0.14.0 (2026-10-20): a duty ceiling that follows the bean
 weight" below. Host suite green (1440 / 1271 checks, 0 failures), both builds of
 `esp32-ota-bt` SUCCESS with 0 warnings. **Nothing was flashed.**
+*(The ceiling was removed again in 0.15.0 - the entry below is why.)*
+
+**2026-10-20, 0.15.0: the ceiling is gone, a feed-forward takes its place.** Three
+roasts with 0.14.0 and the same curve (20 / 40 / 62.8 g) show the loop never
+saturated - duty max 97 / 95 / 91 % and **0 s at or above 99 %** in all three - so
+the ceiling's premise was wrong and a 28 % cap at 20 g would have bound the PID far
+below the power the roast used. `include/duty_ceiling.h`, its constants and
+`dutyCeiling` in `/api/status` are gone; `beanWeight` stays as profile metadata.
+What the roasts did show is a **lag, the same at every charge** (+12-14 C at 30 s,
++8-10 C at 120 s): a PID cannot ask for heat before an error exists. That part is
+now fed forward from the profile's own curve, fitted to the same three roasts - see
+"0.15.0 (2026-10-20): the duty ceiling is gone, a feed-forward instead" below.
+Host suite green (see the section for the counts), both `esp32-ota-bt` builds
+SUCCESS with 0 warnings. **Nothing was flashed.**
+
+## 0.15.0 (2026-10-20): the duty ceiling is gone, a feed-forward instead
+
+**Why the ceiling went.** 0.14.0 assumed the loop saturated on small charges: with
+20 g in a 1.1 kW drum the loop was supposed to run at full duty, overshoot unseen
+and swing. Three roasts with that image - 20 g, 40 g and 62.8 g, the same curve -
+say it did not:
+
+| Weight | duty max | time at or above 99 % duty |
+| --- | --- | --- |
+| 20 g | 97 % | 0 s |
+| 40 g | 95 % | 0 s |
+| 62.8 g | 91 % | 0 s |
+
+97 % is a peak, not a rail, and the loop sat on a smooth 20-97 % curve through the
+whole roast. A ceiling of 28 % at 20 g (46 % at 40 g, 64 % at 60 g) would therefore
+have bound the PID at *a third* of the power the roast actually used - the image
+would have been slower and further behind, not steadier. The swing 0.14.0 was
+written against is already answered: it was too much gain, and it left with
+KP 2.0 -> 1.2 / KI 0.15 -> 0.04 in 0.13.0 (that reasoning is below).
+
+**Why a feed-forward, and why it is the same at every weight.** The remaining error
+is not a swing, it is a lag: BT trails the target curve by **+12..+14 C at 30 s and
++8..+10 C at 120 s, in all three roasts**. Mass-independent, so it is not the
+charge - it is the structure of the loop. A PID sees only the temperature error, so
+on a linear ramp it cannot ask for heat until the roast is already behind, and the
+integral then has to catch up with a curve that keeps moving. But most of the duty
+on a ramp is not a correction at all: it is the heat needed to climb at the
+requested rate plus the heat needed to sit at the current temperature, and both are
+known in advance.
+
+**The model**, fitted to the three roasts (313 samples at 10 s intervals, ramp
+samples only - holds, pauses and the cool-down excluded, all three charges in one
+fit):
+
+```
+duty_ff = 0.09 * slope + 0.41 * (BT - 22) + 20.2      [percent, clipped 0..100]
+
+  slope = the REQUESTED rate in C/min: the derivative of activeProfile.targetAt()
+          (include/feed_forward.h, requestedSlopeCPerMin - the curve one second
+          ahead minus the curve now, x 60), 0 in a hold and 0 in a pause
+  BT    = currentBTFiltered, the bean temperature the control loop reads
+  22    = FF_AMBIENT_C, the room temperature the fit was made at
+```
+
+Mean error **2.5 percentage points**, **R² 0.97**. The two control points the fit has
+to answer, and what the roasts measured there: 45 C/min at BT 60 -> **39.8 %**
+(measured 38-42 %), 12 C/min at BT 180 -> **86.1 %** (measured 81-91 %). The terms
+have a physical meaning each - a slope term (heat into the climb), a loss term
+(duty to hold BT, 73 % of it at 200 C) and a constant (fan, wall, probe) - which is
+why they are kept separate instead of a two-dimensional table.
+
+**How it is wired** (`updateControl()`, `src/main.cpp`, profile mode only):
+
+```
+duty = duty_ff + heaterPID.compute(target, currentBTFiltered) + rorCorrection
+duty = clip(duty, 0, HEATER_MAX_DUTY_PCT)
+```
+
+- Feed-forward is the base, the PID is the trim on top, and the anti-windup works
+  against **100 %** - there is no duty cap for it to work against any more.
+- **The trim runs bipolar (-100..100) in profile mode.** This is the one place the
+  design had to differ from "add it to the PID and clip": with the PID's own range
+  at 0..100, a base a few points above what the plant needs cannot be pulled down.
+  The P and I terms hit the 0 % floor, the conditional integration freezes the
+  integral there, and the base alone holds the drum at *its* equilibrium. In the
+  simulation below that is **221.9 C instead of 200 C, for the rest of the run**.
+  `tools/host-tests/test_feed_forward.cpp` runs exactly that counter-example, so it
+  cannot come back by "simplification". Manual mode keeps the positive-only range:
+  it has no feed-forward, so nothing to subtract from, and its behaviour is
+  unchanged.
+- The safety layer, the fan interlock and `applyHeaterDuty()`'s own limits are
+  untouched: the feed-forward is part of the same request they judge, added before
+  the single clip, so it can never reach past them.
+- `/api/status` now reports the RoR guidance's **`roRorCorrection`** next to
+  `roRorError`. The rate limit acts on that number, and the duty is no longer a
+  proxy for it (the feed-forward and the trim are in the sum, and in a
+  cold-probe transient they pin it at 0 %).
+- **A hold is not a special case.** The slope is 0 there, so the model reduces to
+  the loss term - the base a hold needs - and `requestedSlopeCPerMin()` returns
+  exactly 0 inside a hold (the same is true for a pause: the roast clock does not
+  advance). The only step is at a rate change, and it is bounded by the model's own
+  slope term: 0.09 x the rate that went away (2.5 pp at the 43 -> 12 C/min edge),
+  downward, never up.
+
+**Bean weight is metadata now.** The field, its validation (5-2000 g), the editor,
+export/import and the backup in `tools/ota-push.sh` all stay; only the control
+loop's use of it is gone. `test_control` pins that a 20 g profile and a 500 g one
+ask for the *same* duty (they would have differed by 60+ points under 0.14.0).
+
+**Verified.**
+
+- Host suite green: **1434 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
+  **1259** with it at 0 (`sh tools/host-tests/run.sh`, exit 0). One existing
+  check had to move: `test_ror_guidance` asserted the guidance's rate limit on
+  the heater duty, which stopped being the correction the moment the duty became
+  `clip(duty_ff + PID trim + correction)` - in that cold-probe transient the
+  feed-forward and the bipolar trim hold the sum at 0 % while the correction
+  climbs. It now asserts the limit on the new `roRorCorrection` status field
+  (measured 3.750 pp per 250 ms cycle against the 3.750 pp allowance, peak
+  |corr| 100 %). New:
+  `tools/host-tests/test_feed_forward.cpp` (32 checks) pins the two control points
+  (±2 pp), the clipping and monotonicity (a sweep over slope -100..100 and
+  BT -50..400 stays inside 0..100), the requested slope on a two-segment curve
+  (43.3 and 12.0 C/min, and exactly 0 in the hold and on a frozen clock), the
+  ramp -> hold edge (largest one-second change 2.52 pp, allowed 3.91, downward
+  only), the counter-example above, and the simulated before/after.
+- **Simulated lag, same plant, feed-forward off (0.13.0) and on (0.15.0)**, over
+  the plant the trim was reasoned against (first order, K 2.0 C/%, tau 45 s,
+  dead time 19 s; and K 1.9 / tau 60 s as a direction check):
+
+  | Plant | lag at 30 s | lag at 120 s | mean lag over the ramp |
+  | --- | --- | --- | --- |
+  | K2.0 / tau45 / L19 | 18.5 -> **8.3 C** | 10.7 -> **7.1 C** | 4.8 -> **-0.3 C** |
+  | K1.9 / tau60 / L19 | 19.3 -> **11.8 C** | 4.4 -> **-2.6 C** | 5.2 -> **-0.3 C** |
+
+  The hold settles at 198.1 / 200.8 C with the feed-forward in the loop, and the
+  worst arrival overshoot on the first plant is 207.2 C against 202.6 C for the
+  PID-only run - the simulated plant needs ~5 pp less duty at the fast end than
+  the fit says, which is what a plant identified from a different measurement
+  costs. It is a model: the machine decides.
+- `pio run -e esp32-ota-bt` and `pio run -e esp32-ota-bt -t buildfs`: SUCCESS, no
+  warnings from the files this change touched.
+- **NOT measured on the machine.** No image has been flashed with this yet. What
+  the first roast has to answer: whether the lag really closes (compare BT against
+  the target curve - it should now sit *on* it rather than under it), and whether
+  the hold arrival overshoots more than it used to (the fit's residual is ±2.5 pp;
+  the bipolar trim is what absorbs it, and the 207 C in the simulation is the
+  number to beat or beat down).
 
 ## 0.14.0 (2026-10-20): a duty ceiling that follows the bean weight
+
+> **Superseded by 0.15.0 above.** The ceiling was removed: the loop never
+> saturated (duty max 97 / 95 / 91 % at 20 / 40 / 62.8 g, 0 s at or above 99 %).
+> Kept as history - the reasoning is what the measurement answered.
 
 **Why.** The element is the same ~1.1 kW whatever sits in the drum. In the first
 roast with 0.12.0 (20 g, profile `ljus-1`) the loop swung **+-15-20 C around the
@@ -1977,23 +2124,23 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-20 (0.14.0, the bean-weight duty ceiling): **1440 checks, 0
-failures** with the flag at 1 and **1271 checks, 0 failures** with it at 0, exit
-0 both times. (The run before it, on 0.13.0 - the first roast's four findings -
-read 1369 / 1225.) The only compiler warnings are the
+Last run 2026-10-20 (0.15.0, the ramp feed-forward): **1434 checks, 0
+failures** with the flag at 1 and **1259 checks, 0 failures** with it at 0, exit
+0 both times. (The run before it, on 0.14.0 - the bean-weight duty ceiling that
+0.15.0 removed - read 1440 / 1271.) The only compiler warnings are the
 pre-existing `-Wunused-parameter` ones from `web_server.cpp`'s handler
 signatures (they mirror the library's, so they are compiled with
 `-Wno-unused-parameter` in the builds that use them); nothing from the files
 this change touched. The totals count every execution:
 
-- flag 1, 17 binaries: 1005 checks counted once each, plus the two the suite runs
+- flag 1, 17 binaries: 1006 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
-  `test_control` under ThreadSanitizer (202 again).
-- flag 0, 10 binaries: 832 checks counted once each, plus `test_mqtt_discovery`
-  (233 again) and `test_control` under ThreadSanitizer (206 again). `test_safety`
+  `test_control` under ThreadSanitizer (195 again).
+- flag 0, 10 binaries: 827 checks counted once each, plus `test_mqtt_discovery`
+  (233 again) and `test_control` under ThreadSanitizer (199 again). `test_safety`
   is flag-1 only (it asserts exactly the ET trips the flag switches off), and
   `test_ror`, `test_fan`, `test_fan_fallback`, `test_fan_immediate`,
-  `test_pid`, `test_pid_tuning` and `test_duty_ceiling` link neither safety.cpp
+  `test_pid`, `test_pid_tuning` and `test_feed_forward` link neither safety.cpp
   nor sensors.cpp, so the flag cannot reach them - they run once, in the default
   pass. `test_ota_push` and
   `test_ota_push_disabled` are flag-independent too,
@@ -2088,17 +2235,18 @@ this change touched. The totals count every execution:
   about 8x. The safety half of the same story - that the latch still trips on a
   jump the filter would smooth - is in `test_control`, because it only exists in
   the path that runs `loop()`.
-- `test_duty_ceiling` - the bean-weight duty ceiling (0.14.0, 25 checks,
-  default pass only, pure logic): 28 % at 20 g inside the 25-30 % band, exactly
-  100 % at 100 g and above, the linear midpoint at 60 g, a charge below 20 g
-  getting less than 20 g's ceiling but never below the 20 % floor, the ceiling
-  never decreasing across 1..2000 g and never leaving 20-100 %, 0 g and a
-  negative weight meaning no ceiling at all, and KP/KI/KD still 1.2 / 0.04 / 0.
-  Plus the half that makes the ceiling mean something: a `SimplePID` saturated at
-  100 % is handed `setOutMax(28)`, and the very next `compute()` is capped at
-  28 % **with the I term clamped to it** and staying there under a continuing
-  error, then coming off the ceiling to 0 % once the setpoint is passed instead
-  of paying for stored integral - and `setOutMax(100)` restoring the full range.
+- `test_feed_forward` - the ramp feed-forward (0.15.0, 32 checks, default pass
+  only, pure logic): the model's two measured control points (45 C/min at BT 60
+  -> 40 %, measured 38-42 %; 12 C/min at BT 180 -> 86 %, measured 81-91 %), the
+  clipping over a slope/BT sweep, the requested slope read back off a
+  two-segment curve (43.3 and 12.0 C/min, exactly 0 in a hold and on a frozen
+  clock), the ramp -> hold edge (largest one-second step 2.52 pp against a 3.91
+  pp allowance, downward only), NaN inputs yielding 0, and a simulated
+  before/after on the first-order-plus-dead-time plant the 0.13.0 trim was
+  reasoned against - including the counter-example that pins why the PID's trim
+  runs **bipolar** in profile mode: with a positive-only range the feed-forward
+  base cannot be pulled down and the drum parks 22 C above its setpoint for the
+  rest of the run.
 - `test_mqtt_discovery` - MQTT layer (233 checks): all 12 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault`, `etDisabled` and the signed
@@ -2206,7 +2354,7 @@ this change touched. The totals count every execution:
   well-formed, authenticated POST, open no partition, write no byte and touch no
   file; both GET probes answer 404. The build a device without a token runs.
 - `test_ror_guidance` - optional rate-of-rise guidance (53 checks with the flag
-  at 1, 58 with it at 0): the target
+  at 1, 59 with it at 0): the target
   curve, the sign of the correction, a zero correction when disabled, the rate
   limit and clamp that keep a cold-probe transient under `HEATER_MAX_DUTY_PCT`,
   every duty request routed through `applyHeaterDuty()`, the off-by-default
@@ -2218,7 +2366,12 @@ this change touched. The totals count every execution:
   also pins the rate limit per cycle (the correction moves at most
   `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` per second, the duty never passes
   `HEATER_MAX_DUTY_PCT`, and the clamp really is reached: the peak is 100.00 %
-  with the fit reading -50 C/min).
+  with the fit reading -50 C/min). Since 0.15.0 that per-cycle check reads the
+  correction from `roRorCorrection` in `/api/status` instead of from the duty:
+  the duty is `clip(duty_ff + PID trim + correction)`, so the feed-forward and
+  the bipolar trim pin the sum at 0 % through most of that transient and the
+  duty cannot show what the rate limit did. Measured: 3.750 pp in one 250 ms
+  cycle against the 3.750 pp allowance, peak |corr| 100 %.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder

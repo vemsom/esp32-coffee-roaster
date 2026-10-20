@@ -154,7 +154,6 @@ int main() {
   callbacks.getFanSpeed = []() { return 0; };
   callbacks.getFanActual = []() { return 0.0f; };
   callbacks.getRoastActive = []() { return false; };
-  callbacks.getDutyCeiling = []() { return 0.0f; };
   callbacks.getElapsedSeconds = []() { return 0UL; };
   callbacks.getRoastPaused = []() { return false; };
   callbacks.getManualActive = []() { return false; };
@@ -171,6 +170,7 @@ int main() {
   callbacks.getRorGuidance = []() { return -1; };
   callbacks.getRorTarget = []() { return 0.0f; };
   callbacks.getRorError = []() { return 0.0f; };
+  callbacks.getRorCorrection = []() { return 0.0f; };
   callbacks.getRorActive = []() { return false; };
   callbacks.getPidP = []() { return 1.5f; };
   callbacks.getPidI = []() { return 2.5f; };
@@ -410,11 +410,14 @@ int main() {
           "and its file stays byte-for-byte what it was before the fields existed");
   }
 
-  // ------------------------------------- the bean weight (duty ceiling) ------
+  // ------------------------------------- the bean weight (metadata) ----------
   // The charge is a profile field like the cool-down pair: written by
   // POST /api/profiles, read back by GET /api/profile, clamped to
   // BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G, and absent from the file when the
   // profile does not state one - a profile that never had it must not change.
+  // Since 0.15.0 it is metadata: it no longer caps the duty (see
+  // tools/host-tests/test_feed_forward.cpp and the removal below), but the
+  // field itself is still stored and round-tripped.
   {
     AsyncWebServerRequest post = dispatchBody(
         *postProfiles,
@@ -450,11 +453,11 @@ int main() {
       check(bodyHas(back, want.c_str()), w.what);
     }
 
-    // No stated weight: 0 over the API (= no ceiling), and no field in the
+    // No stated weight: 0 over the API, and no field in the stored file.
     // file - the same rule the cool-down pair follows.
     AsyncWebServerRequest plain = dispatchQuery(*getProfile, "name", String("morning"));
     check(bodyHas(plain, "\"beanWeight\":0"),
-          "a profile without a bean weight reports 0 (no ceiling)");
+          "a profile without a bean weight reports 0 (not stated)");
     check(littlefs_stub::files()[profilePath("morning")].find("beanWeight") ==
               std::string::npos,
           "and no beanWeight is written into its file");
@@ -543,6 +546,12 @@ int main() {
             "status reports the filtered bean temperature the PID read");
       check(body.find("\"fanActual\":0") != std::string::npos,
             "status reports the fan speed the fan has actually reached");
+
+      // The bean-weight duty ceiling is GONE (0.15.0). It was reported as
+      // `dutyCeiling` next to roastActive; a client that still sees the field
+      // would keep believing a cap exists, so this pins its absence.
+      check(body.find("\"dutyCeiling\"") == std::string::npos,
+            "status no longer reports a dutyCeiling: the bean-weight cap is gone");
     }
   }
 

@@ -236,22 +236,41 @@ kyl" is for; the profile's values belong to the profile running to its end. The
 pause is unchanged by all of this: it freezes the roast clock and keeps the
 element at the setpoint that was active.
 
-## Bean weight and the duty ceiling
+## Feed-forward over the ramp, and the bean weight
 
-A profile can state the charge in grams (`beanWeight`). The element is the same
-~1.1 kW whatever is in the drum, so a 20 g batch sees roughly five times the heat
-per gram a 100 g batch does - enough that the loop saturates and swings instead
-of tracking the curve. The charge caps the control loop's request: **28 % at
-20 g**, rising linearly to **100 % at 100 g and above**, never below 20 %, and
-**0 or absent means no ceiling** (every profile written before the field
-existed). It only limits the request - the safety alarm, the fan interlock and
-the element's own limits are untouched, and a manual run or a cool-down has no
-ceiling. `/api/status` reports the active value as `dutyCeiling` next to
-`roastActive` (`0` = no profile running).
+**Feed-forward (0.15.0).** A PID only sees the temperature error, so on a linear
+ramp it cannot ask for heat until the roast is already behind and its integral has
+to catch up with a curve that keeps moving. Measured on three roasts with the same
+curve (20 / 40 / 62.8 g): BT trails the target by **12-14 °C at 30 s** and
+**8-10 °C at 120 s** - the same at every charge, so it is not the mass. The part
+of the duty that is known in advance - the heat to climb at the profile's own rate
+plus the heat to sit at the current temperature - is therefore added *under* the
+PID:
 
-This is a first measure against a saturated loop, not a curve-following
-controller; see `docs/firmware-notes.md` ("0.14.0") for the reasoning and
-[docs/profiles.md](docs/profiles.md) for the field.
+```
+duty_ff = 0.09 * slope + 0.41 * (BT - 22) + 20.2      [percent, clipped 0-100]
+duty    = duty_ff + pid(target, BT)                   [clipped 0-100 once]
+```
+
+`slope` is the **requested** rate in °C/min (the derivative of the profile's own
+curve, 0 in a hold), `BT` is the filtered bean temperature, and 22 °C is the room
+temperature the fit was made at. Fitted to the same three roasts (313 samples at
+10 s, ramp samples only): mean error 2.5 percentage points, R² 0.97. The PID stays
+the trim on top, with its anti-windup against 100 %, and it is allowed to go
+**negative** in profile mode - a trim that can only add cannot pull a base that is
+a few points high back down. Nothing about the safety latch, the fan interlock or
+the element's own limits changes: the feed-forward is just part of the request
+they judge. A manual run has no feed-forward.
+
+**Bean weight (`beanWeight`) is metadata.** A profile can state the charge in
+grams; it is stored, validated (5-2000 g) and carried through export/import,
+**and it does not affect the control loop**. 0.14.0 capped the duty by it (28 % at
+20 g); that ceiling was removed in 0.15.0 because the loop never saturated -
+measured duty max 97 / 95 / 91 % at 20 / 40 / 62.8 g, and **0 s at or above 99 %**
+in all three. `/api/status` no longer reports `dutyCeiling`.
+
+See `docs/firmware-notes.md` ("0.15.0") for the measurements and the reasoning,
+and [docs/profiles.md](docs/profiles.md) for the field.
 
 ## Safety limits
 

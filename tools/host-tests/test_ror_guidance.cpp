@@ -131,6 +131,18 @@ static void check(bool cond, const char *what) {
   }
 }
 
+// Same, with a measured value printed next to the verdict: the number is what a
+// failure needs to be diagnosable at all.
+static void check(bool cond, const char *what, const char *detail) {
+  checks++;
+  if (cond) {
+    printf("ok   %s [%s]\n", what, detail);
+  } else {
+    printf("FAIL %s [%s]\n", what, detail);
+    failures++;
+  }
+}
+
 static void checkClose(float got, float want, float tol, const char *what) {
   char detail[96];
   snprintf(detail, sizeof(detail), "got %.3f, want %.3f +-%.3f", got, want, tol);
@@ -478,8 +490,15 @@ int main() {
   // up far below the target, so the raw correction is several times
   // HEATER_MAX_DUTY_PCT. Both protections are checked per cycle, not just at
   // the end: the clamp holds the duty at the ceiling and the rate limit keeps
-  // the correction from jumping there in one step. The PID contributes 0
-  // throughout (BT is above the target), so the duty here IS the correction.
+  // the correction from jumping there in one step.
+  //
+  // The rate limit is measured on `roRorCorrection` (reported by /api/status),
+  // NOT on the heater duty. Since 0.15.0 the duty is
+  //   clip(duty_ff + PID trim + correction, 0, 100)
+  // so it is no longer the correction: the feed-forward steps in at ~44 % and
+  // the bipolar PID trim pulls with -70 % or more here (BT is far above the
+  // target), which pins the sum at 0 % for most of this transient. Reading the
+  // rate limit off the duty would test the PID's own movement instead.
   seedProfile("bt-clamp", true);
   // Move the probes gently to the starting point so sensors.cpp does not see
   // the step change as a pulled probe.
@@ -487,24 +506,34 @@ int main() {
   check(web.startRoast(String("bt-clamp")), "BT clamp-test roast starts");
   web.setFanSpeed(80);
   float maxDuty = 0.0f;
-  float maxDutyJump = 0.0f;
-  float prevDuty = web.getHeaterDuty();
+  float maxCorrection = 0.0f;
+  float maxCorrectionJump = 0.0f;
+  float prevCorrection = web.getRorCorrection();
   for (int i = 0; i < 240; i++) {
     g_probeBT = 80.0f - 50.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
     fakeMillis += SENSOR_READ_INTERVAL_MS;
     loop();
     float duty = web.getHeaterDuty();
+    float correction = web.getRorCorrection();
     if (duty > maxDuty) maxDuty = duty;
-    if (std::fabs(duty - prevDuty) > maxDutyJump) maxDutyJump = std::fabs(duty - prevDuty);
-    prevDuty = duty;
+    if (std::fabs(correction) > maxCorrection) maxCorrection = std::fabs(correction);
+    if (std::fabs(correction - prevCorrection) > maxCorrectionJump)
+      maxCorrectionJump = std::fabs(correction - prevCorrection);
+    prevCorrection = correction;
   }
   check(std::isnan(web.getET()), "the ET channel was not read during the BT transient");
   check(web.getRorError() > 20.0f, "a plunging BT creates a large positive error");
   check(maxDuty <= HEATER_MAX_DUTY_PCT + 0.01f,
         "duty never exceeds HEATER_MAX_DUTY_PCT in any cycle of the transient");
-  check(maxDutyJump <=
+  char detail[160];
+  snprintf(detail, sizeof(detail), "%+.3f pp in one %d ms cycle (limit %.3f), peak |corr| %.1f",
+           maxCorrectionJump, (int)SENSOR_READ_INTERVAL_MS,
+           ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f), maxCorrection);
+  check(maxCorrectionJump <=
             ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f) + 0.01f,
-        "the correction moves at most ROR_GUIDANCE_MAX_STEP_PCT_PER_S per second");
+        "the correction moves at most ROR_GUIDANCE_MAX_STEP_PCT_PER_S per second", detail);
+  check(maxCorrection > 20.0f,
+        "and it did climb: the transient really asks for a correction worth limiting");
   check(ssrState == HIGH || web.getHeaterDuty() == 0.0f,
         "heater pin follows the clamped duty (on when positive)");
   web.stopRoast();
