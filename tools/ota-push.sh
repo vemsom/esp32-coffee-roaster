@@ -42,7 +42,14 @@
 #   pio run -e esp32-ota                 # app: .pio/build/esp32-ota/firmware.bin
 #   pio run -e esp32-ota -t buildfs      # fs:  .pio/build/esp32-ota/littlefs.bin
 #
-# Vilken bild som skickas: .pio/build/esp32-ota/... - OTA-environ.
+# Den här maskinen kör BT-only (ET-kanalen är död hårdvara) och byggs i miljön
+# esp32-ota-bt - se platformio.ini och docs/firmware-notes.md, "Maskinens
+# byggläge". Skriptet tar då bilden ur den miljöns byggkatalog i stället:
+#   OTA_ENV=esp32-ota-bt pio run -e esp32-ota-bt        # app
+#   OTA_ENV=esp32-ota-bt sh tools/ota-push.sh <ip>
+# Utan OTA_ENV skickas esp32-ota, precis som förut.
+#
+# Vilken bild som skickas: .pio/build/$OTA_ENV/... - OTA-environ.
 # esp32dev-imagen duger INTE, även om den är lika stor och byggs ur samma
 # källor: build-id:n skiljer sig (se fw_build_id.py - FW_BUILD_TIME är en
 # tidsstämpel per bygge), och enheten svarar 403 på en bild vars X-OTA-SHA256
@@ -54,6 +61,11 @@
 # push som landade från en som tystnade.
 set -e
 cd "$(dirname "$0")/.."
+
+# Miljön bilden byggdes i. Default esp32-ota (oförändrat); maskinens BT-only-
+# läge heter esp32-ota-bt och väljs med OTA_ENV. Katalogen följer miljön, så en
+# bild från "fel" läge kan inte smyga med av misstag.
+ENV_NAME="${OTA_ENV:-esp32-ota}"
 
 HOST=""
 TARGET="app"
@@ -76,15 +88,15 @@ if [ -z "$HOST" ]; then
 fi
 
 if [ "$TARGET" = "fs" ]; then
-  IMAGE=".pio/build/esp32-ota/littlefs.bin"
+  IMAGE=".pio/build/$ENV_NAME/littlefs.bin"
   ROUTE="/api/update/fs"
-  BUILD_HINT="pio run -e esp32-ota -t buildfs"
+  BUILD_HINT="pio run -e $ENV_NAME -t buildfs"
   PARTITION_DESC="filsystemspartitionen (LittleFS / webb-UI:t)"
   MODE="fs"
 else
-  IMAGE=".pio/build/esp32-ota/firmware.bin"
+  IMAGE=".pio/build/$ENV_NAME/firmware.bin"
   ROUTE="/api/update"
-  BUILD_HINT="pio run -e esp32-ota"
+  BUILD_HINT="pio run -e $ENV_NAME"
   PARTITION_DESC="app-partitionen"
   MODE="app"
 fi

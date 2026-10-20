@@ -42,6 +42,18 @@ machine. **No image has been flashed with this yet** - the device still runs
 0.11.1 (see the paragraph above), so the host-suite numbers are the only
 verification so far.
 
+**2026-10-20: the machine's BT-only mode is a named env.** The ET channel is
+confirmed dead hardware (thermocouple circuit: MAX6675 + probe - no replacement
+bought), so BT-only is this machine's *correct* mode, and it no longer depends
+on remembering a `PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0'` one-liner:
+`platformio.ini` now carries `[env:esp32-ota-bt]` (`extends = env:esp32-ota`,
+`-D SAFETY_ET_ENABLED=0`). `esp32dev` and `esp32-ota` are untouched and still
+build the generic, ET-enabled image. See "The machine's build mode:
+`env:esp32-ota-bt`" below for the command and what an ET-enabled image does on
+this hardware. Verified 2026-10-20: the new env builds with 0 warnings, both
+default envs still build, host suite green (1335 / 1203 checks, 0 failures).
+Nothing was flashed - the device already runs the right image.
+
 Build of record (2026-09-27, clean rebuild):
 
 ```text
@@ -195,6 +207,11 @@ macro is `#ifndef`-guarded so a build can set it:
 
     PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
 
+(Superseded on 2026-10-20 by the named env `esp32-ota-bt`, which sets the same
+flag in the repo instead of in a shell variable - see "The machine's build
+mode" below. The variable form still works, but it is no longer how this
+machine is built.)
+
 With it at 0:
 
 - `src/sensors.cpp` does not read the ET converter at all - not "reads it and
@@ -260,6 +277,91 @@ replaced, and check the machine: `/api/status` must show `etDisabled: false` and
 a live `et` again. The flag is a stopgap - the cold cross-check and the 300 C ET
 ceiling are part of the safety net and should not be missing for longer than the
 repair takes.
+
+## The machine's build mode: `env:esp32-ota-bt` (2026-10-20)
+
+**Why a named environment.** The ET channel on this machine is **dead
+hardware**: the thermocouple circuit (MAX6675 module + probe) is broken and no
+replacement has been bought. BT-only is therefore the *correct* mode for this
+machine, not a temporary workaround - but the mode lived only in a shell
+variable:
+
+    PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
+
+That works exactly once. The next build - by anyone, including me in a hurry -
+is `pio run -e esp32-ota`, and that image is ET-enabled. On this hardware it is
+not subtle: within a few seconds `/api/status` answers `safetyFault: true`,
+`safetyReason: "et sensor fault"`, `heaterDuty: 0`, and the latch cannot be
+released, because it clears only after `SAFETY_CLEAR_STREAK` samples with
+**both** channels healthy - and an ET that never reads can never satisfy that.
+The machine is then un-runnable until a BT-only image is pushed over it.
+
+So the mode now lives in `platformio.ini`:
+
+```ini
+[env:esp32-ota-bt]
+extends = env:esp32-ota
+build_flags =
+    -D CORE_DEBUG_LEVEL=3
+    -D SAFETY_ET_ENABLED=0
+```
+
+It is `esp32-ota` plus that one flag: same OTA upload path (`upload_protocol =
+espota`, inherited), same `lib_deps`, same `tools/fw_build_id.py` stamping.
+`CORE_DEBUG_LEVEL` is repeated deliberately - PlatformIO **replaces**
+`build_flags` in an `extends` env instead of appending to it (`pio run -t
+envdump` shows the child's list is the whole list), so a one-line child would
+have dropped the debug level silently and differed from `esp32-ota` in more
+than the ET flag.
+
+**The default envs are untouched, on purpose.** `esp32dev` and `esp32-ota` still
+build the generic image: ET enabled, both channels, the full protection. The
+repo is published, a generic default has to stay generic, and this machine's
+reduced-protection mode belongs to a named env that says so - not to everything
+built from the repo.
+
+**Build and push (this machine, BT-only):**
+
+```sh
+pio run -e esp32-ota-bt                     # app: .pio/build/esp32-ota-bt/firmware.bin
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x        # -> POST /api/update
+pio run -e esp32-ota-bt -t buildfs          # fs:  .pio/build/esp32-ota-bt/littlefs.bin
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x fs     # -> POST /api/update/fs
+```
+
+`OTA_ENV` is only *which build directory the push script reads*: the image of a
+named env lands in `.pio/build/<env>/`, so without it the script would send
+`.pio/build/esp32-ota/firmware.bin` - the ET-enabled build. The default is
+unchanged (`esp32-ota`), and an image from the other mode's directory can no
+longer be sent by accident.
+
+**Check that it landed.** `/api/status` must answer `"etDisabled": true` (and
+`safetyReason` reads `et disabled - bt only` while the latch is clear). An image
+without the flag answers `etDisabled: false` - that is the signature of the
+wrong image on this hardware, and it starts latching ET faults immediately.
+
+**The day the probe/module is replaced.** Build with `esp32-ota` again (the
+default, ET on), push it, and confirm `/api/status` shows `etDisabled: false`
+plus a live `et` value. Nothing else has to change: `ROR_GUIDANCE_ON_BT`
+follows `SAFETY_ET_ENABLED` (`include/config.h`), so the RoR guidance switches
+back to `rorEt` by itself, and the ET trips plus the cold BT/ET cross-check are
+compiled in again. `env:esp32-ota-bt` should not be used after that - it records
+this machine's dead channel, it is not a second supported target.
+
+**Verified 2026-10-20 (host side and build only, nothing flashed).**
+
+- `pio run -e esp32-ota-bt`: **SUCCESS**, 0 warnings, RAM 16.1 %, flash 74.7 %
+  (978 949 bytes vs 979 401 for `esp32-ota` - the ET code is genuinely gone).
+  Checked in a verbose rebuild: all 90 compiler invocations of the env carry
+  `-D SAFETY_ET_ENABLED=0` and `-D CORE_DEBUG_LEVEL=3`, none carries `=1`.
+- `pio run -e esp32dev` and `pio run -e esp32-ota`: **SUCCESS**, 0 warnings -
+  the default envs are unaffected.
+- Host suite, both passes, exit 0: **1335 checks, 0 failures** with
+  `SAFETY_ET_ENABLED 1` and **1203 checks, 0 failures** with it at 0.
+- **Not verified:** nothing was pushed, so this env has not been booted on the
+  machine. The device already runs the right image (fw 0.12.0, `cf96266`), built
+  with the same flag under the old variable form - that image is what the
+  device's quiet boot is evidence for, not this env.
 
 ## RoR guidance source: BT when the ET channel is off (0.11.0, 2026-10-17)
 
@@ -739,6 +841,21 @@ pio run -e esp32-ota -t buildfs             # filesystem image (from data/)
 sh tools/ota-push.sh 192.168.x.x fs         # -> POST /api/update/fs
 ```
 
+**This machine builds with `-e esp32-ota-bt`** (BT-only: its ET channel is dead
+hardware) and pushes with `OTA_ENV=esp32-ota-bt` - the push script reads
+`.pio/build/<env>/`, so the two forms cannot be mixed up:
+
+```sh
+pio run -e esp32-ota-bt                     # app image
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x
+pio run -e esp32-ota-bt -t buildfs          # filesystem image (from data/)
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x fs
+```
+
+An ET-enabled image (`esp32-ota`, the default) answers `safetyFault: true` with
+`"et sensor fault"` on this hardware and cannot clear it. See "The machine's
+build mode: `env:esp32-ota-bt`" above.
+
 The uploading machine connects **to** the roaster and POSTs `firmware.bin` to
 `/api/update` (the app slot) or `littlefs.bin` to `/api/update/fs` (the
 filesystem partition, i.e. the web UI), token in the `X-OTA-Token` header. That
@@ -1107,6 +1224,9 @@ push. Since 0.10.0 that push is the **second route on the same endpoint**:
 pio run -e esp32-ota -t buildfs       # rebuild the filesystem image from data/
 sh tools/ota-push.sh <ip> fs          # POST /api/update/fs
 ```
+
+On this machine both lines use the BT-only env: `pio run -e esp32-ota-bt -t
+buildfs` and `OTA_ENV=esp32-ota-bt sh tools/ota-push.sh <ip> fs`.
 
 Changing `data/` and pushing only the app image is the failure this route
 exists to prevent, and it is silent: the device keeps serving the old page, and

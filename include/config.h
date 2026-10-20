@@ -247,7 +247,13 @@
 //
 // It exists for one situation - a broken ET module while the machine still has
 // to run - and is a reduced-protection build by definition. Build it that way
-// on purpose, and build again with 1 as soon as the module is replaced:
+// on purpose, and build again with 1 as soon as the module is replaced.
+//
+// This machine's dead ET channel has its own env, so the mode is not a shell
+// variable anyone can forget (platformio.ini, docs/firmware-notes.md "The
+// machine's build mode"):
+//   pio run -e esp32-ota-bt
+// The generic form still works and applies the same macro:
 //   PLATFORMIO_BUILD_FLAGS='-D SAFETY_ET_ENABLED=0' pio run -e esp32-ota
 #ifndef SAFETY_ET_ENABLED
 #define SAFETY_ET_ENABLED  1

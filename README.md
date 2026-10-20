@@ -63,6 +63,25 @@ pio run -e esp32-ota -t buildfs         # build the web UI image (it lives in da
 sh tools/ota-push.sh 192.168.x.x fs     # web UI - the normal path
 ```
 
+**This machine is BT-only and has its own env.** Its ET channel (MAX6675 +
+probe) is dead hardware, so the generic image above is the wrong one for it: an
+ET-enabled build boots straight into `safetyFault: true`,
+`"et sensor fault"`, and the latch cannot be cleared while ET reads nothing.
+Build and push the machine's image with `esp32-ota-bt` instead:
+
+```sh
+pio run -e esp32-ota-bt                          # app image
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x
+pio run -e esp32-ota-bt -t buildfs               # web UI image
+OTA_ENV=esp32-ota-bt sh tools/ota-push.sh 192.168.x.x fs
+```
+
+`OTA_ENV` only tells the push script which build directory to read (default:
+`esp32-ota`, unchanged). `/api/status` must then answer `"etDisabled": true`;
+`false` means the ET-enabled image went in. When the probe is replaced, build
+with `esp32-ota` again - see `docs/firmware-notes.md`, "The machine's build
+mode: `env:esp32-ota-bt`".
+
 Both routes POST to the device over HTTP (`/api/update` and `/api/update/fs`),
 so no connection has to come back out of the IoT network and no firewall rule is
 needed. The `fs` form writes the filesystem image to its own partition; the
