@@ -16,6 +16,11 @@ struct WebServerCallbacks {
   // the heat interlock exists for - is visible from outside.
   float (*getFanActual)();
   bool  (*getRoastActive)();
+  // The duty ceiling the running profile's bean weight produces, in percent
+  // (include/duty_ceiling.h). Reported next to the run state so a roast can be
+  // read back afterwards and say whether the ceiling was actually the binding
+  // limit. 0 = no profile is running / the profile states no weight.
+  float (*getDutyCeiling)();
   unsigned long (*getElapsedSeconds)();
   bool  (*getRoastPaused)();
   bool  (*getManualActive)();

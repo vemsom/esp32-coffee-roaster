@@ -66,6 +66,104 @@ numbers are in the table there. Host suite green (**1369 / 1225** checks, 0
 failures); `pio run -e esp32-ota-bt` SUCCESS with 0 warnings. **Nothing was
 flashed** - the device still runs 0.12.0, `build cf96266`.
 
+**2026-10-20, 0.14.0: the duty ceiling follows the bean weight.** A profile can
+now carry `beanWeight` (grams), and the control loop's request is capped by it -
+28 % at 20 g, 100 % at 100 g and up, linear between, floor 20 %, and no ceiling
+at all when the field is absent. Same reason as the trim: a 20 g charge in a
+1.1 kW drum sees ~5x the heat per gram that 100 g does. `/api/status` reports
+`dutyCeiling`. See "0.14.0 (2026-10-20): a duty ceiling that follows the bean
+weight" below. Host suite green (1440 / 1271 checks, 0 failures), both builds of
+`esp32-ota-bt` SUCCESS with 0 warnings. **Nothing was flashed.**
+
+## 0.14.0 (2026-10-20): a duty ceiling that follows the bean weight
+
+**Why.** The element is the same ~1.1 kW whatever sits in the drum. In the first
+roast with 0.12.0 (20 g, profile `ljus-1`) the loop swung **+-15-20 C around the
+target curve with a 70-80 s period** (the measurement is in "0.13.0" below). The
+trim to KP 1.2 / KI 0.04 removed the part of that which was gain, but there is a
+second mechanism underneath it, and it is not tuning: at 20 g the element heats
+~5x faster per gram than at 100 g. The loop only sees the bean temperature, and
+that signal lags by the probe and the thermal mass (~19 s, the 4L number the trim
+was reasoned against). So at full duty on a small charge the loop is asking for
+more heat than the batch can absorb, gets no evidence of it until it is already
+over the curve, and then has to take it back. That is a saturated loop, not a
+mistuned one.
+
+**The measure.** The profile can state the charge in grams (`beanWeight`), and
+the control loop's request is capped by a ceiling that follows it
+(`include/duty_ceiling.h`):
+
+```
+ceiling(w) = 28 %                                at w = 20 g   (band 25-30 %)
+           = 28 + 72 * (w - 20) / (100 - 20)     for 20 g < w < 100 g
+           = 100 %                               at w >= 100 g (today's behaviour)
+never below 20 % (DUTY_CEIL_FLOOR_PCT), and 0 / absent = no ceiling at all
+```
+
+Below the 20 g reference the same line continues downward (a 5 g charge gets less
+heat than a 20 g one) until the 20 % floor stops it - `BEAN_WEIGHT_MIN_G` is 5 g,
+where the line would be 14.5 %. The numbers live in `include/config.h`
+(`BEAN_WEIGHT_MIN_G`/`_MAX_G`, `DUTY_CEIL_REF_WEIGHT_G`, `DUTY_CEIL_AT_REF_PCT`,
+`DUTY_CEIL_FULL_WEIGHT_G`, `DUTY_CEIL_FLOOR_PCT`); 28 % is the point inside the
+25-30 % band, and the band exists because the real optimum for 20 g is a
+measurement, not a calculation - the first roast with this image is what pins it.
+
+**How it is wired, and what it is not.** In `updateControl()` (`src/main.cpp`),
+profile mode only:
+
+- the ceiling is recomputed from the active profile on every control cycle and
+  handed to the PID as its output limit (`SimplePID::setOutMax`), so the
+  anti-windup already in `include/pid.h` works against the ceiling instead of
+  against 100 %. Clipping only the request afterwards would leave the integral
+  growing against a limit it cannot see, and the loop would pay for that with an
+  overshoot the moment the setpoint was reached - the failure the ceiling is
+  there to remove;
+- the request (PID + RoR correction) is additionally clamped to the ceiling, so a
+  `rorTarget` step cannot push past it either;
+- **nothing else moved.** `applyHeaterDuty()` still applies the fan interlock and
+  still holds the element off below `FAN_MIN_FOR_HEATER_PCT`; the safety latch is
+  untouched; manual mode and a cool-down never consult the ceiling (the output
+  limit is put back to `HEATER_MAX_DUTY_PCT` when a profile ends or a manual run
+  starts, and both paths are asserted in `test_control`).
+
+**Published.** `/api/status` reports `dutyCeiling` (percent) next to
+`roastActive`, so a finished roast can be read back afterwards and answer "was
+the ceiling the binding limit, or did it never touch it?" - compare it with
+`heaterDuty` in the history, or with the run's log. `0` = no profile running (and
+also what "no ceiling" means: a profile without `beanWeight` reports 100 while it
+runs, i.e. nothing is capped).
+
+**This is a first measure, not a controller.** It does not follow the curve; it
+only stops asking for more heat than the charge can take. The overshoot that
+comes from the ~19 s dead time is still there (a slower ramp is the only thing
+that removes it). If the curve still does not track, the next step is
+**RoR-following** - `rorTarget`/`rorStart`/`rorEnd` per step already exist
+(0.7.0/0.11.0, steering on BT in this machine's build), and a gain-scheduled
+guidance trimmed from trial roasts is what Fredrik has agreed to run later. That
+is a separate change; nothing of it is in this image.
+
+**Verified, and what is still a guess.**
+
+- Host suite green: **1440 checks, 0 failures** with `SAFETY_ET_ENABLED 1` and
+  **1271** with it at 0 (`sh tools/host-tests/run.sh`, exit 0). New:
+  `tools/host-tests/test_duty_ceiling.cpp` (25 checks) pins the curve, the floor,
+  the monotonicity, that 0 g means no ceiling, that the PID's lowered output
+  limit really is what the integral is clamped against, and that the gains are
+  still 1.2 / 0.04 / 0. `test_control` (202 / 206 checks) drives the real
+  `setup()`/`loop()` through a 20 g profile (duty lands ON the ceiling, not past
+  it), the fan interlock (which still cuts to 0 % under a ceiling), a 100 g
+  profile and a weightless one (both uncapped), and a manual run after a profile
+  (no ceiling leaks out of the profile run). `test_web_server` round-trips
+  `beanWeight` through `POST /api/profiles` + `GET /api/profile`, clamps
+  out-of-range values to 5..2000 g, and asserts that a profile without the field
+  keeps a file without it.
+- `pio run -e esp32-ota-bt` and `pio run -e esp32-ota-bt -t buildfs`: SUCCESS,
+  no warnings from the files this change touched.
+- **NOT measured on the machine.** No image has been flashed with this yet. What
+  the first roast has to answer: whether 28 % is the right point for 20 g (the
+  band 25-30 % is where it is expected to land), and whether the remaining
+  overshoot is small enough that RoR-following can wait.
+
 ## 0.13.0 (2026-10-20): the first roast's four findings
 
 The first roast with 0.12.0 (20 g beans, profile `ljus-1`, BT-only image) answered
@@ -1165,6 +1263,60 @@ and then the part that only a filesystem transfer has:
   image: SHA-256 over every byte on the device, `Update.abort()` on a mismatch,
   and no restart unless `Update.end()` succeeded.
 
+### The filesystem image wipes `/profiles` - the push script puts them back
+
+**The data loss, twice.** `littlefs.bin` is built from `data/`, which contains
+`index.html` and nothing else, and `Update` with `U_SPIFFS` replaces the whole
+partition instead of merging into it. So every filesystem push deletes
+`/profiles/*.json` - the roast programs - and it did: Fredrik lost his twice
+before this was noticed. The images were correct; the partition simply does not
+survive being written.
+
+**What `tools/ota-push.sh` does about it** (fs pushes only, on by default):
+
+1. Before the image is sent: `GET /api/profiles` for the names, then
+   `GET /api/profile?name=...` for each one, into a temporary directory
+   (`mktemp -d`). If any of those reads fails, the script **aborts before the
+   push** and removes what it had read - a push that deletes the profiles without
+   a copy is the thing that must not happen. (The names are validated on the
+   device as `[A-Za-z0-9_-]{1,32}`, so the JSON array can be read with `tr`/`sed`
+   and no JSON parser is needed.)
+2. The push itself, unchanged.
+3. Once the device answers `/api/status` again (it reboots into the new
+   filesystem): `POST /api/profiles` with each saved body. That body is exactly
+   what `GET /api/profile` returned - `name` included - so what comes back is
+   what went out, `beanWeight` and the cool-down pair included. `setup()` has
+   already re-created `/profiles` at boot by then (`LittleFS.mkdir`), which is
+   why the restore does not have to.
+4. It reports `Säkerhetskopierade profiler: N` before the push and
+   `Återskapade profiler: N av M` after. A restore that fails for any profile
+   leaves the JSON files in the temporary directory, prints the path and exits
+   non-zero; the directory is otherwise removed. If the device never comes back,
+   a trap prints where the copy is - that is the one case where it is the only
+   copy left.
+
+`--no-profile-backup` skips steps 1 and 3 and says so loudly, for a device with
+no profiles or for a debugging session that wants to see the partition raw.
+
+**Verified** against a fake device that speaks the same API and wipes `/profiles`
+in its `/api/update/fs` handler (2026-10-20, the real script, the real
+`littlefs.bin`):
+
+- normal push: 2 profiles read, wiped by the push, 2 restored, and both came back
+  semantically identical (a 2-step profile with `beanWeight: 20` and a 1-step
+  profile with `beanWeight: 0`), exit 0, temp directory removed;
+- `GET /api/profile` answering 500: `FEL: kunde inte läsa profilen 'ljus-1'
+  (HTTP 500) - avbryter FÖRE pushen.`, exit 1, and the fake recorded **no**
+  `/api/update/fs` request at all;
+- `GET /api/profiles` answering 500: same, aborted before the push;
+- `--no-profile-backup`: pushes, does not restore, and says why;
+- a device with no profiles: 0 backed up, 0 restored, push completes.
+
+The one thing this cannot protect against is a push started by something other
+than the script (espota's `--spiffs`, or `pio run -t uploadfs`): those still wipe
+`/profiles`, and the script's backup is the only place the profiles exist
+afterwards.
+
 ### Filesystem OTA over espota: the command decides, and LittleFS must be unmounted
 
 **The reserve path** - the standard one is the push route above. The rule it
@@ -1825,25 +1977,25 @@ Tagged the same way as above: what it takes, not just what is left.
 WiFi/PubSubClient/ArduinoOTA headers and runs it on the host - no ESP32 and no
 broker. It runs two passes, one per build mode of `SAFETY_ET_ENABLED` (see
 "BT-only build mode" above); `--et-enabled` or `--bt-only` runs a single one.
-Last run 2026-10-19 (0.12.0, stop-and-cool and the per-profile cool-down):
-**1323 checks, 0 failures** with the flag at 1 and **1191 checks, 0
-failures** with it at 0, exit 0 both times. (The run before it, on 0.11.1 -
-the PID clamp, KD 0, the input filter and the fan ramp - read 1201 / 1069.)
-The only compiler warnings are the
+Last run 2026-10-20 (0.14.0, the bean-weight duty ceiling): **1440 checks, 0
+failures** with the flag at 1 and **1271 checks, 0 failures** with it at 0, exit
+0 both times. (The run before it, on 0.13.0 - the first roast's four findings -
+read 1369 / 1225.) The only compiler warnings are the
 pre-existing `-Wunused-parameter` ones from `web_server.cpp`'s handler
 signatures (they mirror the library's, so they are compiled with
 `-Wno-unused-parameter` in the builds that use them); nothing from the files
 this change touched. The totals count every execution:
 
-- flag 1, 14 binaries: 923 checks counted once each, plus the two the suite runs
+- flag 1, 17 binaries: 1005 checks counted once each, plus the two the suite runs
   twice - `test_mqtt_discovery` once per build language (233 again) and
-  `test_control` under ThreadSanitizer (167 again).
-- flag 0, 9 binaries: 787 checks counted once each, plus `test_mqtt_discovery`
-  (233 again) and `test_control` under ThreadSanitizer (171 again). `test_safety`
+  `test_control` under ThreadSanitizer (202 again).
+- flag 0, 10 binaries: 832 checks counted once each, plus `test_mqtt_discovery`
+  (233 again) and `test_control` under ThreadSanitizer (206 again). `test_safety`
   is flag-1 only (it asserts exactly the ET trips the flag switches off), and
-  `test_ror`, `test_fan`, `test_fan_fallback`, `test_fan_immediate` and
-  `test_pid` link neither safety.cpp nor sensors.cpp, so the flag cannot reach
-  them - they run once, in the default pass. `test_ota_push` and
+  `test_ror`, `test_fan`, `test_fan_fallback`, `test_fan_immediate`,
+  `test_pid`, `test_pid_tuning` and `test_duty_ceiling` link neither safety.cpp
+  nor sensors.cpp, so the flag cannot reach them - they run once, in the default
+  pass. `test_ota_push` and
   `test_ota_push_disabled` are flag-independent too,
   but run in BOTH passes on purpose: the endpoint answers the same in either
   build mode, and a mode-dependent endpoint would be a trap.
@@ -1936,6 +2088,17 @@ this change touched. The totals count every execution:
   about 8x. The safety half of the same story - that the latch still trips on a
   jump the filter would smooth - is in `test_control`, because it only exists in
   the path that runs `loop()`.
+- `test_duty_ceiling` - the bean-weight duty ceiling (0.14.0, 25 checks,
+  default pass only, pure logic): 28 % at 20 g inside the 25-30 % band, exactly
+  100 % at 100 g and above, the linear midpoint at 60 g, a charge below 20 g
+  getting less than 20 g's ceiling but never below the 20 % floor, the ceiling
+  never decreasing across 1..2000 g and never leaving 20-100 %, 0 g and a
+  negative weight meaning no ceiling at all, and KP/KI/KD still 1.2 / 0.04 / 0.
+  Plus the half that makes the ceiling mean something: a `SimplePID` saturated at
+  100 % is handed `setOutMax(28)`, and the very next `compute()` is capped at
+  28 % **with the I term clamped to it** and staying there under a continuing
+  error, then coming off the ceiling to 0 % once the setpoint is passed instead
+  of paying for stored integral - and `setOutMax(100)` restoring the full range.
 - `test_mqtt_discovery` - MQTT layer (233 checks): all 12 discovery configs are
   valid JSON with unique_id, device block and availability; the status payload
   carries the expected fields (including `fanFault`, `etDisabled` and the signed
@@ -1948,7 +2111,7 @@ this change touched. The totals count every execution:
   - no subscriptions, no message callback, no `command_topic` on any entity, no
   controllable entity types, and every published topic under `coffee_roaster/`
   or `homeassistant/`.
-- `test_web_server` - the profile HTTP API (88 checks): the real handlers,
+- `test_web_server` - the profile HTTP API (98 checks): the real handlers,
   dispatched through a stubbed ESPAsyncWebServer onto an in-memory LittleFS
   that logs every operation. `name=../config` and `name=../../etc/passwd` over
   GET and DELETE answer 400 and provably cause **no** filesystem call at all,
@@ -1966,9 +2129,12 @@ this change touched. The totals count every execution:
   **without reaching that call at all**, answers 409 when the control layer
   refuses, and the profile's `coolFan`/`coolMinutes` round-trip through a real
   file, are clamped to the limits, and leave a profile without them
-  byte-for-byte unchanged.
-- `test_control` - the real src/main.cpp against stubbed hardware (167 checks
-  with the flag at 1, 171 with it at 0):
+  byte-for-byte unchanged. Since 0.14.0 the same is asserted for `beanWeight`:
+  round-trip in grams, clamped to `BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G`, and
+  absent from the file of a profile that does not state one (it reads back as 0
+  over the API, which is what "no ceiling" means).
+- `test_control` - the real src/main.cpp against stubbed hardware (202 checks
+  with the flag at 1, 206 with it at 0):
   the bench case (probes disconnected, 0 C on every channel) trips the latch
   and denies manual start; `heater_set_duty(100)` cannot get past a held alarm;
   the fan interlock in manual *and* profile mode, both directions - including

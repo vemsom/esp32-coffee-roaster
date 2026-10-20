@@ -154,6 +154,7 @@ int main() {
   callbacks.getFanSpeed = []() { return 0; };
   callbacks.getFanActual = []() { return 0.0f; };
   callbacks.getRoastActive = []() { return false; };
+  callbacks.getDutyCeiling = []() { return 0.0f; };
   callbacks.getElapsedSeconds = []() { return 0UL; };
   callbacks.getRoastPaused = []() { return false; };
   callbacks.getManualActive = []() { return false; };
@@ -407,6 +408,56 @@ int main() {
                      "{\"startTemp\":170,\"steps\":[{\"ramp\":30,\"hold\":120,"
                      "\"temp\":190,\"fan\":70}]}"),
           "and its file stays byte-for-byte what it was before the fields existed");
+  }
+
+  // ------------------------------------- the bean weight (duty ceiling) ------
+  // The charge is a profile field like the cool-down pair: written by
+  // POST /api/profiles, read back by GET /api/profile, clamped to
+  // BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G, and absent from the file when the
+  // profile does not state one - a profile that never had it must not change.
+  {
+    AsyncWebServerRequest post = dispatchBody(
+        *postProfiles,
+        "{\"name\":\"weighed\",\"startTemp\":170,\"beanWeight\":20,"
+        "\"steps\":[{\"ramp\":30,\"hold\":120,\"temp\":190,\"fan\":70}]}");
+    check(isStatus(post, 200), "POST create with a bean weight answers 200");
+
+    AsyncWebServerRequest get = dispatchQuery(*getProfile, "name", String("weighed"));
+    check(isStatus(get, 200), "GET of the weighed profile answers 200");
+    check(bodyHas(get, "\"beanWeight\":20"), "the bean weight comes back in grams");
+
+    auto weighedFile = littlefs_stub::files().find(profilePath("weighed"));
+    check(weighedFile != littlefs_stub::files().end() &&
+              weighedFile->second.find("\"beanWeight\":20") != std::string::npos,
+          "the stored profile file carries beanWeight");
+
+    // Out of range: clamped to what the editor could produce, so a hand-edited
+    // profile cannot carry a value the rest of the firmware would refuse.
+    struct Weight { int given; int stored; const char *what; };
+    const Weight weights[] = {
+        {1, BEAN_WEIGHT_MIN_G, "a weight below the minimum is clamped up"},
+        {9999, BEAN_WEIGHT_MAX_G, "a weight above the maximum is clamped down"},
+    };
+    for (const Weight &w : weights) {
+      const std::string json =
+          std::string("{\"name\":\"clamped-weight\",\"startTemp\":170,\"beanWeight\":") +
+          std::to_string(w.given) + ",\"steps\":[]}";
+      AsyncWebServerRequest r = dispatchBody(*postProfiles, json);
+      check(isStatus(r, 200), std::string("POST create with ") + w.what + " answers 200");
+      AsyncWebServerRequest back =
+          dispatchQuery(*getProfile, "name", String("clamped-weight"));
+      const std::string want = "\"beanWeight\":" + std::to_string(w.stored);
+      check(bodyHas(back, want.c_str()), w.what);
+    }
+
+    // No stated weight: 0 over the API (= no ceiling), and no field in the
+    // file - the same rule the cool-down pair follows.
+    AsyncWebServerRequest plain = dispatchQuery(*getProfile, "name", String("morning"));
+    check(bodyHas(plain, "\"beanWeight\":0"),
+          "a profile without a bean weight reports 0 (no ceiling)");
+    check(littlefs_stub::files()[profilePath("morning")].find("beanWeight") ==
+              std::string::npos,
+          "and no beanWeight is written into its file");
   }
 
   // ------------------------------------------- build identity in /api/status --

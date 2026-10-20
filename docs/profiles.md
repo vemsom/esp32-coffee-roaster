@@ -17,6 +17,7 @@ there.
 ```json
 {
   "startTemp": 20,
+  "beanWeight": 20,
   "coolFan": 100,
   "coolMinutes": 5,
   "steps": [
@@ -30,6 +31,7 @@ there.
 | Field | Unit | Meaning |
 | --- | --- | --- |
 | `startTemp` | °C | The temperature the roast starts from at 0 min. Default 20 (room temperature) if the field is absent. |
+| `beanWeight` | g | The charge in the drum, 5-2000. **0 or absent = no duty ceiling** (see below). |
 | `steps` | array | Ordered list of steps, at least one. See below. |
 | `coolFan` | % | Fan speed of the cool-down that starts by itself when the last step has run out. 1-100. **0 or absent = no cooling.** |
 | `coolMinutes` | minutes | Length of that cool-down. 0.5-120. **0 or absent = no cooling.** |
@@ -53,6 +55,32 @@ ramp step from the previous point's time. New profiles always use `steps`.
 The file is written by the firmware as minutes-in-the-UI but **seconds on
 disk** (`ramp`/`hold`), because that is what the control loop works in. The
 editor converts both ways.
+
+## Bean weight and the duty ceiling (0.14.0)
+
+`beanWeight` is the charge in the drum, in grams. It does not change the curve;
+it caps how much heat the control loop may ask for, because the element is the
+same 1.1 kW whether the drum holds 20 g or 100 g:
+
+| Weight | Max duty |
+| --- | --- |
+| 5 g | 20 % (the floor) |
+| 20 g | 28 % |
+| 40 g | 46 % |
+| 60 g | 64 % |
+| 100 g and above | 100 % (no cap) |
+
+Linear between 20 g and 100 g, and the same line continues below 20 g until the
+20 % floor. **0 or absent means no ceiling**, which is what every profile
+written before the field existed says - those behave exactly as they did.
+
+The ceiling only limits the control loop's request. The safety latch, the fan
+interlock and the element's own limits are untouched, and a manual run or a
+cool-down never has a ceiling. While a profile runs, `/api/status` reports the
+ceiling as `dutyCeiling` (percent; `0` when no profile is running), so a
+finished roast can be read back and say whether the ceiling was what limited it.
+RoR-following is the next step if a curve still does not track - see
+`docs/firmware-notes.md`, "0.14.0".
 
 ## Timeline
 
@@ -93,7 +121,7 @@ reaching the fan as something the fan cannot do.
 | Request | What it does |
 | --- | --- |
 | `GET /api/profiles` | Names of the stored profiles, as a JSON array. |
-| `GET /api/profile?name=<name>` | One profile in the format above, plus `name`. `coolFan`/`coolMinutes` are always present (`0` = none). |
+| `GET /api/profile?name=<name>` | One profile in the format above, plus `name`. `coolFan`/`coolMinutes` are always present (`0` = none), and so is `beanWeight` (`0` = no duty ceiling). |
 | `POST /api/profiles` | Create/overwrite one profile. Body: the object above plus `"name"`. |
 | `DELETE /api/profile?name=<name>` | Remove one profile. |
 | `POST /api/roast/start` | `{"profile":"<name>"}` - start a roast on that profile. |

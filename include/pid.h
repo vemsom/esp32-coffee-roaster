@@ -96,6 +96,19 @@ public:
     return output;
   }
 
+  // The upper output limit is movable at run time. The bean-weight duty
+  // ceiling (include/duty_ceiling.h) is a decision the controller has to know
+  // about, not a clamp applied after it: if only the request were clipped, the
+  // integral would keep growing against a ceiling it cannot see, and the loop
+  // would pay for that with an overshoot the moment the setpoint is reached.
+  // Moving _outMax here reuses the anti-windup above unchanged - it already
+  // tests the output against _outMax.
+  void setOutMax(double outMax) {
+    if (outMax < _outMin) outMax = _outMin;
+    _outMax = outMax;
+  }
+  double outMax() const { return _outMax; }
+
   // The contributions as they were last applied (percent, except integral,
   // which is the raw C*s state). Reported by /api/status so the loop can be
   // trimmed against a machine that is running, and so a stuck or clamped

@@ -419,7 +419,17 @@
 // finished roast's time base, and the PID is trimmed (KP 1.2 / KI 0.04, see the
 // PID block below). Control behaviour differs on the same profile, so a new
 // release.
-#define FW_VERSION "0.13.0"
+// 0.14.0 = the bean weight in the profile, and a duty ceiling that follows it.
+// A profile can carry `beanWeight` (grams); with 20 g in the drum the duty is
+// capped at DUTY_CEIL_AT_REF_PCT (28 %) instead of 100 %, rising linearly to
+// 100 % at 100 g and up, floored at DUTY_CEIL_FLOOR_PCT. Same element, same
+// settling time, ~5x the heat per gram at 20 g: the loop used to saturate and
+// swing (+-15-20 C at a 70-80 s period). The ceiling only caps the control
+// loop's request - the safety latch, the fan interlock and applyHeaterDuty()
+// are untouched. /api/status reports `dutyCeiling` next to `roastActive`. A
+// profile without the field behaves exactly as in 0.13.0, but the field
+// existing means the same file can make a different decision, so a new release.
+#define FW_VERSION "0.14.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is
@@ -511,6 +521,35 @@
 // #if, and `25.0f` is not a valid preprocessor expression.
 #define FAN_SLEW_PCT_PER_SEC  25.0
 #endif
+
+// ---- Bönvikt och duty-tak ----
+// Vikten i trumman bestämmer hur mycket effekt som är rimlig att lägga på.
+// Samma 1,1 kW-element som värmer 100 g bönor värmer 20 g med ~5x effekten per
+// gram: reglerloopen hinner aldrig se att den redan ligger för högt, mättas och
+// svänger (första rosten 2026-10-20: +-15-20 C kring målkurvan, period 70-80 s).
+// Taket är alltså en FÖRSTA åtgärd - det tar bort det värsta överskjutandet utan
+// att röra PID-konstanterna. RoR-följning (rikta rampen i stället för att jaga
+// den) är nästa steg om kurvan fortfarande inte följer.
+//
+// Bara PID:ns utsignal begränsas (updateControl(), src/main.cpp). Säkerhets-
+// latchen, fläktspärren och applyHeaterDuty()s egna gränser står orörda, och
+// tvingade lägen (manuell körning, kylning) har inget tak alls.
+//
+// Vikten är ett profilfält i gram: BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G. 0
+// eller utelämnat = inget tak (oförändrat beteende för alla profiler som
+// skrevs innan fältet fanns).
+#define BEAN_WEIGHT_MIN_G          5
+#define BEAN_WEIGHT_MAX_G          2000
+// Taket som funktion av vikten (include/duty_ceiling.h):
+//   w <= 20 g            -> linjärt vidare nedåt från DUTY_CEIL_AT_REF_PCT
+//                           (28 % vid 20 g, bandet 25-30 %), dock aldrig under
+//                           DUTY_CEIL_FLOOR_PCT (20 %)
+//   20 g < w < 100 g     -> linjär interpolering 28 -> 100 %
+//   w >= 100 g           -> 100 % (dagens beteende)
+#define DUTY_CEIL_REF_WEIGHT_G     20
+#define DUTY_CEIL_AT_REF_PCT       28.0f
+#define DUTY_CEIL_FULL_WEIGHT_G    100
+#define DUTY_CEIL_FLOOR_PCT        20.0f
 
 // ---- Profil-lagring ----
 #define PROFILES_DIR "/profiles"

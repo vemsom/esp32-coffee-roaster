@@ -12,6 +12,7 @@
 #include "heater_control.h"
 #include "fan_control.h"
 #include "roast_profile.h"
+#include "duty_ceiling.h"
 #include "web_server.h"
 #include "ota_push.h"
 #include "mqtt_client.h"
@@ -108,6 +109,13 @@ static unsigned long roastStartMillis = 0;
 static bool roastPaused = false;
 static unsigned long roastPauseStarted = 0;
 static unsigned long roastPausedTotal = 0;
+
+// The duty ceiling the running profile's bean weight produces, in percent
+// (include/duty_ceiling.h). Recomputed every profile control cycle and reported
+// by /api/status next to roastActive, so a roast can be read back afterwards
+// and say whether the ceiling was the binding limit. 0 = no profile running or
+// the profile states no weight (the pre-0.14.0 behaviour: no ceiling).
+static float currentDutyCeiling = 0;
 
 // ---- Cool mode state (fan-only timer, independent of heater control) ----
 // Reached three ways: the cooling panel, "Avbryt och kyl" on a running roast
@@ -254,6 +262,16 @@ static float cbGetFanActual() {
 static bool cbGetRoastActive() {
   StateLockGuard guard;
   return controlMode == MODE_PROFILE;
+}
+
+// The bean-weight duty ceiling of the running profile, in percent. Reported
+// next to roastActive so the two are read from one snapshot: a ceiling without
+// a run (or the other way round) would be a stale number. 0 when no profile is
+// running, which is also what "no ceiling" reads as.
+static float cbGetDutyCeiling() {
+  StateLockGuard guard;
+  if (controlMode != MODE_PROFILE) return 0.0f;
+  return currentDutyCeiling;
 }
 
 // Roast time excludes any paused stretches, so pausing holds the current
@@ -415,6 +433,11 @@ static bool cbStartManual(float targetTemp, unsigned long durationSeconds,
   manualCoolSpeed = coolSpeed;
   manualCoolSeconds = coolSeconds;
   heaterPID.reset();
+  // Manual mode has no bean weight and therefore no ceiling: the output limit
+  // reads 100 % exactly as it did before the ceiling existed. A profile run
+  // sets it again (updateControl), so this is what leaves a previous profile's
+  // ceiling behind.
+  heaterPID.setOutMax(HEATER_MAX_DUTY_PCT);
   // Start the control input from the reading that exists right now instead of
   // from the filter's leftover state (or from nothing, which would look like a
   // cold probe for one sample): the first control cycle sees the real machine.
@@ -487,6 +510,11 @@ static bool cbStartRoast(const String &profileName) {
   snprintf(selectedProfileName, sizeof(selectedProfileName), "%s",
            profileName.c_str());
   heaterPID.reset();
+  // The ceiling is known the moment the profile is: set it here so the first
+  // control cycle cannot already be at 100 % (updateControl recomputes it on
+  // every cycle anyway).
+  currentDutyCeiling = dutyCeilingPct(activeProfile.beanWeight());
+  heaterPID.setOutMax(currentDutyCeiling);
   btControlFilter.seed(currentBT);
   currentBTFiltered = currentBT;
   resetRorGuidance();
@@ -517,6 +545,10 @@ static void stopRoastLocked() {
   roastPauseStarted = 0;
   roastPausedTotal = 0;
   resetRorGuidance();
+  // The ceiling belonged to the profile that just ended: back to the plain
+  // 0-100 % range so a later manual run cannot inherit it.
+  currentDutyCeiling = 0;
+  heaterPID.setOutMax(HEATER_MAX_DUTY_PCT);
   applyHeaterDuty(0);
   clearCoolLocked();
 }
@@ -605,6 +637,10 @@ static void abortRunForSafety() {
   manualStartMillis = 0;
   manualAutoCool = false;
   resetRorGuidance();
+  // Same as stopRoastLocked(): a ceiling must never outlive the run it came
+  // from, least of all on the path a safety trip takes.
+  currentDutyCeiling = 0;
+  heaterPID.setOutMax(HEATER_MAX_DUTY_PCT);
   applyHeaterDuty(0);
 }
 
@@ -713,6 +749,14 @@ static void updateControl() {
     if (activeProfile.hasFan()) {
       cbSetFanSpeed((int)(activeProfile.fanAt(elapsed) + 0.5f));
     }
+    // The control loop's duty ceiling for this charge (include/duty_ceiling.h):
+    // the same element heats 20 g ~5x faster per gram than 100 g, so the loop
+    // overshoots before it can see it. Recomputed every cycle because the
+    // profile can be reloaded between runs, and published through /api/status.
+    // The PID gets the same number as its output limit, so its anti-windup
+    // works against the ceiling instead of against 100 %.
+    currentDutyCeiling = dutyCeilingPct(activeProfile.beanWeight());
+    heaterPID.setOutMax(currentDutyCeiling);
     float target = activeProfile.targetAt(elapsed);
     // The PID reads the FILTERED bean temperature (currentBTFiltered); the raw
     // currentBT is what the safety layer, the RoR fit and the UI get. Guarding
@@ -723,6 +767,12 @@ static void updateControl() {
       float duty = pidDuty + rorCorrection;
       if (duty > HEATER_MAX_DUTY_PCT) duty = HEATER_MAX_DUTY_PCT;
       if (duty < 0.0f) duty = 0.0f;
+      // The ceiling caps the REQUEST only, and it sits here rather than inside
+      // applyHeaterDuty() on purpose: the interlock below judges the request
+      // and may take it to 0 %, which is a safety decision the ceiling must
+      // never be able to affect. A manual run and a cool-down never reach this
+      // line, so their behaviour is unchanged.
+      if (duty > currentDutyCeiling) duty = currentDutyCeiling;
       applyHeaterDuty(duty);
     }
   } else if (controlMode == MODE_MANUAL) {
@@ -991,6 +1041,7 @@ void setup() {
     cbGetFanSpeed,
     cbGetFanActual,
     cbGetRoastActive,
+    cbGetDutyCeiling,
     cbGetElapsedSeconds,
     cbGetRoastPaused,
     cbGetManualActive,

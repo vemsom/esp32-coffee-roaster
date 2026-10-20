@@ -54,6 +54,12 @@ static void handleStatus(AsyncWebServerRequest *request) {
     // field that explains a fanFault next to a fanSpeed of 100.
     doc["fanActual"] = cb.getFanActual();
     doc["roastActive"] = cb.getRoastActive();
+    // The duty ceiling the running profile's bean weight produces, in percent
+    // (include/duty_ceiling.h). 0 = no profile running (or the profile states
+    // no weight), which is also the pre-0.14.0 behaviour: no ceiling at all.
+    // Kept next to roastActive so a finished roast can be read back afterwards
+    // and say whether the ceiling was the binding limit or never touched.
+    doc["dutyCeiling"] = cb.getDutyCeiling();
     doc["elapsedSeconds"] = cb.getElapsedSeconds();
     doc["roastPaused"] = cb.getRoastPaused();
     doc["manualActive"] = cb.getManualActive();
@@ -295,6 +301,11 @@ static void handleProfileGet(AsyncWebServerRequest *request) {
   // show the fields without guessing what a missing key means.
   doc["coolFan"] = p.coolFanPct();
   doc["coolMinutes"] = p.coolMinutes();
+  // Always present (0 = not stated = no duty ceiling), for the same reason as
+  // the cool-down pair: the editor should not have to guess what a missing key
+  // means, and the profile export reads this endpoint - a field left out here
+  // would be a field the export silently drops.
+  doc["beanWeight"] = p.beanWeight();
   JsonArray steps = doc["steps"].to<JsonArray>();
   for (const auto &s : p.steps()) {
     JsonObject o = steps.add<JsonObject>();
@@ -339,6 +350,10 @@ static void handleProfileCreate(AsyncWebServerRequest *request, uint8_t *data, s
   // setCool() clamps to the limits in include/config.h, so a hand-written
   // number cannot carry a value the rest of the firmware would refuse.
   p.setCool(doc["coolFan"] | 0.0f, doc["coolMinutes"] | 0.0f);
+  // The charge in grams. Absent or 0 = no duty ceiling (the behaviour every
+  // earlier profile has), otherwise clamped by setBeanWeight() to
+  // BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G in include/config.h.
+  p.setBeanWeight(doc["beanWeight"] | 0);
   for (JsonObject s : doc["steps"].as<JsonArray>()) {
     float rorTarget = s["rorTarget"] | 0.0f;
     if (rorTarget > 0.0f) {

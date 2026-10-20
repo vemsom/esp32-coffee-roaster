@@ -236,6 +236,23 @@ kyl" is for; the profile's values belong to the profile running to its end. The
 pause is unchanged by all of this: it freezes the roast clock and keeps the
 element at the setpoint that was active.
 
+## Bean weight and the duty ceiling
+
+A profile can state the charge in grams (`beanWeight`). The element is the same
+~1.1 kW whatever is in the drum, so a 20 g batch sees roughly five times the heat
+per gram a 100 g batch does - enough that the loop saturates and swings instead
+of tracking the curve. The charge caps the control loop's request: **28 % at
+20 g**, rising linearly to **100 % at 100 g and above**, never below 20 %, and
+**0 or absent means no ceiling** (every profile written before the field
+existed). It only limits the request - the safety alarm, the fan interlock and
+the element's own limits are untouched, and a manual run or a cool-down has no
+ceiling. `/api/status` reports the active value as `dutyCeiling` next to
+`roastActive` (`0` = no profile running).
+
+This is a first measure against a saturated loop, not a curve-following
+controller; see `docs/firmware-notes.md` ("0.14.0") for the reasoning and
+[docs/profiles.md](docs/profiles.md) for the field.
+
 ## Safety limits
 
 The heater sits behind a latched alarm that no command can silence. It trips on:

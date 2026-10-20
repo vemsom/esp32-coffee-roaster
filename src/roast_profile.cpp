@@ -10,6 +10,7 @@ void RoastProfile::clear() {
   _startTemp = 20;
   _coolFanPct = 0;
   _coolMinutes = 0;
+  _beanWeight = 0;
 }
 
 // Cooling is a pair: a fan speed without a time (or the other way round) is
@@ -29,6 +30,23 @@ void RoastProfile::setCool(float fanPct, float minutes) {
   if (minutes > COOL_MINUTES_MAX) minutes = COOL_MINUTES_MAX;
   _coolFanPct = fanPct;
   _coolMinutes = minutes;
+}
+
+// The charge in the drum. 0 (or anything <= 0) means "not stated", which turns
+// the duty ceiling off - that is what every profile written before the field
+// existed says, so those keep behaving as they did. A stated weight is clamped
+// to BEAN_WEIGHT_MIN_G..BEAN_WEIGHT_MAX_G for the same reason setCool() clamps:
+// a hand-edited file must not be able to carry a value the editor could not
+// produce, and a 3 g or 5000 g profile would otherwise silently get a ceiling
+// nobody asked for.
+void RoastProfile::setBeanWeight(int grams) {
+  if (grams <= 0) {
+    _beanWeight = 0;
+    return;
+  }
+  if (grams < BEAN_WEIGHT_MIN_G) grams = BEAN_WEIGHT_MIN_G;
+  if (grams > BEAN_WEIGHT_MAX_G) grams = BEAN_WEIGHT_MAX_G;
+  _beanWeight = grams;
 }
 
 // The end of the last step. Used by src/main.cpp to decide that the profile is
@@ -164,6 +182,9 @@ bool RoastProfile::loadFromFile(const String &path) {
   // all mean "no automatic cooling", which is what every profile written
   // before these fields existed says - so those keep behaving as they did.
   setCool(doc["coolFan"] | 0.0f, doc["coolMinutes"] | 0.0f);
+  // The charge. Absent or 0 = no duty ceiling, i.e. the pre-0.14.0 behaviour;
+  // a stated weight is clamped like every other profile value.
+  setBeanWeight(doc["beanWeight"] | 0);
 
   if (doc["steps"].is<JsonArray>()) {
     for (JsonObject s : doc["steps"].as<JsonArray>()) {
@@ -215,6 +236,14 @@ bool RoastProfile::saveToFile(const String &path) const {
   if (_coolFanPct > 0.0f && _coolMinutes > 0.0f) {
     doc["coolFan"] = _coolFanPct;
     doc["coolMinutes"] = _coolMinutes;
+  }
+
+  // The charge, only when the profile states one (same rule as above): a
+  // profile without it has to stay byte-for-byte identical to what it was
+  // before the field existed. 0 means "no ceiling", so writing it would say
+  // the same thing at the cost of touching every old file.
+  if (_beanWeight > 0) {
+    doc["beanWeight"] = _beanWeight;
   }
 
   File f = LittleFS.open(path, "w");

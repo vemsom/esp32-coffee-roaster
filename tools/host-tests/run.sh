@@ -23,6 +23,11 @@
 #                        against the shipped ones over a first-order-plus-dead-
 #                        time plant identified from the measured 70-78 s /
 #                        +-15-20 C oscillation. Pure logic. Default pass only.
+#   test_duty_ceiling    the bean-weight duty ceiling (0.14.0): 25-30 % at 20 g,
+#                        100 % at 100 g and up, linear between, 20 % floor, 0 g
+#                        = no ceiling - and that the PID's lowered output limit
+#                        is what its integral is clamped against. Pure logic.
+#                        Default pass only.
 #   test_safety          safety latch + heater interlock, stubbed Arduino.
 #                        DEFAULT PASS ONLY: it asserts the ET trips (ET
 #                        over-temp, an ET sensor fault, a frozen ET and the
@@ -294,6 +299,16 @@ run_pass() {
         -I "$here/stub" -I "$root/include" \
         "$here/test_pid_tuning.cpp" \
         -o "$out/test_pid_tuning"
+
+    # The bean-weight duty ceiling (0.14.0, include/duty_ceiling.h) and the
+    # PID's movable output limit that makes the controller honour it: the curve
+    # (25-30 % at 20 g, 100 % at 100 g, linear between, 20 % floor, 0 g = no
+    # ceiling) and that a lowered outMax is what the integral is clamped
+    # against. Pure logic over its own clock, no flag, one pass.
+    g++ -std=c++17 -Wall -Wextra \
+        -I "$here/stub" -I "$root/include" \
+        "$here/test_duty_ceiling.cpp" \
+        -o "$out/test_duty_ceiling"
   fi
 
   # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
@@ -388,6 +403,7 @@ run_pass() {
     run_test "$out/test_fan_immediate"
     run_test "$out/test_pid"
     run_test "$out/test_pid_tuning"
+    run_test "$out/test_duty_ceiling"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the

@@ -144,10 +144,14 @@ static unsigned long g_profileRampSeconds = 0;
 static unsigned long g_profileHoldSeconds = 600;
 static float g_profileCoolFan = 0.0f;
 static float g_profileCoolMinutes = 0.0f;
+// The charge the canned profile states, in grams. 0 (the default) = no duty
+// ceiling, so no other section is affected by the ceiling test.
+static int g_profileBeanWeight = 0;
 
 bool RoastProfile::loadFromFile(const String &) {
   _hasFan = true;
   _startTemp = 20;
+  _beanWeight = g_profileBeanWeight;
   _steps = { ProfileStep{ g_profileRampSeconds, g_profileHoldSeconds, 200, g_profileFan,
                           0.0f, 0.0f, 0.0f } };
   setCool(g_profileCoolFan, g_profileCoolMinutes);
@@ -170,6 +174,7 @@ void RoastProfile::clear() {
   _hasFan = false;
   _coolFanPct = 0;
   _coolMinutes = 0;
+  _beanWeight = 0;
 }
 // The canned profile is the test's own knob: it takes the pair as given, and
 // the 0-means-off rule is the one the real setCool() documents. The clamping of
@@ -183,6 +188,12 @@ void RoastProfile::setCool(float fanPct, float minutes) {
   }
   _coolFanPct = fanPct;
   _coolMinutes = minutes;
+}
+// The canned profile takes the stated weight as given (0 = none). The clamping
+// of out-of-range numbers is exercised against the REAL implementation in
+// test_web_server, where a profile really is written and read back.
+void RoastProfile::setBeanWeight(int grams) {
+  _beanWeight = grams > 0 ? grams : 0;
 }
 unsigned long RoastProfile::totalSeconds() const {
   unsigned long total = 0;
@@ -408,6 +419,77 @@ int main() {
   check(ssrState == HIGH, "element conducts in auto mode");
   web.stopRoast();
   runLoops(2);
+
+  // --------------------------- bean weight caps the duty (0.14.0) -----------
+  // The element is the same 1.1 kW whatever is in the drum, so a 20 g charge
+  // gets ~5x the heat per gram that 100 g does. The profile's beanWeight caps
+  // the control loop's request at 28 % there, rising to 100 % at 100 g. Nothing
+  // else may change: the interlock still wins, manual mode has no ceiling, and
+  // a profile without the field behaves as before.
+  g_profileBeanWeight = 20;
+  check(web.startRoast(String("ceiling-20")), "a 20 g profile starts");
+  web.setFanSpeed(100);
+  runLoops(6);
+  check(web.getRoastActive(), "the 20 g profile is running");
+  check(web.getDutyCeiling() >= 25.0f && web.getDutyCeiling() <= 30.0f,
+        "status reports a 25-30 % duty ceiling for 20 g");
+  check(web.getHeaterDuty() <= web.getDutyCeiling() + 0.001f,
+        "the duty request never passes the ceiling");
+  check(web.getHeaterDuty() == web.getDutyCeiling(),
+        "under the ceiling the loop asks for exactly the ceiling, not less");
+  check(!web.getFanFault(), "and the ceiling is not the interlock: air is fine");
+
+  // The ceiling is not a safety limit: the fan interlock still takes the
+  // element to 0 %, and it does so regardless of what the ceiling says. The
+  // profile drives the fan itself, so the low speed comes from the profile.
+  g_profileFan = 5.0f;
+  runLoops(4);
+  check(web.getFanFault() && web.getHeaterDuty() == 0 && ssrState == LOW,
+        "the fan interlock still cuts the element under a ceiling");
+  g_profileFan = 80.0f;
+  runLoops(4);
+  check(web.getHeaterDuty() == web.getDutyCeiling(),
+        "and the ceiling is back in charge once the air returns");
+
+  web.stopRoast();
+  runLoops(2);
+  check(web.getDutyCeiling() == 0.0f, "no profile running reports no ceiling");
+
+  // 100 g and up: the ceiling is 100 %, i.e. today's behaviour.
+  g_profileBeanWeight = 100;
+  check(web.startRoast(String("ceiling-100")), "a 100 g profile starts");
+  runLoops(6);
+  check(web.getDutyCeiling() == HEATER_MAX_DUTY_PCT,
+        "100 g reports 100 %, so nothing is capped");
+  check(web.getHeaterDuty() > 30.0f,
+        "and the duty really is allowed past the 20 g ceiling");
+  web.stopRoast();
+  runLoops(2);
+
+  // A profile without the field (0) keeps the pre-0.14.0 behaviour exactly.
+  g_profileBeanWeight = 0;
+  check(web.startRoast(String("no-weight")), "a profile without a weight starts");
+  runLoops(6);
+  check(web.getDutyCeiling() == HEATER_MAX_DUTY_PCT,
+        "no stated weight means no ceiling");
+  check(web.getHeaterDuty() > 30.0f, "and the duty is unlimited there");
+  web.stopRoast();
+  runLoops(2);
+
+  // Manual mode has no bean weight and therefore no ceiling: the ceiling must
+  // never leak out of a profile run into a forced mode. Stop left the fan off,
+  // so bring it back the way an operator would - the interlock refuses heat
+  // without air, and that is older than this feature.
+  web.setFanSpeed(100);
+  runLoops(4);
+  check(web.startManual(200, 600, false, 0, 0), "a manual run starts after a profile");
+  runLoops(4);
+  check(web.getDutyCeiling() == 0.0f, "manual mode reports no ceiling");
+  check(web.getHeaterDuty() > 30.0f,
+        "and manual mode is not capped by the previous profile's weight");
+  web.stopManual();
+  runLoops(2);
+  g_profileBeanWeight = 0;
 
   // ------------------------------- stop and cool: one command, one lock -----
   // The point of the combined command is that the fan never passes through
