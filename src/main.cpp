@@ -453,10 +453,19 @@ static bool cbStartCool(int speed, unsigned long durationSeconds) {
   return startCoolLocked(speed, durationSeconds);
 }
 
-static void cbStopCool() {
-  StateLockGuard guard;
+// Clears the cool timer. The caller holds the state lock, and it deliberately
+// does NOT touch the fan - the same rule the roast stop below follows. A caller
+// that ends a cooling because the whole run has to stop commands the fan
+// itself, and one that ends it to hand over to a fresh cool speed (the profile
+// end, "Avbryt och kyl") must not put the fan through 0 % first.
+static void clearCoolLocked() {
   coolActive = false;
   coolStartMillis = 0;
+}
+
+static void cbStopCool() {
+  StateLockGuard guard;
+  clearCoolLocked();
   cbSetFanSpeed(0);
 }
 
@@ -490,9 +499,17 @@ static bool cbStartRoast(const String &profileName) {
 }
 
 // The state part of a stop, shared by the plain stop and stop-and-cool. The
-// caller holds the state lock. It leaves the fan alone on purpose: Stop keeps
-// the behaviour it has always had (the fan stays where the run left it until
-// something else commands it), and a stop that wants air says so itself.
+// caller holds the state lock. It leaves the fan alone on purpose: a stop that
+// wants air says so itself, and one that is about to hand over to a cool speed
+// must not pass through 0 % on the way.
+//
+// Cooling IS ended here, though. From the roast tab a running cool-down is
+// still "the run": Stop pressed after "Avbryt och kyl" used to leave the fan
+// spinning with the only stop button on the manual tab (measured on the machine
+// 2026-10-20 - the fan kept running until /api/cool/stop was called by hand).
+// The two callers that want a cool-down after this call (cbStopRoastAndCool,
+// finishProfileLocked) start it after the stop, so ending it here cannot race
+// them.
 static void stopRoastLocked() {
   if (controlMode == MODE_PROFILE) controlMode = MODE_IDLE;
   roastStartMillis = 0;
@@ -501,11 +518,17 @@ static void stopRoastLocked() {
   roastPausedTotal = 0;
   resetRorGuidance();
   applyHeaterDuty(0);
+  clearCoolLocked();
 }
 
 static void cbStopRoast() {
   StateLockGuard guard;
   stopRoastLocked();
+  // A stop from the roast view means everything off, the fan included: the
+  // profile's last fan speed must not keep running where no control on that tab
+  // can stop it. A SAFETY abort still leaves the fan alone (abortRunForSafety) -
+  // there the beans need air while the fault is handled.
+  setFanSpeedLocked(0);
 }
 
 // "Avbryt och kyl": stop the roast and start the cool-down in ONE critical

@@ -122,6 +122,16 @@
       <div class="hint" data-i18n="hintStopAndCool">Stoppar rostningen och startar kylningen (endast fläkt) i samma kommando – fläkten stannar aldrig emellan. Stopp till vänster startar ingen kylning.</div>
     </div>
 
+    <!-- A running cool-down, on the tab the roast is on. It used to exist only
+         in the manual view's cooling panel, so after "Avbryt och kyl" the fan
+         kept running with no stop button where the operator was looking. -->
+    <div class="panel" id="roastCoolPanel" style="display:none;">
+      <div class="panel-heading" data-i18n="headingCooling">Kylning (endast fläkt)</div>
+      <div class="big" id="roastCoolRemaining">--:--</div>
+      <div class="status-line" id="roastCoolStatus">Inaktiv</div>
+      <button class="danger" id="roastCoolStopBtn" data-i18n="btnStopCooling">Stoppa kylning</button>
+    </div>
+
     <canvas id="chart" height="600"></canvas>
   </div>
 
@@ -279,6 +289,12 @@ const COLOR_FAN_ACTUAL = 'rgba(52,199,89,0.85)';  // measured fan duty (both vie
 const state = {
   status: {},
   history: [],
+  // The largest roast time the current run has reached. The firmware clock goes
+  // back to 0 when the run ends, so this is what keeps the finished roast on the
+  // x axis until a new one starts (see chartTimeFor()).
+  chartSpanT: 0,
+  chartWasActive: false,  // the roastActive value of the previous poll
+  chartNewRoast: false,   // set by chartTimeFor() when a run starts
   profileNames: [],
   lang: 'sv',            // build language of the firmware; the markup below is
                          // Swedish, so nothing flips before the first /api/status
@@ -325,7 +341,8 @@ const I18N = {
     btnStartRoast: 'Starta rostning', btnPause: 'Pausa', btnResume: 'Återuppta',
     btnStop: 'Stopp', btnStart: 'Starta', btnSetFan: 'Sätt fläkt',
     btnStartCool: 'Starta kylning', btnNewProfile: 'Ny profil',
-    btnStopAndCool: 'Avbryt och kyl',
+    btnStopAndCool: 'Avbryt och kyl', btnStopCooling: 'Stoppa kylning',
+    errStopCool: 'Kunde inte stoppa kylningen: {msg}',
     labelCoolFan: 'Kylvarvtal (%)', labelCoolMinutes: 'Kylminuter (min)',
     headingProfileCool: 'Kylning efter sista steget (endast fläkt)',
     hintStopAndCool: 'Stoppar rostningen och startar kylningen (endast fläkt) i samma kommando – fläkten stannar aldrig emellan. Stopp till vänster startar ingen kylning.',
@@ -382,7 +399,8 @@ const I18N = {
     btnStartRoast: 'Start roast', btnPause: 'Pause', btnResume: 'Resume',
     btnStop: 'Stop', btnStart: 'Start', btnSetFan: 'Set fan',
     btnStartCool: 'Start cooling', btnNewProfile: 'New profile',
-    btnStopAndCool: 'Stop and cool',
+    btnStopAndCool: 'Stop and cool', btnStopCooling: 'Stop cooling',
+    errStopCool: 'Could not stop the cooling: {msg}',
     labelCoolFan: 'Cool fan (%)', labelCoolMinutes: 'Cool minutes (min)',
     headingProfileCool: 'Cooling after the last step (fan only)',
     hintStopAndCool: 'Stops the roast and starts the cooling (fan only) in one command – the fan never stops in between. Stop to the left starts no cooling.',
@@ -503,6 +521,33 @@ function manualTarget() {
 }
 
 // ---------------------------------------------------------- status poll ---
+
+// The chart's time base, kept out of pollStatus() so it can be executed by the
+// host check (tools/host-tests/check_web_chart.js) instead of only reasoned
+// about. s is a /api/status object, st is the page's state.
+//
+// Why it exists: the firmware's roast clock drops to 0 the instant a run ends
+// (a stop, or the profile's last step), so plotting s.elapsedSeconds directly
+// folded a finished roast back onto 0 min - the curve jumped to the left when
+// "Avbryt och kyl" was pressed even though every sample was still there.
+// The span is the largest time this roast reached: later samples (cooling,
+// idle) are pinned to it, and only a NEW roast resets it.
+function chartTimeFor(s, st) {
+  const active = !!s.roastActive;
+  if (active && !st.chartWasActive) {   // a new roast: its own time base
+    st.chartSpanT = 0;
+    st.chartNewRoast = true;
+  }
+  st.chartWasActive = active;
+  if (active) st.chartSpanT = Math.max(st.chartSpanT || 0, s.elapsedSeconds || 0);
+  return active ? (s.elapsedSeconds || 0) : (st.chartSpanT || 0);
+}
+
+// The x axis' right edge: never shorter than the roast that just finished, so a
+// stopped run keeps its scale instead of being squeezed into the first seconds.
+function chartMaxT(profileEnd, lastT, spanT) {
+  return Math.max(300, profileEnd || 0, lastT || 0, spanT || 0);
+}
 
 // Network indicator. Two different failures, one pill, because from the
 // browser's point of view they are the same thing: I cannot reach the
@@ -658,7 +703,24 @@ async function pollStatus() {
     ? t('coolActive', { p: s.coolSpeed })
     : t('statusInactive');
 
-  state.history.push({ t: s.elapsedSeconds, bt: s.bt, et: s.et, heater: s.heaterDuty, fan: s.fanSpeed });
+  // The same cool-down on the roast tab, where the roast was stopped: visible
+  // for exactly as long as the fan is owned by that timer, so "Avbryt och kyl"
+  // always leaves a stop button in the view it was pressed in.
+  $('roastCoolPanel').style.display = s.coolActive ? '' : 'none';
+  if (s.coolActive) {
+    $('roastCoolRemaining').textContent = fmtClock(s.coolRemainingSeconds);
+    $('roastCoolStatus').textContent = t('coolActive', { p: s.coolSpeed });
+  }
+
+  // The chart's time base: see chartTimeFor(). A new roast (started from here or
+  // from another browser) also clears the history the chart draws.
+  const chartT = chartTimeFor(s, state);
+  if (state.chartNewRoast) {
+    state.history = [];
+    state.chartNewRoast = false;
+  }
+
+  state.history.push({ t: chartT, bt: s.bt, et: s.et, heater: s.heaterDuty, fan: s.fanSpeed });
   if (state.history.length > 4000) state.history.shift();
   drawRoastCharts();
 }
@@ -677,7 +739,10 @@ function drawRoastChart(canvas, manual) {
     : null;
   const profileEnd = curve ? curve.total : 0;
   const lastT = state.history.length ? state.history[state.history.length - 1].t : 0;
-  const maxT = Math.max(300, profileEnd, lastT);
+  // chartMaxT keeps the finished roast's own length on the axis; without it a
+  // stopped run scaled back to 0 and squeezed 7 minutes of curve into the first
+  // seconds.
+  const maxT = chartMaxT(profileEnd, lastT, state.chartSpanT);
 
   const minTemp = 0, maxTemp = 260;
   const x = (t) => (t / maxT) * w;
@@ -977,6 +1042,7 @@ $('startBtn').addEventListener('click', async () => {
   const profile = $('profileSelect').value;
   if (!profile) { alert(t('pickProfile')); return; }
   state.history = [];
+  state.chartSpanT = 0;   // a new roast starts its own time base
   await api('/api/roast/start', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profile }),
@@ -1011,6 +1077,7 @@ $('manualStartBtn').addEventListener('click', async () => {
   const coolSpeed = parseInt($('coolSpeed').value);
   const coolMinutes = parseFloat($('coolMinutes').value);
   state.history = [];
+  state.chartSpanT = 0;   // the manual chart starts its own time base too
   try {
     await api('/api/manual/start', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1041,6 +1108,11 @@ $('coolStartBtn').addEventListener('click', async () => {
 });
 
 $('coolStopBtn').addEventListener('click', () => api('/api/cool/stop', { method: 'POST' }));
+
+// The roast tab's own stop for a running cool-down. Same endpoint as the
+// manual view's button: the firmware has one way to end the fan-only timer.
+$('roastCoolStopBtn').addEventListener('click', () => api('/api/cool/stop', { method: 'POST' })
+  .catch((e) => alert(t('errStopCool', { msg: e.message }))));
 
 $('newProfileBtn').addEventListener('click', () => {
   state.editSteps = [

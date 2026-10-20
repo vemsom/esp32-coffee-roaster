@@ -443,6 +443,38 @@ int main() {
   check(web.getCoolActive(), "the cool-down is still running a second later");
   check(web.getHeaterDuty() == 0 && ssrState == LOW, "nothing heats during the cool-down");
 
+  // ----------------------------- Stop ends a running cool-down -------------
+  // Measured on the machine 2026-10-20: after "Avbryt och kyl", pressing Stop
+  // left the fan running (`coolActive` stayed true) until /api/cool/stop was
+  // called by hand. From the roast tab a cool-down is still "the run", so Stop
+  // has to end it - and end the fan with it, or the operator is left with air
+  // and no visible control (the cooling panel was on the manual tab).
+  web.stopRoast();
+  check(!web.getCoolActive(), "Stop ends a cool-down that is still running");
+  check(web.getFanSpeed() == 0, "and stops the fan the cool-down was running");
+  check(web.getFanActual() == 0.0f, "the reached fan speed is 0 in the same call");
+  check(web.getCoolRemainingSeconds() == 0, "with no countdown left behind");
+  runLoops(2);
+  check(web.getFanSpeed() == 0 && web.getFanActual() == 0.0f,
+        "and no later control cycle puts the fan back on");
+
+  // The same through the real route the Stop button hits.
+  {
+    const AsyncWebServer::Route *stopRoute = findRoute("/api/roast/stop", HTTP_POST);
+    check(stopRoute != nullptr, "the roast-stop route is registered in the control test");
+    if (stopRoute) {
+      check(web.startRoast(String("cool")), "a roast starts for the Stop-route test");
+      runLoops(4);
+      check(web.stopRoastAndCool(75, 120), "with a cool-down started from it");
+      check(web.getCoolActive(), "the cool-down runs before the route is called");
+      AsyncWebServerRequest req;
+      stopRoute->onRequest(&req);
+      check(req.responseCode() == 200, "POST /api/roast/stop answers 200");
+      check(!web.getCoolActive() && web.getFanSpeed() == 0,
+            "and that route ends the cool-down and the fan");
+    }
+  }
+
   // The invalid cases are refused whole and change nothing: 0 % is "off", not a
   // cool speed, and 0 minutes is "no time". Falling back to a plain stop would
   // look like the roaster ignored the button while the beans kept cooking.

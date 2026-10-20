@@ -16,6 +16,13 @@
 #   check_web_i18n       the language table in data/index.html: both languages
 #                        carry every key and nothing is hard-coded (node).
 #                        Mode-independent, so it runs once.
+#   check_web_chart      the roast graph's time base, executed from
+#                        data/index.html with vm: a stopped roast keeps its own
+#                        x axis instead of collapsing to 0 min (node). Once.
+#   test_pid_tuning      the PID trim from the first real roast: the old gains
+#                        against the shipped ones over a first-order-plus-dead-
+#                        time plant identified from the measured 70-78 s /
+#                        +-15-20 C oscillation. Pure logic. Default pass only.
 #   test_safety          safety latch + heater interlock, stubbed Arduino.
 #                        DEFAULT PASS ONLY: it asserts the ET trips (ET
 #                        over-temp, an ET sensor fault, a frozen ET and the
@@ -122,8 +129,12 @@ fi
 # fails here. Needs nothing but node, and is skipped when node is absent.
 if command -v node >/dev/null 2>&1; then
   node "$here/check_web_i18n.js" "$root/data/index.html"
+  # The roast graph's x-axis logic, executed from the page itself: a stopped
+  # roast must keep its time base (the machine showed the whole plot collapsing
+  # to 0 min when the clock was cleared). See check_web_chart.js.
+  node "$here/check_web_chart.js" "$root/data/index.html"
 else
-  echo "skip web UI i18n check (no node on this machine)"
+  echo "skip web UI checks (no node on this machine)"
 fi
 
 # Runs a test binary, shows its output and adds its tally to the pass log, so
@@ -274,6 +285,15 @@ run_pass() {
         -I "$here/stub" -I "$root/include" \
         "$here/test_pid.cpp" \
         -o "$out/test_pid"
+
+    # The PID trim from the first real roast (2026-10-20): the old gains against
+    # the ones that shipped, over a first-order-plus-dead-time plant identified
+    # from the measured 70-78 s / +-15-20 C oscillation. Same shape as test_pid -
+    # pure logic over its own clock, no flag, one pass.
+    g++ -std=c++17 -Wall -Wextra \
+        -I "$here/stub" -I "$root/include" \
+        "$here/test_pid_tuning.cpp" \
+        -o "$out/test_pid_tuning"
   fi
 
   # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
@@ -367,6 +387,7 @@ run_pass() {
     # restores the pre-0.11.1 immediate duty write.
     run_test "$out/test_fan_immediate"
     run_test "$out/test_pid"
+    run_test "$out/test_pid_tuning"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the

@@ -411,7 +411,15 @@
 // now a profile never ended on its own - it held its last setpoint until someone
 // pressed Stop - so a profile with the fields set makes a different decision on
 // the same file, and the new endpoint does not exist in 0.11.1. New release.
-#define FW_VERSION "0.12.0"
+// 0.13.0 = the first roast with 0.12.0 answered four things: Stop left a running
+// cool-down (and the fan) going, the roast graph collapsed to 0 min when the
+// clock was cleared, the PID swung +-15-20 C at a 70-80 s period, and the fan
+// could not lift a 20 g charge. Stop now ends cooling and the fan, the roast tab
+// carries its own "Stoppa kylning" while a cool-down runs, the chart keeps the
+// finished roast's time base, and the PID is trimmed (KP 1.2 / KI 0.04, see the
+// PID block below). Control behaviour differs on the same profile, so a new
+// release.
+#define FW_VERSION "0.13.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is
@@ -430,30 +438,45 @@
 #endif
 
 // ---- PID-standardvarden ----
-// STARTING POINT, NOT A TUNED SET (2026-10-17). These numbers have never been
-// trimmed against a roast; they are where the first one starts from, and the
-// roast is what sets the real values (see docs/firmware-notes.md).
+// TRIMMAT en gang mot en riktig rost (2026-10-20), inte langre en gissning.
+// Utgangslaget 2.0/0.15 (2026-10-17) var aldrig kort mot en maskin. Forsta
+// rostningen med det (20 g bonor, profil ljus-1, BT-only) visade en svajande
+// kurva: BT-toppar 70-78 s isar, +-15-20 C kring malkurvan under rampen.
 //
-// The set they replace (KP 4.0 / KI 0.05 / KD 2.0) was never tested against
-// hardware either - it was written before the machine existed - and the first
-// measured run with it showed what it really did: BT parked ~20 C under the
-// setpoint with duty at 82-86 %, i.e. exactly the steady-state offset of a
-// P-only loop. The integral could not do anything about it (its clamp was in
-// the wrong unit - see include/pid.h), and KD 2.0 turned 250 ms sampling noise
-// into a 0/100 switch. So:
-//   * KP 2.0 (from 4.0): the offset the I term now removes does not have to be
-//     paid for with a 4 %-duty-per-degree response.
-//   * KI 0.15 (from 0.05): enough to take out a 20 C offset within a minute or
-//     so of roast time without setting up an oscillation.
-//   * KD 0.0 (from 2.0): removed, not trimmed down. A derivative on a signal
-//     that jitters +-10 C between samples is a switch; the input filter
-//     (PID_INPUT_FILTER_TAU_S) does what the D term was supposed to do, without
-//     amplifying the quantisation.
-// Trim KP up until the ramp tracks its setpoint, then KI, and only add a small
-// KD if a real (filtered) overshoot shows up. Keep this list in step with
-// docs/firmware-notes.md.
-#define PID_KP  2.0
-#define PID_KI  0.15
+// Diagnosen, ur de tio talen och inte ur en kansla:
+//   * En svingperiod pa 70-80 s ar varken samplings- eller fonstereffekt.
+//     Sampeltiden ar 0.25 s och fönstret 2 s - 300 respektive 40 ganger
+//     kortare an svingningen, sa de kan inte satta perioden. Perioden ar ca
+//     4 x loopens dedtid, dvs proben + den termiska massan svarar efter ca
+//     19 s (4 x 19 = 76 s). Det ar den siffran trimningen ska förhalla sig
+//     till.
+//   * KP 2.0 %/C svarar med 30 % duty pa 15 C fel, i samma sampel. Med
+//     KI 0.15 blir integralens verktid Ti = KP/KI = 13 s - KORTARE an de 19 s
+//     maskinen behover for att visa nagon effekt alls. Regulatorn korrigerar
+//     alltsa snabbare an maskinen svarar: varje korrigering kommer en
+//     forsening for sent, och det ar exakt en 4L-svingning.
+//   * Alltsa: KP for hog for den har termiska massan, och KI for stark -
+//     inte for svag. (0.11.1 klampade integralen ratt och gjorde den
+//     verkningsfull for forsta gangen, och da blev 0.15 for mycket.)
+//   * Provat och uteslutet: sampelfrekvensen (KD ar 0, sa 250 ms tillfor
+//     inget brus till en P-regulator) och time-proportioneringsfonstret
+//     (2 s mot en termisk tidskonstant pa tiotals sekunder ar medelvarde,
+//     inte puls).
+//
+// Nya varden: KP 1.2, KI 0.04 -> Ti = 30 s, ca 1.5 x dedtiden, och en
+// P-forstarkning val under den ultimata. KD star kvar pa 0: derivatan ligger
+// fortfarande pa en 250 ms-kvantiserad signal, och insignalfiltret
+// (PID_INPUT_FILTER_TAU_S) gor dess jobb. Simulerat i
+// tools/host-tests/test_pid_tuning.cpp mot en forsta ordningens modell med
+// dedtid 19 s (K 2.0-2.5 C/%, tau 45-60 s): svingningen i hallfasen faller
+// fran 25-66 C till 2-10 C, och den storsta utflykten over malkurvan fran
+// 27-33 C till 18-24 C. Det ar en simulering - maskinen avgor saken. Att
+// overskjutningen inte gar till noll ar dedtiden: ingen forstarkning tar bort
+// den, bara en langsamare ramp. Provordning i docs/firmware-notes.md
+// ("PID trim 0.13.0"): står det kvar ett stadigt fel >3 C sent i rosten,
+// hoj KP i steg om 0.2; svingar det fortfarande, sank KI.
+#define PID_KP  1.2
+#define PID_KI  0.04
 #define PID_KD  0.0
 
 // ---- Filter on the PID's input (NEVER on the safety path) ----

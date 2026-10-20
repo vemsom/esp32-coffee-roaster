@@ -54,7 +54,211 @@ this hardware. Verified 2026-10-20: the new env builds with 0 warnings, both
 default envs still build, host suite green (1335 / 1203 checks, 0 failures).
 Nothing was flashed - the device already runs the right image.
 
-Build of record (2026-09-27, clean rebuild):
+**2026-10-20: the first roast's four findings (0.13.0).** Stop left a running
+cool-down (and the fan) going, the roast graph collapsed to 0 min when the clock
+was cleared, the PID swung +-15-20 C at a 70-80 s period, and the fan could not
+lift a 20 g charge. All four are answered in "0.13.0 (2026-10-20): the first
+roast's four findings" below: Stop ends cooling and the fan, the roast tab has
+its own "Stoppa kylning", the chart keeps the finished roast's time base, the PID
+is trimmed to KP 1.2 / KI 0.04 (with the 4L/dead-time reasoning and a simulated
+before/after), and the fan answer is that the duty band is not the cause - the
+numbers are in the table there. Host suite green (**1369 / 1225** checks, 0
+failures); `pio run -e esp32-ota-bt` SUCCESS with 0 warnings. **Nothing was
+flashed** - the device still runs 0.12.0, `build cf96266`.
+
+## 0.13.0 (2026-10-20): the first roast's four findings
+
+The first roast with 0.12.0 (20 g beans, profile `ljus-1`, BT-only image) answered
+four things at once. All four are below with the measurement behind them; the
+numbers come from the Home Assistant history of that run and from the code, not
+from a guess.
+
+### 1. Stop now ends a cool-down (and the fan)
+
+**What was seen.** After *Avbryt och kyl* the operator pressed **Stop**. The
+roast stopped, the heater went to 0 %, and the fan kept running: `stopRoastLocked()`
+cleared the heat, the roast clock and the RoR state but never touched
+`coolActive`, so `updateCool()` kept writing the cool speed every sample. The
+only stop for it was the cooling panel's button on the *manual* tab - invisible
+from the roast tab where the roast was stopped. It was stopped by hand with
+`POST /api/cool/stop` (`coolActive: false`, `fanActual: 0`).
+
+**What changed.**
+
+- `stopRoastLocked()` (`src/main.cpp`) now calls `clearCoolLocked()`, so a Stop -
+  and `POST /api/roast/stop`, which is the same callback - ends a running
+  cool-down. `clearCoolLocked()` deliberately does **not** touch the fan, for the
+  same reason the stop never did: the two callers that want a cool-down after the
+  stop (`cbStopRoastAndCool`, `finishProfileLocked`) start it *after* the stop,
+  and a fan written to 0 % in between would be exactly the "fan passes through
+  off" the combined command exists to avoid.
+- `cbStopRoast()` writes fan 0 % after the stop. **Stop from the roast tab is
+  now "everything off", the fan included.** Before this it left the profile's
+  last fan speed running, and the roast tab has no fan control - the same "air
+  with no button" state the cool-down bug produced. A *safety* abort still leaves
+  the fan alone (`abortRunForSafety()`, untouched): there the beans do need air
+  while the fault is handled.
+- The roast tab has its own cooling panel (`#roastCoolPanel` in
+  `data/index.html`): heading, countdown, status line and a **Stoppa kylning**
+  button, shown for exactly as long as `coolActive` is true and posting the same
+  `/api/cool/stop` as the manual view. New i18n key `btnStopCooling` in both
+  language tables.
+
+### 2. The roast graph keeps the finished roast's time base
+
+**What was seen.** Pressing *Avbryt och kyl* made the whole plot jump to 0 min.
+
+**Cause.** `pollStatus()` plotted `s.elapsedSeconds` directly, and that number is
+0 whenever `controlMode != MODE_PROFILE` - it is 0 from the instant the run ends.
+Every sample after the stop was appended at t = 0 and the axis was scaled from
+the last sample, so a finished 425 s curve was folded back onto the origin and
+then squeezed into `max(300, profileEnd)` seconds.
+
+**What changed.** Two small functions in the page, `chartTimeFor(s, st)` and
+`chartMaxT(profileEnd, lastT, spanT)`: the span is the largest roast time this
+run reached, later samples (cooling, idle) are pinned to it, and only a new roast
+(starting from this page or from another browser - detected as
+`roastActive` false -> true) resets it and clears the history. The axis is
+`max(300, profileEnd, last sample, span)`, so it can never collapse under a
+finished curve.
+
+`tools/host-tests/check_web_chart.js` slices those two functions out of
+`data/index.html` and executes them against a status sequence shaped like the
+firmware's: a running roast advances 0..420 s, a stop at 425 s leaves five
+cooling samples and one idle sample all at 425 s, the axis stays at 425 s, and a
+new roast starts at 0 with its own span. 12 checks.
+
+### 3. PID trim 0.13.0 - the swing was the gain, not the sample rate
+
+**Measured.** BT peaks 129.3 / 156.8 / 174.5 / 187.0 / 201.0 C at 10:34:07,
+10:35:19, 10:36:29, 10:37:47, 10:39:05 - **72, 70, 78, 78 s apart**, swinging
+**+-15-20 C** around a target curve of 110 -> 150 -> 185 -> 200 C with the
+element between 0 and 100 % (2 s time-proportioning window).
+
+**Diagnosis, in the order the candidates had to be ruled out.**
+
+1. *Sample rate (250 ms) and the 2 s heater window.* Ruled out by arithmetic: the
+   period is ~300x the sample interval and ~40x the window. Neither can set a
+   70-80 s oscillation. (KD is 0, so a faster sample adds no derivative noise to
+   anything either.)
+2. *Dead time.* A sustained oscillation in a first-order-plus-dead-time loop has
+   a period of about **4 x the dead time**. 70-80 s therefore means ~19 s of dead
+   time - probe plus thermal mass, which is the order the ~30 s inertia measured
+   on this machine earlier suggested.
+3. *KP.* 2.0 %/C turns a 15 C error into 30 % duty within one sample. Against a
+   plant that answers in ~19 s, that is a correction per sample that is felt one
+   lag later: an overshoot, then the same thing downward.
+4. *KI.* `Ti = KP/KI = 2.0/0.15 = 13 s` - **shorter than the dead time**. The
+   integral therefore tried to remove an error before the machine could show it,
+   which is the textbook recipe for a 4L cycle. 0.11.1 fixed the integral's clamp,
+   which made 0.15 effective for the first time: the fix worked, the gain was then
+   simply too high.
+
+So: KP too high for this thermal mass, KI too strong (not too weak).
+
+**The trim.** `PID_KP 2.0 -> 1.2`, `PID_KI 0.15 -> 0.04`: `Ti = 30 s` (~1.5 x the
+dead time), and KP at 55 % of the model's ultimate gain. Unchanged on purpose:
+`PID_KD 0`, `PID_INPUT_FILTER_TAU_S 1.0`, `SENSOR_READ_INTERVAL_MS 250`,
+`HEATER_WINDOW_MS 2000`, every safety limit and interlock.
+
+**Evidence, and what it is not.** `tools/host-tests/test_pid_tuning.cpp` runs the
+shipped `SimplePID` + input filter over a first-order-plus-dead-time plant
+bracketing the identification (K 2.0-2.5 C/%, tau 45-60 s, L 19 s) on the same
+target curve:
+
+| metric (last hold, 350-425 s) | old 2.0/0.15 | new 1.2/0.04 |
+| --- | --- | --- |
+| swing, K=2.0 tau=45 | 25.4 C peak-to-peak | 2.2 C |
+| swing, K=2.5 tau=60 | 66.4 C peak-to-peak | 10.0 C |
+| max excursion above the curve | 26.5 / 32.9 C | 17.6 / 24.1 C |
+| offset at 425 s | 5.4 / 6.3 C | 0.2 / 1.8 C |
+
+The residual excursion above the curve is dead time; no gain removes it, only a
+slower ramp would. **This is a simulation. The machine is what settles the trim** -
+the table above is why the numbers moved, not a promise about the next roast.
+
+**Tuning order on the machine.** Roast `ljus-1` again and watch BT against the
+target curve: if a steady offset > 3 C is left late in the roast, raise KP in
+0.2 steps (1.2 -> 1.4 -> 1.6) and stop as soon as the swing returns; if it still
+swings at 1.2, lower KI (0.04 -> 0.03 -> 0.02) before touching KP again. Do not
+add KD: the probe is quantised to 0.25 C at 250 ms, which is why KD is 0.
+
+### 4. The fan: 90/95/100 % does not fix a 20 g charge, and the duty band is not why
+
+The mapping from `a4b786b` (`dutyPctFor()` in `src/fan_control.cpp`) spreads the
+requested 1-100 % linearly over `FAN_DUTY_MIN_PCT..FAN_DUTY_MAX_PCT` = 60..100 %
+duty, so a UI value is **higher** than the duty number, never lower:
+
+| UI % | duty % | LEDC (8 bit) | ~V of 24 V |
+| --- | --- | --- | --- |
+| 1 | 60 | 153/255 | 14.4 |
+| 10 (interlock) | 64 | 163/255 | 15.4 |
+| 60 | 84 | 214/255 | 20.2 |
+| 80 | 92 | 235/255 | 22.1 |
+| 90 | 96 | 245/255 | 23.0 |
+| 95 | 98 | 250/255 | 23.5 |
+| 100 | 100 | 255/255 | 24.0 |
+
+So the hypothesis "60 % in the UI is a much lower duty" is the wrong way round:
+60 % was already 84 % duty / ~20 V, i.e. well above the ~60 % start threshold. The
+new profile values (90/95/100) buy 96/98/100 % duty - **+4, +2 and +2 duty points
+over the old 80 %**, about 1 V at the top. If 20 g did not move at 20 V it will
+not move at 23 V: the limit is airflow (fan static pressure against the drum), not
+the map. Before changing any code: measure the voltage **across the fan** at
+100 %, with the element off. If it is not ~24 V the MOSFET/supply is the limit;
+if it is, the fan is, and the fix is mechanical (less restriction, a
+higher-pressure fan, or a smaller-charge drum insert). No code change was made for
+this item - the profile's 90/95/100/100 values are configuration and are the most
+the band can give.
+
+### 5. The pause: unchanged, and the fall is a consequence of the trim
+
+The pause freezes the roast clock and keeps the PID on the setpoint that was
+active at the pause instant (`cbPauseRoast`, documented in `src/main.cpp`). With
+20 g and 85 % fan the thermal mass is small, so a pause - where the clock stops
+but the fan keeps pulling air - cools the beans faster than a big charge would.
+
+**The behaviour is not changed.** Part of the sharp fall was the overshoot itself:
+the PID was above its setpoint when the pause froze it, so the frozen setpoint
+commanded 0 % duty until BT fell back to it, and the 4L swing carried it down.
+With KP 1.2/KI 0.04 BT sits much closer to the curve when the pause lands, so
+there is far less stored overshoot to give back. If a pause still drops faster
+than he wants after this roast, that is a *product* decision (hold the fan too?
+hold a small duty?) and not a tuning one - it would change the documented pause
+semantics, so it needs his call.
+
+### Verified, and what to run on the machine
+
+**Host (this change).** `sh tools/host-tests/run.sh`, exit 0: **1369 checks, 0
+failures** with `SAFETY_ET_ENABLED 1` and **1225 checks, 0 failures** with it at 0
+(before: 1335 / 1203; +12 in the new `test_pid_tuning`, +11 in `test_control` per
+pass, +12 in `check_web_chart`). New checks: Stop ending a cool-down and the fan,
+the same through the `/api/roast/stop` route, the old-vs-new PID trim, and the
+chart's time base. `pio run -e esp32-ota-bt`: **SUCCESS**, 0 warnings, RAM 16.1 %
+(52 728 B), flash 74.7 % (978 977 B); `-t buildfs` builds
+`littlefs.bin` (1 441 792 B) with the new page.
+
+**On the machine (nothing flashed yet).** `/api/status` today (2026-10-20, idle)
+reports `fw 0.12.0`, `build cf96266`, `etDisabled: true`, `safetyFault: false` -
+so the device still runs the image from before this work. To verify all four:
+flash BOTH images (`pio run -e esp32-ota-bt`, `-t buildfs`, then
+`sh tools/ota-push.sh <ip>` and `... fs`; export the profiles first - the
+filesystem image replaces them with the ones built from `data/`).
+
+1. *Stop after "Avbryt och kyl".* Start a roast, press **Avbryt och kyl** with
+   100 % / 2 min, then **Stopp**: the cooling panel on the roast tab must vanish,
+   `fanActual` must read 0 and the fan must stop. `curl -s .../api/status` right
+   after: `coolActive: false`, `fanSpeed: 0`.
+2. *The graph.* During the same roast the curve must keep its x axis after the
+   stop - check that the last point sits at the roast's own duration and that the
+   line does not shoot back to 0:00. Then start a new roast: the axis resets.
+3. *PID.* Roast `ljus-1` and compare BT against the target curve: the peaks should
+   be gone; a slow sag of a few degrees is the next thing to trim (see the order
+   above). Read `pidP`/`pidI`/`btFiltered` from `/api/status` while it runs.
+4. *Fan.* Measure the fan voltage at 100 % with the element off, as above, before
+   blaming the firmware.
+
+## Build of record (2026-09-27, clean rebuild):
 
 ```text
 platform espressif32 7.1.3, framework-arduinoespressif32 4.20017.260907
