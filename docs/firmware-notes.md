@@ -139,7 +139,7 @@ comes from the ~19 s dead time is still there (a slower ramp is the only thing
 that removes it). If the curve still does not track, the next step is
 **RoR-following** - `rorTarget`/`rorStart`/`rorEnd` per step already exist
 (0.7.0/0.11.0, steering on BT in this machine's build), and a gain-scheduled
-guidance trimmed from trial roasts is what Fredrik has agreed to run later. That
+guidance trimmed from trial roasts is what the operator has agreed to run later. That
 is a separate change; nothing of it is in this image.
 
 **Verified, and what is still a guess.**
@@ -1268,7 +1268,7 @@ and then the part that only a filesystem transfer has:
 **The data loss, twice.** `littlefs.bin` is built from `data/`, which contains
 `index.html` and nothing else, and `Update` with `U_SPIFFS` replaces the whole
 partition instead of merging into it. So every filesystem push deletes
-`/profiles/*.json` - the roast programs - and it did: Fredrik lost his twice
+`/profiles/*.json` - the roast programs - and it did: the roast programs were lost twice
 before this was noticed. The images were correct; the partition simply does not
 survive being written.
 
