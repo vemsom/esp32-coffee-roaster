@@ -197,20 +197,27 @@ Add `rorTarget`, `rorStart` and `rorEnd` to a profile step (values are C/min):
 `rorTarget > 0` enables the step. The target slope then falls linearly from
 `rorStart` at the beginning of the step to `rorEnd` at the end, the same way
 temperature ramps. The firmware compares this target to the measured rate of
-rise and nudges the heater duty up or down through a simple gain. Which channel
-that rate comes from follows the build: `rorEt` in the standard build, `rorBt` in
-a BT-only one (`SAFETY_ET_ENABLED 0`), where the ET channel is not read at all -
-the guidance never runs against a channel the firmware cannot measure. PID still
-runs underneath; the RoR correction is added on top and clamped to the safe duty
-range, with a rate limit so a cold probe or a startup glitch cannot slam the
-element to full power.
+rise and **trims the temperature target the PID chases** - it does not touch the
+heater duty. The trim is the error times 0.1 C per (C/min), zero inside a
++-1.5 C/min dead band, clipped to +-3 C and slewed at 0.5 C/s, so the largest
+thing the guidance can do is move the setpoint 3 C; the PID still owns the
+element. Which channel that rate comes from follows the build: `rorEt` in the
+standard build, `rorBt` in a BT-only one (`SAFETY_ET_ENABLED 0`), where the ET
+channel is not read at all - the guidance never runs against a channel the
+firmware cannot measure.
+
+Before 0.16.0 the same error was a duty offset added on top of the PID's output,
+which put two regulators on one actuator and saturated past 33 C/min of error
+(the measured roast spent 11 % of its time at >= 99 % duty). The current trim is
+in `include/ror_trim.h`; `/api/status` reports it as `roRorCorrection`, now in
+degrees C rather than duty percent.
 
 RoR guidance is **off by default**. A step without `rorTarget`, or any old
 profile, behaves exactly as before: temperature target and PID are unchanged.
 Guiding also pauses itself when the roast is paused, a safety alarm is active,
 the RoR estimate is still warming up, or the fan interlock is holding the
-element off. The web UI and MQTT status show the current RoR target, error and
-whether guidance is active.
+element off - and it then asks for exactly 0 C. The web UI and MQTT status show
+the current RoR target, error and whether guidance is active.
 
 ## Cooling
 

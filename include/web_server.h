@@ -32,13 +32,13 @@ struct WebServerCallbacks {
   int   (*getRorGuidance)();    // index of the RoR-driven step, -1 = none
   float (*getRorTarget)();      // RoR target in C/min
   float (*getRorError)();       // RoR target minus the measured rate (see ROR_GUIDANCE_ON_BT)
-  // The correction the guidance is applying RIGHT NOW, in percent (signed). It
-  // is the number the rate limit acts on, and since 0.15.0 it can no longer be
-  // read off the heater duty: the duty is the feed-forward + the (bipolar) PID
-  // + this, clipped, so the guidance is only one part of it - and in a cold-probe
-  // transient the other two pin the sum at 0 % while this climbs.
+  // The trim the guidance is applying RIGHT NOW, in degrees C (signed) - the
+  // setpoint offset the PID is chasing. It is NOT a duty percentage any more
+  // (0.16.0): the guidance moves the setpoint, the PID owns the element. The
+  // value never leaves +-ROR_TRIM_MAX_C, and it is the number the slew limit
+  // acts on.
   float (*getRorCorrection)();
-  bool  (*getRorActive)();      // true when correction is being applied
+  bool  (*getRorActive)();      // true when the trim is being applied
   // PID diagnostics, so the loop can be trimmed against a machine that is
   // running (see include/pid.h): the three contributions as last applied
   // (percent), the raw integral state (C*s), and the filtered bean temperature

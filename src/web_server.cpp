@@ -77,11 +77,11 @@ static void handleStatus(AsyncWebServerRequest *request) {
     doc["roRorGuidance"] = cb.getRorGuidance();
     doc["roRorTarget"] = cb.getRorTarget();
     doc["roRorError"] = cb.getRorError();
-    // The correction the rate limit is acting on, in percent (signed). Reported
-    // separately from the duty because the duty is not the correction any more
-    // (0.15.0): profile mode asks for feed-forward + PID trim + this, clipped, so
-    // a cold-probe transient can sit at 0 % duty while this climbs at the rate
-    // limit. Watch this to see whether the guidance is the thing moving.
+    // The setpoint trim the guidance is applying, in degrees C (signed) - the
+    // field name is unchanged so existing logs keep parsing, the UNIT is not:
+    // since 0.16.0 this is C of setpoint offset, never a duty percentage. The
+    // duty is the feed-forward + the PID trim, and the PID is what turns this
+    // number into heat.
     doc["roRorCorrection"] = cb.getRorCorrection();
     doc["roRorActive"] = cb.getRorActive();
     // PID diagnostics, so the loop can be trimmed while the machine is running

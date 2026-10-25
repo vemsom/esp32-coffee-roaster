@@ -119,18 +119,42 @@
 // poster = 32 s, alltid mer än fönstret, så historiken kan aldrig vara kortare
 // än vad regressionen frågar efter. ~2 kB RAM.
 #define ROR_BUFFER_LEN            128
-// Rate-of-rise guidance gains. RoR guidance is OFF unless a profile step has
-// rorTarget > 0, so these only matter when explicitly enabled.
-// ROR_GUIDANCE_GAIN scales the error (rorTarget - the measured rate: rorEt or
-// rorBt, see ROR_GUIDANCE_ON_BT below) into a duty correction.
-// ROR_GUIDANCE_MAX_STEP_PCT_PER_S limits how fast that correction can move per
-// second, so a cold probe or a startup transient cannot drive the element full
-// power in one sample.
-#define ROR_GUIDANCE_GAIN                 3.0f
-#define ROR_GUIDANCE_MAX_STEP_PCT_PER_S   15.0f
-// The element can never be asked for more than 100 % duty. The PID and the RoR
-// correction both clamp to this, and applyHeaterDuty() is the single place
-// where the fan interlock can override it.
+// Rate-of-rise guidance: the trim the measured rise applies to the SETPOINT.
+// RoR guidance is OFF unless a profile step has rorTarget > 0, so these only
+// matter when explicitly enabled.
+//
+// WHY IT MOVES THE SETPOINT AND NOT THE DUTY (0.16.0). Until 0.15.0 the error
+// (rorTarget - the measured rate) was multiplied into a DUTY offset and added on
+// top of the PID's output, so profile mode had two regulators with integral
+// action driving one actuator, one of them fed a derivative. Measured on
+// 2026-10-25 (60 g, profile `monsun-choklad`): the RoR error sat at -38 and
+// +67 C/min, i.e. past the +-33 C/min where a gain of 3.0 %/(C/min) clips at
+// 100 %, so the guidance was permanently saturated and owned the element. Duty
+// spent 5 % of the roast at 0 % and 11 % at >= 99 %, the 30 s slope swung
+// -36..+53 C/min, and the panel showed guidance 22.6 / measured 60.9 / heat 0 %
+// at 2:47 against guidance 14.4 / measured -52.4 / heat 100 % at 4:09. That is
+// a limit cycle, not a tuning problem.
+//
+// The same error now moves the target the PID chases, by at most +-3 C, and the
+// PID absorbs it over tens of seconds. The guidance still steers the roast
+// toward the profile's own slope, but it can no longer take the element away
+// from the loop.
+//
+// ROR_TRIM_GAIN_C_PER_C_PER_MIN is C of setpoint per C/min of rise error.
+// ROR_TRIM_MAX_C clips that trim, so no error can ask for more than 3 C.
+// ROR_TRIM_DEADBAND_C_PER_MIN is the band around the target where the trim is
+// exactly 0: the 30 s estimate is noisy, and a guidance that chases every
+// degree of that noise is a dither generator.
+// ROR_TRIM_SLEW_C_PER_S limits how fast the trim may move, so a cold probe or a
+// startup transient cannot step the setpoint.
+#define ROR_TRIM_GAIN_C_PER_C_PER_MIN     0.1f
+#define ROR_TRIM_MAX_C                    3.0f
+#define ROR_TRIM_DEADBAND_C_PER_MIN       1.5f
+#define ROR_TRIM_SLEW_C_PER_S             0.5f
+// The element can never be asked for more than 100 % duty. The PID and the
+// feed-forward both clip to this, and applyHeaterDuty() is the single place
+// where the fan interlock can override it. The RoR trim is not part of this
+// sum any more: it moves the setpoint in C, not the duty in percent.
 #define HEATER_MAX_DUTY_PCT               100.0f
 
 // ---- Which channel the RoR guidance steers on ----
@@ -441,7 +465,19 @@
 // PID's own output and clipped once to 0..100. `beanWeight` stays as profile
 // metadata and no longer touches the control loop; /api/status no longer reports
 // dutyCeiling. Control behaviour differs on the same profile, so a new release.
-#define FW_VERSION "0.15.0"
+// 0.16.0 = the RoR guidance moves the setpoint instead of the element. Until
+// 0.15.0 a step with `rorTarget` added a duty offset on top of the PID's output,
+// so two regulators with integral action drove one actuator and the outer one
+// was fed a derivative. Measured 2026-10-25 (60 g, `monsun-choklad`): the RoR
+// error sat at -38 and +67 C/min, far past the +-33 C/min where a gain of
+// 3 %/(C/min) saturates, so the guidance owned the element - duty spent 5 % of
+// the roast at 0 % and 11 % at >= 99 %, the 30 s slope swung -36..+53 C/min.
+// The error is now a setpoint trim (include/ror_trim.h): deadband +-1.5 C/min,
+// 0.1 C per C/min, clipped to +-3 C, slewed 0.5 C/s. The PID keeps the element.
+// `roRorCorrection` in /api/status is still the field name, but its unit is C
+// now, not duty percent. Control behaviour differs on the same profile, so a new
+// release.
+#define FW_VERSION "0.16.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

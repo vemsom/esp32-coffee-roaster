@@ -13,6 +13,7 @@
 #include "fan_control.h"
 #include "roast_profile.h"
 #include "feed_forward.h"
+#include "ror_trim.h"
 #include "web_server.h"
 #include "ota_push.h"
 #include "mqtt_client.h"
@@ -66,12 +67,17 @@ static unsigned long lastControlSampleMs = 0;
 // estimate has warmed up. These are reported in /api/status and MQTT. The rate
 // it steers on is a build choice: rorEt, or rorBt when the ET channel is not
 // read at all (ROR_GUIDANCE_ON_BT, include/config.h).
+//
+// currentRorCorrection is the TRIM in degrees C, not a duty percentage (0.16.0:
+// it moves the PID's setpoint instead of the element). The field name is kept
+// because /api/status and the logs already carry it - read the unit, not the
+// name. Everything else here is a diagnostic.
 static float currentRorTarget = 0.0f;
 static float currentRorError = 0.0f;
-static float currentRorCorrection = 0.0f;
-static int currentRorGuidanceStep = -1;  // -1 = none
+static float currentRorCorrection = 0.0f;  // C of setpoint trim
+static int currentRorGuidanceStep = -1;    // -1 = none
 static bool currentRorActive = false;
-// Last time the RoR correction was updated, used to rate-limit its movement.
+// Last time the RoR trim was updated, used to slew-limit its movement.
 static unsigned long lastRorCorrectionUpdate = 0;
 
 // Fan interlock: true while a positive heat request is being withheld because
@@ -633,40 +639,44 @@ static void abortRunForSafety() {
   applyHeaterDuty(0);
 }
 
-// Clamp a delta to the per-second rate limit, accounting for the time since
-// the last update. dt is in milliseconds and is treated as at least one sample
-// interval so a single long stall cannot unlock a huge step.
-static float rateLimitDelta(float delta, unsigned long dtMs) {
-  if (dtMs == 0) return 0.0f;
-  float maxDelta = ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (dtMs / 1000.0f);
-  if (delta > maxDelta) return maxDelta;
-  if (delta < -maxDelta) return -maxDelta;
-  return delta;
-}
-
-// Update the RoR-guidance correction. Returns the new correction value and
-// writes the diagnostic state (target/error/active/step) into the globals.
-// The correction is added on top of the PID output and is always 0 when any
-// precondition is missing, so existing behaviour is unchanged unless a profile
-// step explicitly enables rorTarget > 0. The measured rate it steers on is
-// rorEt, or rorBt in a BT-only build (ROR_GUIDANCE_ON_BT) - the error reported
-// here is always target minus the channel actually in use.
+// Update the RoR-guidance trim. Returns the trim in degrees C and writes the
+// diagnostic state (target/error/active/step) into the globals.
+//
+// The trim moves the SETPOINT the PID chases; it is no longer added to the duty
+// (0.16.0). Two regulators on one actuator - a PID and a derivative-fed duty
+// offset, both with integral action - was a limit cycle: the guidance saturated
+// at |error| > 33 C/min and owned the element, which is exactly what the
+// 2026-10-25 roast measured (see include/config.h). The law itself lives in
+// include/ror_trim.h so the host tests pin the shipped numbers and not a copy.
+//
+// The trim is always 0 when any precondition is missing, so existing behaviour
+// is unchanged unless a profile step explicitly enables rorTarget > 0. The
+// measured rate it steers on is rorEt, or rorBt in a BT-only build
+// (ROR_GUIDANCE_ON_BT) - the error reported here is always target minus the
+// channel actually in use.
 static float updateRorGuidance(unsigned long nowMs) {
   currentRorTarget = 0.0f;
   currentRorError = 0.0f;
   currentRorGuidanceStep = -1;
   currentRorActive = false;
 
-  if (controlMode != MODE_PROFILE) return 0.0f;
-  if (roastPaused) return 0.0f;
+  // Every "off" path clears the trim to exactly 0 and forgets the slew clock, so
+  // a re-enabled step starts from no trim instead of resuming a stale one.
+  auto off = []() -> float {
+    currentRorCorrection = 0.0f;
+    lastRorCorrectionUpdate = 0;
+    return 0.0f;
+  };
+
+  if (controlMode != MODE_PROFILE) return off();
+  if (roastPaused) return off();
 
   unsigned long elapsed = roastElapsedSeconds();
   int stepIdx = activeProfile.stepIndexAt(elapsed);
   float rorTarget = activeProfile.rorTargetAt(elapsed);
-  if (stepIdx < 0 || rorTarget <= 0.0f) return 0.0f;
+  if (stepIdx < 0 || rorTarget <= 0.0f) return off();
 
-  if (safety_faulted()) return 0.0f;
-  if (!ror_valid()) return 0.0f;
+  if (safety_faulted() || !ror_valid()) return off();
 
   // Which channel the loop compares the target against is a build choice
   // (ROR_GUIDANCE_ON_BT, include/config.h): rorEt while the ET channel is
@@ -680,29 +690,26 @@ static float updateRorGuidance(unsigned long nowMs) {
   // never read, a faulted read), so the fitted number alone cannot say whether
   // there is a measurement behind it right now.
 #if ROR_GUIDANCE_ON_BT
-  if (isnan(currentBT)) return 0.0f;
+  if (isnan(currentBT)) return off();
   float rorActual = ror_get_bt();
 #else
-  if (isnan(currentET)) return 0.0f;
+  if (isnan(currentET)) return off();
   float rorActual = ror_get_et();
 #endif
 
-  float error = rorTarget - rorActual;      // positive = too slow = need more heat
-  float rawCorrection = error * ROR_GUIDANCE_GAIN;
+  float error = rorTarget - rorActual;  // positive = too slow = need more heat
+  float request = rorTrimRequestC(rorTarget, rorActual);
 
-  // Rate-limit the change of the correction, not the absolute value, so a
-  // sudden cold-probe reading can only pull the correction by the configured
-  // step per second instead of jumping straight to the clamp.
+  // Slew-limit the CHANGE of the trim, not its absolute value, so a sudden
+  // cold-probe reading can only pull the setpoint by the configured rate
+  // instead of stepping it. 0.5 C/s means the full +-3 C takes 6 s.
   unsigned long dtMs = (lastRorCorrectionUpdate == 0)
                            ? SENSOR_READ_INTERVAL_MS
                            : (nowMs - lastRorCorrectionUpdate);
   if ((long)dtMs < 0) dtMs = SENSOR_READ_INTERVAL_MS;  // millis() wrap
-  float delta = rawCorrection - currentRorCorrection;
-  delta = rateLimitDelta(delta, dtMs);
-  float correction = currentRorCorrection + delta;
-
-  if (correction > HEATER_MAX_DUTY_PCT) correction = HEATER_MAX_DUTY_PCT;
-  if (correction < -HEATER_MAX_DUTY_PCT) correction = -HEATER_MAX_DUTY_PCT;
+  float correction = currentRorCorrection +
+                     slewLimitedStep(request - currentRorCorrection, dtMs,
+                                     ROR_TRIM_SLEW_C_PER_S);
 
   currentRorTarget = rorTarget;
   currentRorError = error;
@@ -726,7 +733,10 @@ static float profileTargetAt(unsigned long elapsedSeconds) {
 // interlock holds the element off when there is not enough airflow.
 static void updateControl() {
   unsigned long nowMs = millis();
-  float rorCorrection = updateRorGuidance(nowMs);
+  // The RoR guidance's output is a SETPOINT trim in C, not a duty offset
+  // (0.16.0, include/ror_trim.h): the PID keeps the element, the guidance only
+  // moves what the PID is chasing.
+  float rorTrim = updateRorGuidance(nowMs);
 
   if (controlMode == MODE_PROFILE) {
     unsigned long elapsed = roastElapsedSeconds();
@@ -749,7 +759,18 @@ static void updateControl() {
     // The requested slope of the curve this cycle, in C/min: the derivative of
     // activeProfile.targetAt() - the profile's own ramp rate, 0 in a hold and 0
     // in a pause (the roast clock does not advance there).
+    //
+    // Taken from the PROFILE, not from the trimmed setpoint: the feed-forward is
+    // the duty the curve's own ramp needs, and the trim is a correction to where
+    // the loop aims, not a change of the roast's requested rate.
     float slope = requestedSlopeCPerMin(profileTargetAt, elapsed);
+    // Where the loop actually aims: the profile's curve plus the RoR trim. The
+    // clamp is belt and braces - rorTrimRequestC() cannot ask for more than
+    // +-ROR_TRIM_MAX_C - and it keeps a NaN curve from becoming a trimmed NaN.
+    if (!isnan(target)) {
+      target += rorTrim;
+      if (target < 0.0f) target = 0.0f;
+    }
     // The PID reads the FILTERED bean temperature (currentBTFiltered); the raw
     // currentBT is what the safety layer, the RoR fit and the UI get. Guarding
     // on the filtered value is the honest test of "is there a number for the
@@ -764,7 +785,9 @@ static void updateControl() {
       // that is a few points above what the plant needs has to be pulled DOWN,
       // and a positive-only PID would freeze at 0 % and leave the base in charge.
       float ffDuty = feedForwardDutyPct(slope, currentBTFiltered);
-      float duty = ffDuty + pidDuty + rorCorrection;
+      // No RoR term here any more: the guidance is in the setpoint above. One
+      // regulator owns the element - that is the whole point of 0.16.0.
+      float duty = ffDuty + pidDuty;
       if (duty > HEATER_MAX_DUTY_PCT) duty = HEATER_MAX_DUTY_PCT;
       if (duty < 0.0f) duty = 0.0f;
       // The clip above is the only limit on the request, and it is the one every

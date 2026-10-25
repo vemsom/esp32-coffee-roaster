@@ -17,9 +17,12 @@
 //
 // Covered in both passes:
 //   * the target curve interpolates linearly from rorStart to rorEnd
-//   * the correction has the right sign (too slow -> positive, too fast -> negative)
-//   * the correction is zero when disabled (paused, non-RoR step, alarm, invalid RoR)
-//   * the rate limit + clamp keeps a cold-probe transient below HEATER_MAX_DUTY_PCT
+//   * the trim has the right sign (too slow -> setpoint up, too fast -> down)
+//   * the trim never leaves +-ROR_TRIM_MAX_C and moves at most
+//     ROR_TRIM_SLEW_C_PER_S per second
+//   * the trim is zero when disabled (paused, non-RoR step, alarm, invalid RoR)
+//   * the PID's own error is built from the TRIMMED setpoint: the guidance
+//     steers where the loop aims, and the loop keeps the element
 //   * every duty request goes through applyHeaterDuty(): fan below minimum -> 0 duty
 //   * a profile without rorTarget behaves like before (the RoR state reports off)
 //   * /api/status and the MQTT status payload report which channel is steering
@@ -316,12 +319,14 @@ int main() {
   check(web.getRorGuidance() == 0, "guidance reports step 0 with BT as the source");
   check(web.getRorError() > 0.0f, "a slow BT gives positive error (target > actual)");
   check(web.getRorActive(), "guidance is active on BT with a dead ET channel");
+  check(web.getRorCorrection() > 0.0f && web.getRorCorrection() <= ROR_TRIM_MAX_C + 0.001f,
+        "a slow BT raises the setpoint, by at most ROR_TRIM_MAX_C");
   check(web.getHeaterDuty() > 0.0f, "positive error adds heat");
 
-  // Case 2: BT rises far too fast -> negative correction. 60 C/min against a
-  // profile ramp of 30 C/min, so the target is at ~42 C while BT is at 65 C:
-  // the PID is at 0 on its own here and the negative RoR correction is what
-  // holds the element off.
+  // Case 2: BT rises far too fast -> the trim pulls the setpoint DOWN. 60 C/min
+  // against a profile ramp of 30 C/min. The old duty-offset guidance answered
+  // this with a negative duty offset large enough to decide the element on its
+  // own; the trim here is capped at ROR_TRIM_MAX_C and the PID stays in charge.
   web.stopRoast();
   runLoops(4);
   check(web.startRoast(String("bt-sign")), "BT sign-test roast restarts");
@@ -333,8 +338,9 @@ int main() {
   }
   check(std::isnan(web.getET()), "the ET channel is still not read in case 2");
   check(web.getRorError() < 0.0f, "a fast BT gives negative error");
-  check(web.getHeaterDuty() == 0.0f,
-        "negative error clamps duty to 0 (PID alone would be small here)");
+  check(web.getRorCorrection() < 0.0f, "a fast BT pulls the setpoint down");
+  check(web.getRorCorrection() >= -ROR_TRIM_MAX_C - 0.001f,
+        "and never past -ROR_TRIM_MAX_C, however large the error is");
   // Walk BT back down before the next section instead of assigning 20 C: a
   // 45 C step reads as a pulled probe in sensors.cpp (SENSOR_FAULT_MAX_JUMP_C
   // is 20 C), latches the alarm and fails every later section for the wrong
@@ -345,6 +351,10 @@ int main() {
   runLoops(4);
 #else
   seedProfile("sign", true);
+  // The roast clock starts in cbStartRoast() at millis(), so the elapsed time
+  // below is the difference from this stamp - needed to reconstruct the
+  // profile's own setpoint for the PID check further down.
+  const unsigned long signStartMs = fakeMillis.load();
   check(web.startRoast(String("sign")), "sign-test roast starts");
   // The profile target at 0 s is 20 C. Keep BT there so the PID error is tiny,
   // and make ET flat so ror_et trends to 0.
@@ -356,7 +366,7 @@ int main() {
     loop();
   }
 
-  // Case 1: ET rises too slowly -> positive correction.
+  // Case 1: ET rises too slowly -> the trim raises the setpoint.
   // Keep BT gently rising so PID stays small; ET flat -> ror_et ~0.
   for (int i = 0; i < 120; i++) {
     g_probeBT = 20.0f + 5.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
@@ -367,9 +377,34 @@ int main() {
   check(web.getRorTarget() > 0.0f, "RoR target is active in sign test");
   check(web.getRorError() > 0.0f, "flat ET gives positive error (target > actual)");
   check(web.getRorActive(), "guidance is active");
+  check(web.getRorCorrection() > 0.0f && web.getRorCorrection() <= ROR_TRIM_MAX_C + 0.001f,
+        "positive error raises the setpoint, by at most ROR_TRIM_MAX_C");
   check(web.getHeaterDuty() > 0.0f, "positive error adds heat");
 
-  // Case 2: ET rises too fast -> negative correction.
+  // The trim must reach the PID as a SETPOINT change, not as a duty offset. The
+  // PID's own P term is KP * (setpoint - filtered BT), so it carries the trimmed
+  // setpoint and nothing else: profile curve at this second plus the trim. This
+  // is the check that fails if anyone ever adds the trim back into the duty sum
+  // or forgets to fold it into the setpoint.
+  RoastProfile signCurve;
+  check(signCurve.loadFromFile(profilePath("sign").c_str()), "sign profile reloads for the setpoint check");
+  const unsigned long signElapsed = (fakeMillis.load() - signStartMs) / 1000;
+  const float profileSetpoint = signCurve.targetAt(signElapsed);
+  const float trimmedSetpoint = profileSetpoint + web.getRorCorrection();
+  const float wantP = (float)(PID_KP * (trimmedSetpoint - web.getFilteredBT()));
+  char pDetail[200];
+  snprintf(pDetail, sizeof(pDetail),
+           "P %.3f, KP*(%.2f + %+.2f - %.2f) = %.3f at %lu s", web.getPidP(),
+           profileSetpoint, web.getRorCorrection(), web.getFilteredBT(), wantP,
+           signElapsed);
+  check(std::fabs(web.getPidP() - wantP) <= 0.02f * std::fabs(wantP) + 0.02f,
+        "the PID's error is built from the TRIMMED setpoint", pDetail);
+
+  // Case 2: ET rises too fast -> the trim pulls the setpoint down, and the PID
+  // stays in charge of the element. The old duty-offset guidance answered a
+  // large negative error by taking the duty to 0 on its own; here the error is
+  // ~-27 C/min, i.e. a -2.7 C setpoint trim, and the duty is whatever the
+  // loop wants - which is heat, because BT is 20 C under the curve.
   web.stopRoast();
   runLoops(4);
   g_probeBT = 20.0f;
@@ -383,8 +418,11 @@ int main() {
     loop();
   }
   check(web.getRorError() < 0.0f, "fast ET gives negative error");
-  check(web.getHeaterDuty() == 0.0f,
-        "negative error clamps duty to 0 (PID alone would be small here)");
+  check(web.getRorCorrection() < 0.0f, "fast ET pulls the setpoint down");
+  check(web.getRorCorrection() >= -ROR_TRIM_MAX_C - 0.001f,
+        "and never past -ROR_TRIM_MAX_C, however large the error is");
+  check(web.getHeaterDuty() > 0.0f,
+        "a negative RoR error no longer forces the element off - the PID decides");
   web.stopRoast();
   runLoops(4);
 #endif
@@ -400,20 +438,24 @@ int main() {
     loop();
   }
   check(web.getRorActive(), "guidance active before disabling tests");
+  check(web.getRorCorrection() != 0.0f,
+        "and the trim is non-zero before the off tests, so 'zero after' means something");
 
-  // Pause -> correction 0.
+  // Pause -> trim 0.
   web.pauseRoast();
   runLoops(4);
   check(!web.getRorActive(), "pause disables RoR guidance");
   check(web.getRorTarget() == 0.0f, "target resets to 0 while paused");
+  check(web.getRorCorrection() == 0.0f, "pause clears the trim to exactly 0");
   web.resumeRoast();
   runLoops(4);
 
-  // Safety alarm -> correction 0. Pull BT probe to trip latch.
+  // Safety alarm -> trim 0. Pull BT probe to trip latch.
   g_probeBT = 0.0f;
   runLoops(SENSOR_FAULT_MAX_COUNT + 3);
   check(safety_faulted(), "safety latch trips");
   check(!web.getRorActive(), "safety alarm disables RoR guidance");
+  check(web.getRorCorrection() == 0.0f, "safety alarm clears the trim to exactly 0");
   check(web.getHeaterDuty() == 0.0f, "heater is off during safety alarm");
 
   // Heal sensors to clear latch.
@@ -437,6 +479,7 @@ int main() {
   check(web.getRorGuidance() == -1, "non-RoR step reports guidance -1");
   check(!web.getRorActive(), "non-RoR step keeps guidance inactive");
   check(web.getRorTarget() == 0.0f, "non-RoR step keeps target at 0");
+  check(web.getRorCorrection() == 0.0f, "non-RoR step keeps the trim at exactly 0");
   web.stopRoast();
   runLoops(4);
 
@@ -450,6 +493,7 @@ int main() {
   runLoops(4);
   check(!ror_valid(), "RoR is invalid immediately after reset");
   check(!web.getRorActive(), "invalid RoR keeps guidance inactive");
+  check(web.getRorCorrection() == 0.0f, "invalid RoR keeps the trim at exactly 0");
   web.stopRoast();
   runLoops(4);
 
@@ -483,22 +527,16 @@ int main() {
   web.stopRoast();
   runLoops(4);
 
-  // ---------------------------------------------------------- clamp / rate ---
+  // -------------------------------------------------------- clamp / slew ----
+  // The trim's own two limits, measured per cycle, not just at the end: no
+  // error, however large, may ask for more than +-ROR_TRIM_MAX_C, and the trim
+  // may not move faster than ROR_TRIM_SLEW_C_PER_S. The heater duty is NOT the
+  // number under test here - it is the PID's and the feed-forward's, and that is
+  // the whole point of 0.16.0.
 #if ROR_GUIDANCE_ON_BT
   // The cold-probe transient on the channel that is steering: BT plunges at
-  // -50 C/min while the profile still asks for 20 -> 50 C. The fitted rate ends
-  // up far below the target, so the raw correction is several times
-  // HEATER_MAX_DUTY_PCT. Both protections are checked per cycle, not just at
-  // the end: the clamp holds the duty at the ceiling and the rate limit keeps
-  // the correction from jumping there in one step.
-  //
-  // The rate limit is measured on `roRorCorrection` (reported by /api/status),
-  // NOT on the heater duty. Since 0.15.0 the duty is
-  //   clip(duty_ff + PID trim + correction, 0, 100)
-  // so it is no longer the correction: the feed-forward steps in at ~44 % and
-  // the bipolar PID trim pulls with -70 % or more here (BT is far above the
-  // target), which pins the sum at 0 % for most of this transient. Reading the
-  // rate limit off the duty would test the PID's own movement instead.
+  // -50 C/min while the profile still asks for 20 -> 50 C, so the error is far
+  // past the +-3 C the trim can express.
   seedProfile("bt-clamp", true);
   // Move the probes gently to the starting point so sensors.cpp does not see
   // the step change as a pulled probe.
@@ -506,34 +544,36 @@ int main() {
   check(web.startRoast(String("bt-clamp")), "BT clamp-test roast starts");
   web.setFanSpeed(80);
   float maxDuty = 0.0f;
-  float maxCorrection = 0.0f;
-  float maxCorrectionJump = 0.0f;
-  float prevCorrection = web.getRorCorrection();
+  float maxTrim = 0.0f;
+  float maxTrimJump = 0.0f;
+  float prevTrim = web.getRorCorrection();
   for (int i = 0; i < 240; i++) {
     g_probeBT = 80.0f - 50.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
     fakeMillis += SENSOR_READ_INTERVAL_MS;
     loop();
     float duty = web.getHeaterDuty();
-    float correction = web.getRorCorrection();
+    float trim = web.getRorCorrection();
     if (duty > maxDuty) maxDuty = duty;
-    if (std::fabs(correction) > maxCorrection) maxCorrection = std::fabs(correction);
-    if (std::fabs(correction - prevCorrection) > maxCorrectionJump)
-      maxCorrectionJump = std::fabs(correction - prevCorrection);
-    prevCorrection = correction;
+    if (std::fabs(trim) > maxTrim) maxTrim = std::fabs(trim);
+    if (std::fabs(trim - prevTrim) > maxTrimJump) maxTrimJump = std::fabs(trim - prevTrim);
+    prevTrim = trim;
   }
   check(std::isnan(web.getET()), "the ET channel was not read during the BT transient");
   check(web.getRorError() > 20.0f, "a plunging BT creates a large positive error");
+  char detail[200];
+  snprintf(detail, sizeof(detail), "peak |trim| %.3f C (limit %.3f)",
+           maxTrim, ROR_TRIM_MAX_C);
+  check(maxTrim <= ROR_TRIM_MAX_C + 0.001f,
+        "the trim never leaves +-ROR_TRIM_MAX_C, however large the error is", detail);
+  const float slewPerCycle = ROR_TRIM_SLEW_C_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f);
+  snprintf(detail, sizeof(detail), "%.4f C in one %d ms cycle (limit %.4f)",
+           maxTrimJump, (int)SENSOR_READ_INTERVAL_MS, slewPerCycle);
+  check(maxTrimJump <= slewPerCycle + 0.001f,
+        "the trim moves at most ROR_TRIM_SLEW_C_PER_S per second", detail);
+  check(maxTrim >= ROR_TRIM_MAX_C - 0.001f,
+        "and it did reach the clamp: the transient really asks for more than 3 C");
   check(maxDuty <= HEATER_MAX_DUTY_PCT + 0.01f,
         "duty never exceeds HEATER_MAX_DUTY_PCT in any cycle of the transient");
-  char detail[160];
-  snprintf(detail, sizeof(detail), "%+.3f pp in one %d ms cycle (limit %.3f), peak |corr| %.1f",
-           maxCorrectionJump, (int)SENSOR_READ_INTERVAL_MS,
-           ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f), maxCorrection);
-  check(maxCorrectionJump <=
-            ROR_GUIDANCE_MAX_STEP_PCT_PER_S * (SENSOR_READ_INTERVAL_MS / 1000.0f) + 0.01f,
-        "the correction moves at most ROR_GUIDANCE_MAX_STEP_PCT_PER_S per second", detail);
-  check(maxCorrection > 20.0f,
-        "and it did climb: the transient really asks for a correction worth limiting");
   check(ssrState == HIGH || web.getHeaterDuty() == 0.0f,
         "heater pin follows the clamped duty (on when positive)");
   web.stopRoast();
@@ -547,15 +587,21 @@ int main() {
   web.setFanSpeed(80);
   // Put BT on profile target so PID ~0; make ET plunge fast to create a huge
   // positive error. Start high enough that the probe stays above SENSOR_MIN_VALID_C
-  // for the whole 60 s run. A -50 C/min ET rate means error ~55 C/min -> raw
-  // correction ~165 %, but the rate limit and clamp must keep it bounded.
+  // for the whole 60 s run. A -50 C/min ET rate against a target of a few C/min
+  // means an error of ~55 C/min, i.e. 5.5 C of requested trim - twice the clamp.
+  float maxTrim = 0.0f;
   for (int i = 0; i < 240; i++) {
     g_probeBT = 80.0f + 5.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
     g_probeET = 80.0f - 50.0f * (float)(i * SENSOR_READ_INTERVAL_MS) / 60000.0f;
     fakeMillis += SENSOR_READ_INTERVAL_MS;
     loop();
+    if (std::fabs(web.getRorCorrection()) > maxTrim) maxTrim = std::fabs(web.getRorCorrection());
   }
   check(web.getRorError() > 50.0f, "cold-probe scenario creates a large error");
+  char detail[160];
+  snprintf(detail, sizeof(detail), "peak |trim| %.3f C (limit %.3f)", maxTrim, ROR_TRIM_MAX_C);
+  check(maxTrim <= ROR_TRIM_MAX_C + 0.001f,
+        "the trim is clamped to +-ROR_TRIM_MAX_C whatever the error", detail);
   check(web.getHeaterDuty() <= HEATER_MAX_DUTY_PCT + 0.01f,
         "duty never exceeds HEATER_MAX_DUTY_PCT");
   check(ssrState == HIGH || web.getHeaterDuty() == 0.0f,

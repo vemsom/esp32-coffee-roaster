@@ -31,6 +31,12 @@
 #                        plant - plus the counter-example that pins why the PID's
 #                        trim runs bipolar in profile mode. Pure logic.
 #                        Default pass only.
+#   test_ror_trim        the RoR guidance as a SETPOINT trim (0.16.0,
+#                        include/ror_trim.h): the dead band, 0.1 C per C/min, the
+#                        +-3 C clamp, the 0.5 C/s slew limit, the off cases - and
+#                        a simulated before/after over the identified plant, fed
+#                        by the error sequence measured on a real roast. Pure
+#                        logic, links ror.cpp. Default pass only.
 #   test_safety          safety latch + heater interlock, stubbed Arduino.
 #                        DEFAULT PASS ONLY: it asserts the ET trips (ET
 #                        over-temp, an ET sensor fault, a frozen ET and the
@@ -312,6 +318,16 @@ run_pass() {
         -I "$here/stub" -I "$root/include" \
         "$here/test_feed_forward.cpp" \
         -o "$out/test_feed_forward"
+
+    # The RoR guidance as a setpoint trim (0.16.0, include/ror_trim.h): the law
+    # and its limits, plus a simulated before/after over the plant the PID gains
+    # were trimmed against, fed by the error sequence measured on 2026-10-25.
+    # Links the real ror.cpp so the simulated rise is the estimator that ships.
+    # Pure logic over its own clock, no flag, one pass.
+    g++ -std=c++17 -Wall -Wextra \
+        -I "$here/stub" -I "$root/include" \
+        "$here/test_ror_trim.cpp" "$root/src/ror.cpp" \
+        -o "$out/test_ror_trim"
   fi
 
   # The push-OTA test links the REAL web_server.cpp (and both handlers: the app
@@ -407,6 +423,7 @@ run_pass() {
     run_test "$out/test_pid"
     run_test "$out/test_pid_tuning"
     run_test "$out/test_feed_forward"
+    run_test "$out/test_ror_trim"
   fi
 
   # Every binary prints its own "N checks, M failures" line; the tally over the

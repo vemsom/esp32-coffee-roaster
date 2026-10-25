@@ -89,6 +89,145 @@ now fed forward from the profile's own curve, fitted to the same three roasts - 
 Host suite green (see the section for the counts), both `esp32-ota-bt` builds
 SUCCESS with 0 warnings. **Nothing was flashed.**
 
+**2026-10-25, 0.16.0: the RoR guidance moves the SETPOINT, not the element.** A
+measured roast (60 g, `monsun-choklad`, rorTarget 36.5 -> 2.4 C/min) shows the
+guidance saturated the whole way: duty spent 5 % of the roast at 0 % and 11 % at
+>= 99 %, the 30 s rise swung -36..+53 C/min, and the panel read guidance 22.6 /
+measured 60.9 / heat 0 % at 2:47 against guidance 14.4 / measured -52.4 / heat
+100 % at 4:09. Two regulators with integral action were driving one actuator and
+the outer one was fed a derivative. The error is now a setpoint trim in C
+(`include/ror_trim.h`): dead band +-1.5 C/min, 0.1 C per C/min, clipped to
++-3 C, slewed 0.5 C/s, and the PID keeps the element. `roRorCorrection` in
+`/api/status` keeps its name and changes unit to C. See "0.16.0 (2026-10-25):
+the RoR guidance moves the setpoint, not the element" below. Host suite green
+(**1471 checks, 0 failures** with `SAFETY_ET_ENABLED 1`, **1267** with it at 0),
+`pio run -e esp32-ota-bt` and `-t buildfs` SUCCESS with 0 warnings. **Nothing
+was flashed.**
+
+## 0.16.0 (2026-10-25): the RoR guidance moves the setpoint, not the element
+
+**What was measured** (roast 2026-10-25 10:36-10:47, 60 g, profile
+`monsun-choklad`, rorTarget 36.5 -> 2.4 C/min on every step, fan 100 -> 94):
+
+| t (s) | BT | profile target | deviation |
+| --- | --- | --- | --- |
+| 40 | 60.2 | 48.3 | **+11.9** |
+| 200 | 107.3 | 134.3 | **-27.0** |
+| 480 | 209.5 | 195.5 | **+14.0** |
+| 612 | 219.0 | ~206 | **+13** |
+
+Duty was at 0 % for 5 % of the roast and at >= 99 % for 11 %; the 30 s rise
+swung **-36..+53 C/min**. Panel: at 2:47 guidance 22.6, measured 60.9, heat 0 %;
+at 4:09 guidance 14.4, measured -52.4, heat 100 %.
+
+**Why it happened.** The old law was, per cycle,
+
+```
+correction = (rorTarget - rorActual) * ROR_GUIDANCE_GAIN       // 3.0 %/(C/min)
+             clipped to +-100 %, slewed 15 %/s
+duty       = clip(ffDuty + pidDuty + correction, 0, 100)
+```
+
+At 3.0 %/(C/min) any error past **33 C/min** saturates it. This roast ran at
+-38 and +67 C/min, so the guidance was saturated at every sample and owned the
+element outright. That is a limit cycle, not a tuning problem: two regulators
+with integral action on one actuator, one of them fed a derivative.
+
+**What changed.**
+
+- The law lives in `include/ror_trim.h` as a pure function, so the host tests pin
+  the shipped numbers instead of a copy:
+
+  | constant | value | meaning |
+  | --- | --- | --- |
+  | `ROR_TRIM_GAIN_C_PER_C_PER_MIN` | 0.1 | C of setpoint per C/min of error |
+  | `ROR_TRIM_MAX_C` | 3.0 | hard clip, both directions |
+  | `ROR_TRIM_DEADBAND_C_PER_MIN` | 1.5 | inside: trim is exactly 0 |
+  | `ROR_TRIM_SLEW_C_PER_S` | 0.5 | full +-3 C takes 6 s |
+  (`ROR_GUIDANCE_GAIN` and `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` are gone.)
+- `updateRorGuidance()` returns the trim in C; `updateControl()` folds it into
+  the setpoint (`target = activeProfile.targetAt(elapsed) + trim`) and computes
+  `duty = ffDuty + pidDuty` with no RoR term. Everything else in that function is
+  unchanged: the feed-forward still takes its slope from the PROFILE curve, the
+  clip is still 0..100, the fan interlock and `applyHeaterDuty()` still judge the
+  total, and the PID constants are untouched (KP 1.2 / KI 0.04 / KD 0, bipolar
+  range in profile mode).
+- The off conditions are the ones it always had - `rorTarget <= 0`, pause, wrong
+  mode, invalid RoR, safety alarm, a NaN on the steering channel - and each now
+  also clears the stored trim to exactly 0, so a re-enabled step starts from no
+  trim instead of a stale one.
+- Diagnostics keep their names (`roRorTarget`, `roRorError`, `roRorActive`,
+  `roRorGuidance`, and `roRorCorrection` in `/api/status`), but
+  **`roRorCorrection` is now C of setpoint trim, not duty percent.** Old logs and
+  new ones are not comparable on that field.
+
+**The logged errors, through both laws:**
+
+| panel | target | measured | error | old duty offset | new setpoint trim |
+| --- | --- | --- | --- | --- | --- |
+| 2:47 | 22.6 | 60.9 | -38.3 | **-100 %** | **-3.00 C** |
+| 4:09 | 14.4 | -52.4 | +66.8 | **+100 %** | **+3.00 C** |
+
+**Simulated before/after.** One plant, both laws, the real PID, the real
+feed-forward and the real 30 s RoR estimator (`src/ror.cpp`), driven by the
+profile curve reconstructed from the logged points and a RoR target falling
+36.5 -> 2.4 C/min over the roast (`tools/host-tests/test_ror_trim.cpp`, one row
+per 60 s):
+
+| t (s) | BT | target | duty before | offset before | duty after | trim after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 60 | 75.2 | 59.0 | 0.0 % | -100.0 % | 27.4 % | -3.00 C |
+| 120 | 82.2 | 91.3 | 0.0 % | -100.0 % | 60.8 % | +2.35 C |
+| 180 | 124.2 | 123.6 | 67.1 % | +17.1 % | 63.1 % | -0.33 C |
+| 240 | 150.3 | 143.0 | 100.0 % | +100.0 % | 62.1 % | -0.82 C |
+| 300 | 154.6 | 156.2 | 100.0 % | +100.0 % | 77.6 % | +1.00 C |
+| 360 | 168.9 | 169.3 | 100.0 % | -35.4 % | 80.3 % | +0.90 C |
+| 420 | 183.0 | 182.4 | 58.2 % | -100.0 % | 85.9 % | -0.32 C |
+| 480 | 194.6 | 195.5 | 78.9 % | -96.7 % | 93.2 % | -0.27 C |
+| 540 | 200.7 | 200.3 | 100.0 % | -50.1 % | 90.6 % | +0.72 C |
+| 600 | 205.5 | 205.0 | 100.0 % | -9.1 % | 93.1 % | -0.50 C |
+
+Aggregates over the part of the roast where the estimate is valid:
+
+| | before | after |
+| --- | --- | --- |
+| samples at 0 % duty | 17.0 % | **0.0 %** |
+| samples at >= 99 % duty | 59.4 % | **0.0 %** |
+| duty band | 0-100 % | 21-94 % |
+| biggest cycle-to-cycle duty step | 4.8 pp | **1.1 pp** |
+| peak of what the guidance asks for | 100.0 pp | **3.00 C** |
+| 30 s RoR swing | -139..177 C/min | -13..89 C/min |
+| mean absolute BT - target | 15.2 C | **2.9 C** |
+
+**What the simulation does not claim.** The plant is the first-order-plus-dead-
+time model identified in `test_pid_tuning.cpp` (K 2.0 C/%, tau 45 s, dead time
+19 s), not a re-identification from the 2026-10-25 roast - that roast's duty
+trace is not in the log, only the temperatures and the 30 s rise. The simulated
+before leg therefore saturates *harder* than the real roast did (17 % / 59 %
+against the measured 5 % / 11 %): the shape is the claim, not the percentage. The
+after leg is the point - the guidance asks for at most 3 C, the loop's duty never
+touches a rail, and the roast tracks the curve within 17 C worst case instead of
+54 C.
+
+**Tests.** `tools/host-tests/test_ror_trim.cpp` (new, 26 checks, default pass):
+the dead band edges (+-1.5 -> 0, +-1.0 -> 0), err 20 -> 2.0 C, both measured
+errors clipping to +-3 C, a 1000 C/min error still asking for 3 C, `rorTarget 0`
+and negative -> 0, NaN on either side -> 0 (never a NaN setpoint), the slew limit
+(0.125 C per 250 ms cycle, a request inside it passing through, a zero dt not
+unlocking a step, the full swing taking 6.0 s), and the before/after above.
+`test_ror_guidance` now asserts the trim instead of the duty offset: sign, the
++-3 C clamp, pause / non-RoR step / alarm / invalid RoR all clearing it to
+exactly 0, the per-cycle slew limit, and - the load-bearing one - that the PID's
+own P term is `KP * (profile target + trim - filtered BT)`, i.e. the trim is in
+the SETPOINT and not in the duty sum. The cold-probe transient that used to be
+checked on the duty is now checked on the trim (peak 3.00 C, largest move 0.125 C
+per cycle).
+
+**Sections further down that describe the old law.** The 0.7.0 / 0.11.0 entries,
+the `ROR_GUIDANCE_GAIN` / `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` numbers and the
+"correction in percent" wording predate 0.16.0 and describe the duty offset this
+release removed. The constants no longer exist in `include/config.h`.
+
 ## 0.15.0 (2026-10-20): the duty ceiling is gone, a feed-forward instead
 
 **Why the ceiling went.** 0.14.0 assumed the loop saturated on small charges: with
@@ -2353,25 +2492,21 @@ this change touched. The totals count every execution:
   (21 checks, built and run in both passes): both routes answer 503 to a
   well-formed, authenticated POST, open no partition, write no byte and touch no
   file; both GET probes answer 404. The build a device without a token runs.
-- `test_ror_guidance` - optional rate-of-rise guidance (53 checks with the flag
-  at 1, 59 with it at 0): the target
-  curve, the sign of the correction, a zero correction when disabled, the rate
-  limit and clamp that keep a cold-probe transient under `HEATER_MAX_DUTY_PCT`,
-  every duty request routed through `applyHeaterDuty()`, the off-by-default
-  regression when a profile carries no `rorTarget`, and that the MQTT status
-  payload names the channel the guidance steers on. Built in both passes, one
-  source per pass: with the flag at 1 it steers on `rorEt` (the behaviour that
-  has shipped since 0.7.0, asserted unchanged); with it at 0 on `rorBt`, with
-  the ET channel reading nothing for the whole run - where the BT transient case
-  also pins the rate limit per cycle (the correction moves at most
-  `ROR_GUIDANCE_MAX_STEP_PCT_PER_S` per second, the duty never passes
-  `HEATER_MAX_DUTY_PCT`, and the clamp really is reached: the peak is 100.00 %
-  with the fit reading -50 C/min). Since 0.15.0 that per-cycle check reads the
-  correction from `roRorCorrection` in `/api/status` instead of from the duty:
-  the duty is `clip(duty_ff + PID trim + correction)`, so the feed-forward and
-  the bipolar trim pin the sum at 0 % through most of that transient and the
-  duty cannot show what the rate limit did. Measured: 3.750 pp in one 250 ms
-  cycle against the 3.750 pp allowance, peak |corr| 100 %.
+- `test_ror_guidance` - optional rate-of-rise guidance as a SETPOINT trim since
+  0.16.0 (64 checks with the flag at 1, 67 with it at 0): the target curve, the
+  sign of the trim, a trim of exactly 0 when disabled (pause, a non-RoR step, the
+  safety alarm, an invalid estimate, the wrong mode), the +-`ROR_TRIM_MAX_C` clamp
+  and the `ROR_TRIM_SLEW_C_PER_S` limit measured per cycle, every duty request
+  routed through `applyHeaterDuty()`, the off-by-default regression when a
+  profile carries no `rorTarget`, and that the MQTT status payload names the
+  channel the guidance steers on. The load-bearing check is that the PID's own P
+  term is `KP * (profile target + trim - filtered BT)`: the trim has to be in the
+  SETPOINT, not in the duty sum. Built in both passes, one source per pass: with
+  the flag at 1 it steers on `rorEt`; with it at 0 on `rorBt`, with the ET channel
+  reading nothing for the whole run - where the BT cold-probe case pins the trim
+  per cycle (peak `ROR_TRIM_MAX_C`, largest move one slew step). Up to 0.15.0
+  this test pinned a duty-offset correction instead; the numbers from that era
+  (3.750 pp per cycle, peak |corr| 100 %) belong to the law 0.16.0 removed.
 - **ThreadSanitizer pass**: the `test_control` source is compiled a second
   time with `-fsanitize=thread` and run as part of the suite. That is what
   found the profile-name race (a `char*` handed to the MQTT payload builder
