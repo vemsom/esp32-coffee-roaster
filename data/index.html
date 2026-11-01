@@ -290,6 +290,7 @@ const START_TEMP = 20;   // profile start point: room temperature at 0 min
 const COLOR_BT = '#ff3b30';                       // bean temp (roast)
 const COLOR_ET = '#ff8a4d';                       // environment temp (roast)
 const COLOR_TARGET = 'rgba(255,210,63,0.75)';     // profile target curve (both)
+const COLOR_COOL = 'rgba(120,190,255,0.85)';      // the cooling part of the target
 const COLOR_TARGET_MARK = 'rgba(255,210,63,0.95)';
 const COLOR_FAN = 'rgba(95,176,255,0.8)';         // target fan curve (editor + roast)
 const COLOR_FAN_ACTUAL = 'rgba(52,199,89,0.85)';  // measured fan duty (both views)
@@ -495,7 +496,7 @@ function fmtClock(sec) {
 
 // Build the piecewise curve (temperature + fan) for a list of steps.
 // Times are in seconds; a ramp segment is linear, a hold segment is flat.
-function buildCurve(steps, startTemp) {
+function buildCurve(steps, startTemp, coolSeconds) {
   let t = 0;
   const tempPts = [{ t: 0, v: startTemp }];
   const fanPts = [{ t: 0, v: 0 }];
@@ -510,7 +511,16 @@ function buildCurve(steps, startTemp) {
     markers.push({ t: holdEnd, temp: s.temp });
     t = holdEnd;
   }
-  return { tempPts, fanPts, markers, total: t };
+  // The cooling belongs on the chart: the profile is not over when the last
+  // step is, and without it the axis stops at the drop and the fall has to be
+  // guessed. The target is drawn as the fall it should be.
+  const coolFrom = t;
+  if (coolSeconds > 0) {
+    tempPts.push({ t: coolFrom, v: tempPts[tempPts.length - 1].v });
+    tempPts.push({ t: coolFrom + coolSeconds, v: 30 });
+    t = coolFrom + coolSeconds;
+  }
+  return { tempPts, fanPts, markers, total: t, coolFrom };
 }
 
 // -------------------------------------------------------------- tabs ----
@@ -770,7 +780,7 @@ function drawRoastChart(canvas, manual) {
 
   const profile = manual ? null : state.activeProfile;
   const curve = profile && profile.steps && profile.steps.length
-    ? buildCurve(profile.steps, profile.startTemp || START_TEMP)
+    ? buildCurve(profile.steps, profile.startTemp || START_TEMP, (profile.coolMinutes || 0) * 60)
     : null;
   const profileEnd = curve ? curve.total : 0;
   const lastT = state.history.length ? state.history[state.history.length - 1].t : 0;
@@ -799,6 +809,17 @@ function drawRoastChart(canvas, manual) {
     ctx.beginPath(); ctx.strokeStyle = COLOR_TARGET; ctx.lineWidth = 2; ctx.setLineDash([5, 4]);
     curve.tempPts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
     ctx.stroke(); ctx.setLineDash([]);
+    // The cooling part of the target, drawn dimmer so it reads as "after the
+    // roast" rather than as another step.
+    if (curve.coolFrom && curve.tempPts.length > 1) {
+      const cool = curve.tempPts.filter((p) => p.t >= curve.coolFrom);
+      if (cool.length > 1) {
+        ctx.beginPath(); ctx.strokeStyle = COLOR_COOL; ctx.lineWidth = 2;
+        ctx.setLineDash([2, 4]);
+        cool.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.v)) : ctx.moveTo(x(p.t), y(p.v)); });
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+    }
     curve.markers.forEach((m) => {
       ctx.beginPath(); ctx.arc(x(m.t), y(m.temp), 3, 0, Math.PI * 2);
       ctx.fillStyle = COLOR_TARGET_MARK; ctx.fill();

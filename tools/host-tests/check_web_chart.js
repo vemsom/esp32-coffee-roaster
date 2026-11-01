@@ -48,7 +48,7 @@ function slice(name) {
 }
 
 const sandbox = {};
-const src = slice('chartTimeFor') + '\n' + slice('chartMaxT') + '\nthis.chartTimeFor = chartTimeFor; this.chartMaxT = chartMaxT;';
+const src = slice('chartTimeFor') + '\n' + slice('chartMaxT') + '\n' + slice('buildCurve') + '\nthis.chartTimeFor = chartTimeFor; this.chartMaxT = chartMaxT; this.buildCurve = buildCurve;';
 try {
   vm.createContext(sandbox);
   vm.runInContext(src, sandbox, { filename: 'index.html#chart' });
@@ -59,11 +59,28 @@ try {
   process.exit(1);
 }
 const chartTimeFor = sandbox.chartTimeFor;
+const buildCurve = sandbox.buildCurve;
 const chartMaxT = sandbox.chartMaxT;
 
 // The state object as the page declares it (the three fields the logic uses).
 const newState = () => ({ chartSpanT: 0, chartWasActive: false, chartNewRoast: false });
 const status = (o) => Object.assign({ roastActive: false, elapsedSeconds: 0, coolActive: false }, o);
+
+// 0. The profile curve carries its cooling, so the chart's axis and the drawn
+//    target both cover the time after the last step.
+{
+  const steps = [
+    { ramp: 120, hold: 0, temp: 100, fan: 100 },
+    { ramp: 60, hold: 0, temp: 200, fan: 90 },
+  ];
+  const without = buildCurve(steps, 24, 0);
+  const withCool = buildCurve(steps, 24, 180);
+  check(without.total === 180, 'a profile without cooling ends at its last step', 'total ' + without.total);
+  check(withCool.total === 360, 'cooling extends the curve by its own length', 'total ' + withCool.total);
+  check(withCool.coolFrom === 180, 'and the cooling starts where the roast ended', 'coolFrom ' + withCool.coolFrom);
+  const last = withCool.tempPts[withCool.tempPts.length - 1];
+  check(last.t === 360 && last.v === 30, 'the cooling target falls to 30 C', last.t + 's ' + last.v);
+}
 
 // 1. A roast running: the sample time is the roast clock, and it advances.
 {
