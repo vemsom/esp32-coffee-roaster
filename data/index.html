@@ -302,6 +302,8 @@ const state = {
   // x axis until a new one starts (see chartTimeFor()).
   chartSpanT: 0,
   chartWasActive: false,  // the roastActive value of the previous poll
+  chartCoolBase: null,    // coolRemainingSeconds at the first cooling sample
+  chartCoolEnd: null,     // last x of the cooling, kept after it ends
   chartNewRoast: false,   // set by chartTimeFor() when a run starts
   profileNames: [],
   lang: 'sv',            // build language of the firmware; the markup below is
@@ -554,8 +556,26 @@ function chartTimeFor(s, st) {
     st.chartNewRoast = true;
   }
   st.chartWasActive = active;
-  if (active) st.chartSpanT = Math.max(st.chartSpanT || 0, s.elapsedSeconds || 0);
-  return active ? (s.elapsedSeconds || 0) : (st.chartSpanT || 0);
+  if (active) {
+    st.chartSpanT = Math.max(st.chartSpanT || 0, s.elapsedSeconds || 0);
+    st.chartCoolBase = null;            // cooling has not started yet
+    st.chartCoolEnd = null;
+    return s.elapsedSeconds || 0;
+  }
+  // Cooling continues on the same axis after the roast's last second, so the
+  // fall in temperature is drawn as the curve it is instead of piling every
+  // sample onto the last roast second (a vertical line).
+  if (s.coolActive) {
+    if (st.chartCoolBase === null || st.chartCoolBase === undefined) {
+      st.chartCoolBase = s.coolRemainingSeconds || 0;   // first cooling sample
+    }
+    const cooled = Math.max(0, (st.chartCoolBase || 0) - (s.coolRemainingSeconds || 0));
+    st.chartCoolEnd = (st.chartSpanT || 0) + cooled;
+    return st.chartCoolEnd;
+  }
+  // After the cooling the axis keeps its end, so the curve does not snap back
+  // to the roast's last second.
+  return st.chartCoolEnd != null ? st.chartCoolEnd : (st.chartSpanT || 0);
 }
 
 // The x axis' right edge: never shorter than the roast that just finished, so a

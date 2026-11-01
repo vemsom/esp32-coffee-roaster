@@ -78,21 +78,27 @@ const status = (o) => Object.assign({ roastActive: false, elapsedSeconds: 0, coo
 
 // 2. Stop after 425 s ("Avbryt och kyl"): the clock goes to 0, the samples must
 //    NOT. This is the reported bug: every later sample used to plot at x = 0.
+//    Cooling now continues the axis, so the fall is drawn as a curve instead of
+//    a vertical line at the roast's last second.
 {
   const st = newState();
   for (let s = 0; s <= 425; s += 425) chartTimeFor(status({ roastActive: true, elapsedSeconds: s }), st);
   const after = [];
-  const cooling = status({ roastActive: false, elapsedSeconds: 0, coolActive: true });
-  for (let i = 0; i < 5; i++) after.push(chartTimeFor(cooling, st));
+  for (let i = 0; i < 5; i++) {
+    after.push(chartTimeFor(
+      status({ roastActive: false, elapsedSeconds: 0, coolActive: true, coolRemainingSeconds: 240 - i * 30 }),
+      st));
+  }
+  check(after.join(',') === '425,455,485,515,545',
+        'cooling continues the axis where the roast ended', after.join(','));
   const idle = status({});
-  after.push(chartTimeFor(idle, st));
-  check(after.every((t) => t === 425),
-        'a stopped roast keeps its time base - cooling and idle samples stay at 425 s',
-        after.join(','));
-  check(chartMaxT(0, after[after.length - 1], st.chartSpanT) === 425,
-        'and the axis still ends at 425 s, not at 0', 'maxT ' + chartMaxT(0, 425, st.chartSpanT));
+  check(chartTimeFor(idle, st) === 545,
+        'idle samples stay at the end of the cooling', 'idle ' + chartTimeFor(idle, st));
+  check(chartMaxT(0, 545, st.chartSpanT) === 545,
+        'the axis covers the cooling too', 'maxT ' + chartMaxT(0, 545, st.chartSpanT));
   check(chartMaxT(0, 0, st.chartSpanT) === 425,
-        'even before any sample has been appended', 'maxT ' + chartMaxT(0, 0, st.chartSpanT));
+        'and still never shrinks below the roast before cooling starts',
+        'maxT ' + chartMaxT(0, 0, st.chartSpanT));
 }
 
 // 3. A new roast starts: the span resets (its own time base), and the page is
