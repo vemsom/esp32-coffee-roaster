@@ -56,6 +56,24 @@ static void handleStatus(AsyncWebServerRequest *request) {
     doc["roastActive"] = cb.getRoastActive();
     doc["elapsedSeconds"] = cb.getElapsedSeconds();
     doc["roastPaused"] = cb.getRoastPaused();
+    // Which PROGRAM the machine is running, if any. Before these four fields the
+    // status API could not answer that at all: an active roast reported
+    // roastActive and the elapsed clock, and a monitor had no way to tell a run
+    // on a curve from a run heating on its own (measured 2026-11-07, mid-roast).
+    //
+    // Always present, with "" / -1 / null meaning "none", so a client can tell
+    // "no programme loaded" from "this firmware does not report programmes".
+    // programLoaded is the one to gate on: it is true only while a profile is
+    // loaded AND the run is following it. Manual mode is deliberately false -
+    // that is the only path that heats without a programme, and it is bounded by
+    // manualRemainingSeconds (see SAFETY.md).
+    doc["profile"] = cb.getProfileName();
+    doc["programLoaded"] = cb.getProgramLoaded();
+    doc["profileStep"] = cb.getProfileStep();
+    // The profile curve's target at the current roast time, in C, before the RoR
+    // trim (that trim is roRorCorrection). null when no profile is behind the
+    // run: 0 would be a temperature, and this says "no programme".
+    doc["targetTemp"] = cb.getProfileTargetTemp();
     doc["manualActive"] = cb.getManualActive();
     doc["manualTargetTemp"] = cb.getManualTargetTemp();
     doc["manualRemainingSeconds"] = cb.getManualRemainingSeconds();

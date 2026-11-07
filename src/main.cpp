@@ -358,13 +358,32 @@ static unsigned long cbGetCoolRemainingSeconds() {
   return coolDurationSeconds - elapsed;
 }
 
+// The one run state that must never look normal: profile mode entered with no
+// programme behind it. cbStartRoast() refuses a file it cannot read, but a
+// profile that parses to zero steps loads successfully - and that run reports
+// roastActive while no curve exists to follow. targetAt() is NAN for an empty
+// profile, so the element is never commanded from there; the danger is the
+// reporting, not the heat.
+//
+// It is surfaced through the existing safetyFault/safetyReason pair so a monitor
+// (Home Assistant, cron, a human reading /api/status) sees an error instead of a
+// normal roast. It is deliberately NOT latched into the safety state machine:
+// nothing here commands the element, and requirement is visibility. The pair is
+// unambiguous anyway - a real latch always aborts the run
+// (abortRunForSafety() sets MODE_IDLE), so safetyFault and roastActive can only
+// be true together in this state.
+static bool programMissingLocked() {
+  return controlMode == MODE_PROFILE && activeProfile.stepCount() == 0;
+}
+
 static bool cbGetSafetyFault() {
   StateLockGuard guard;
-  return safety_faulted();
+  return safety_faulted() || programMissingLocked();
 }
 
 static const char *cbGetSafetyReason() {
   StateLockGuard guard;
+  if (!safety_faulted() && programMissingLocked()) return "no profile loaded";
   return safety_code_text();
 }
 
@@ -388,6 +407,35 @@ static const char *cbGetModeName() {
 static const char *cbGetProfileName() {
   StateLockGuard guard;
   return selectedProfileName;
+}
+
+// The identity of the program behind a run, for the status API. cbStartRoast()
+// only enters MODE_PROFILE after a profile file has loaded, so programLoaded
+// answers "is there a curve behind this run?" and not "is a run going?" -
+// roastActive answers the latter. It is false in manual mode by construction:
+// no profile is loaded there, and manual heat is bounded by
+// manualRemainingSeconds instead (see SAFETY.md).
+//
+// targetTemp is NAN when no profile is behind the run, which the JSON status
+// serialises as null: 0 would be a temperature.
+static bool cbGetProgramLoaded() {
+  StateLockGuard guard;
+  return controlMode == MODE_PROFILE && activeProfile.stepCount() > 0;
+}
+
+static int cbGetProfileStep() {
+  StateLockGuard guard;
+  if (controlMode != MODE_PROFILE || activeProfile.stepCount() == 0) return -1;
+  return activeProfile.stepIndexAt(roastElapsedSeconds());
+}
+
+// The curve's target at the current roast time, before any RoR trim (the trim
+// is reported separately as roRorCorrection). NAN when no profile is behind the
+// run, which the JSON status serialises as null: 0 would be a temperature.
+static float cbGetProfileTargetTemp() {
+  StateLockGuard guard;
+  if (controlMode != MODE_PROFILE || activeProfile.stepCount() == 0) return NAN;
+  return activeProfile.targetAt(roastElapsedSeconds());
 }
 
 // ---- Command callbacks ----
@@ -538,6 +586,11 @@ static bool cbStartRoast(const String &profileName) {
 // them.
 static void stopRoastLocked() {
   if (controlMode == MODE_PROFILE) controlMode = MODE_IDLE;
+  // The name belongs to the run, not to the machine: once the run has stopped,
+  // /api/status and the MQTT payload must not keep reporting a profile as if one
+  // were still loaded. A monitor reads "profile" plus "programLoaded" together,
+  // and a stale name is exactly what would make an idle machine look busy.
+  selectedProfileName[0] = '\0';
   roastStartMillis = 0;
   roastPaused = false;
   roastPauseStarted = 0;
@@ -627,6 +680,9 @@ static void finishProfileLocked() {
 // on purpose: the beans should keep getting air while the fault is handled.
 static void abortRunForSafety() {
   controlMode = MODE_IDLE;
+  // Same reason as stopRoastLocked(): the profile name describes a run, and this
+  // run is over.
+  selectedProfileName[0] = '\0';
   roastStartMillis = 0;
   roastPaused = false;
   roastPauseStarted = 0;
@@ -1064,6 +1120,10 @@ void setup() {
     cbGetRoastActive,
     cbGetElapsedSeconds,
     cbGetRoastPaused,
+    cbGetProfileName,
+    cbGetProgramLoaded,
+    cbGetProfileStep,
+    cbGetProfileTargetTemp,
     cbGetManualActive,
     cbGetManualTargetTemp,
     cbGetManualRemainingSeconds,

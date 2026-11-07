@@ -104,6 +104,73 @@ the RoR guidance moves the setpoint, not the element" below. Host suite green
 `pio run -e esp32-ota-bt` and `-t buildfs` SUCCESS with 0 warnings. **Nothing
 was flashed.**
 
+**2026-11-07, 0.17.0: the status API names the programme.** Reported from a live
+roast: `/api/status` said `roastActive` true, `elapsedSeconds` 303 and
+`heaterDuty` 82 % with no field that identified the profile, so a monitor could
+not tell a run on a curve from a run heating on its own. `/api/status` now carries
+`profile`, `programLoaded`, `profileStep` and `targetTemp` (always present; `""` /
+`false` / `-1` / `null` mean "no programme"), a run with no profile behind it is
+reported as `safetyFault` with `safetyReason: "no profile loaded"`, and the name is
+cleared when the run ends. No control law changed. Host suite green (**1531
+checks, 0 failures** with `SAFETY_ET_ENABLED 1`, **1327** with it at 0),
+`pio run -e esp32-ota-bt` SUCCESS with 0 warnings. **Nothing was flashed** - the
+change is app-only and the web UI is untouched, so no filesystem push either.
+See "0.17.0 (2026-11-07): the status API names the programme" and the new
+"Heating without a programme" section in `SAFETY.md`.
+
+## 0.17.0 (2026-11-07): the status API names the programme
+
+**What was measured.** During a live roast (`guji-natural`, 2026-11-07, elapsed
+303 s, `bt` 170 C, `heaterDuty` 82 %) `/api/status` carried `roastActive`,
+`roastPaused`, `manualActive`, `manualTargetTemp`, `manualRemainingSeconds`,
+`cool*`, `bt`, `heaterDuty`, `fanSpeed`/`fanActual`, `roRor*`, `pid*`, `fw` and
+`build` - and **nothing that identified the profile**. The name existed in the
+MQTT payload (`doc["profile"] = cb.getProfileName()`, `src/mqtt_client.cpp:246`)
+and in Home Assistant as `sensor ..._profile`, but not over HTTP, which is what a
+monitor polls. `manualActive` separates manual from profile mode; a running
+profile could not be verified at all.
+
+**What changed.** Four fields in `/api/status`, always present:
+
+| field | value | "none" |
+| --- | --- | --- |
+| `profile` | the profile the run follows | `""` |
+| `programLoaded` | a loaded profile is behind the run | `false` |
+| `profileStep` | index of the active step | `-1` |
+| `targetTemp` | the curve's target right now (C, before the RoR trim) | `null` |
+
+They are always present so a client can tell "no programme loaded" from "this
+firmware does not report programmes". `programLoaded` is the field to gate on: it
+is true only while a profile is loaded **and** the run is following it, and never
+in manual mode - manual heat is the one path without a programme, and it is
+bounded by the duration reported in `manualRemainingSeconds`.
+
+**The fault.** A profile file that parses to zero steps still loads
+(`RoastProfile::loadFromFile()` only fails when the file cannot be opened), so
+profile mode can be entered with no curve behind it: `targetAt()` is NaN, the
+element is never commanded, and every other field reads like a normal roast. That
+state now reports `safetyFault: true` with `safetyReason: "no profile loaded"`
+through the existing pair, so a monitor sees an error and not a roast
+(`programMissingLocked()` in `src/main.cpp`). It is reported, not latched: it goes
+away with the run and no control law changed. A real trip always aborts the run
+(`abortRunForSafety()` sets the mode to idle), so `safetyFault` and `roastActive`
+can only be true together in this state.
+
+**Behaviour change to note.** The name is cleared when a run stops or is aborted,
+so an idle machine reports `profile: ""` instead of the last roast's name - over
+HTTP and in the MQTT `profile` sensor, whose state will go empty when idle
+instead of stale. Nothing reads the old value: `data/index.html` does not consume
+`status.profile`, and the profile editor keeps its own `loadedProfileName`.
+
+**Verified.** Host suite green in both build modes: **1531 checks, 0 failures**
+with `SAFETY_ET_ENABLED 1` and **1327** with it at 0 (was 1471 / 1267; the new
+checks cover the idle sentinels, a running programme's four values, the
+empty-profile fault, the stop that clears the name, and manual mode not claiming
+a programme). `pio run -e esp32-ota-bt` SUCCESS with 0 warnings (RAM 16.1 %,
+flash 74.8 % of the app partition). **Nothing was flashed and no filesystem image
+was pushed:** the web UI is unchanged, so `data/index.html` does not need the fs
+route. The device is untouched at the moment this was written.
+
 ## 0.16.0 (2026-10-25): the RoR guidance moves the setpoint, not the element
 
 **What was measured** (roast 2026-10-25 10:36-10:47, 60 g, profile

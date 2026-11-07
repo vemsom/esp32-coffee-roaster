@@ -147,13 +147,22 @@ static float g_profileCoolMinutes = 0.0f;
 // The charge the canned profile states, in grams. 0 (the default) = no duty
 // ceiling, so no other section is affected by the ceiling test.
 static int g_profileBeanWeight = 0;
+// A profile file that parses to zero steps: the real loadFromFile() accepts one
+// (it only fails when the file cannot be opened), which is the state the status
+// API has to report as a fault instead of as a normal roast.
+static bool g_profileEmpty = false;
 
 bool RoastProfile::loadFromFile(const String &) {
   _hasFan = true;
   _startTemp = 20;
   _beanWeight = g_profileBeanWeight;
-  _steps = { ProfileStep{ g_profileRampSeconds, g_profileHoldSeconds, 200, g_profileFan,
-                          0.0f, 0.0f, 0.0f } };
+  if (g_profileEmpty) {
+    _steps.clear();
+    _hasFan = false;
+  } else {
+    _steps = { ProfileStep{ g_profileRampSeconds, g_profileHoldSeconds, 200, g_profileFan,
+                            0.0f, 0.0f, 0.0f } };
+  }
   setCool(g_profileCoolFan, g_profileCoolMinutes);
   return true;
 }
@@ -729,6 +738,59 @@ int main() {
   g_profileHoldSeconds = 600;
   g_profileCoolFan = 0.0f;
   g_profileCoolMinutes = 0.0f;
+  web.setFanSpeed(80);
+  runLoops(2);
+
+  // ------------------------ the programme is identifiable from outside -------
+  // The status API has to answer "is this machine heating on a programme, and
+  // which one?" - the gap measured mid-roast 2026-11-07. These checks drive the
+  // real getters the status handler reads, through the real state machine.
+  check(web.getProfileName()[0] == '\0', "no profile is named before a roster runs");
+  check(!web.getProgramLoaded(), "and none is reported as loaded");
+  check(web.getProfileStep() == -1, "profileStep is -1 while idle");
+  check(isnan(web.getProfileTargetTemp()), "targetTemp is NaN (null) while idle");
+  check(!web.getSafetyFault(), "an idle machine is not in a fault state");
+
+  check(web.startRoast(String("guji-natural")), "the identified profile starts");
+  check(std::string(web.getProfileName()) == "guji-natural",
+        "status names the profile the run follows");
+  check(web.getProgramLoaded(), "programLoaded is true with a profile behind the run");
+  check(web.getProfileStep() == 0, "profileStep is the step the run is in");
+  check(!isnan(web.getProfileTargetTemp()) && web.getProfileTargetTemp() == 200.0f,
+        "targetTemp is the curve's target right now");
+  check(!web.getSafetyFault(), "a run on a loaded profile is not a fault");
+  web.stopRoast();
+  check(web.getProfileName()[0] == '\0',
+        "the name belongs to the run: stopping clears it");
+  check(!web.getProgramLoaded(), "and nothing is reported as loaded afterwards");
+
+  // The state the report is about: a profile that parses to zero steps loads
+  // fine, so the run reports roastActive with no curve behind it. Every other
+  // field looks like a normal roast - the safety pair is what says otherwise.
+  g_profileEmpty = true;
+  check(web.startRoast(String("empty")), "an empty profile file still starts a run");
+  check(web.getRoastActive(), "the run reports roastActive");
+  check(!web.getProgramLoaded(), "but programLoaded is false: no curve is behind it");
+  check(web.getProfileStep() == -1, "no step is active");
+  check(isnan(web.getProfileTargetTemp()), "and there is no target temperature");
+  check(web.getSafetyFault(),
+        "a run with no profile is reported as a fault, not as a normal roast");
+  check(std::string(web.getSafetyReason()) == "no profile loaded",
+        "and safetyReason says which fault it is");
+  web.stopRoast();
+  check(!web.getSafetyFault(), "the reported fault goes away with the run");
+  g_profileEmpty = false;
+
+  // A manual run is the one path that heats without a programme, so it must not
+  // claim one: programLoaded stays false and the manual fields carry the bound.
+  check(web.startManual(200, 600, false, 0, 0), "a manual run starts");
+  check(!web.getProgramLoaded(), "manual heat never reports a loaded programme");
+  check(web.getProfileName()[0] == '\0', "and no profile name is borrowed for it");
+  check(!web.getSafetyFault(), "manual heat is not a fault: it is time-limited");
+  check(web.getManualRemainingSeconds() > 0, "and its remaining time is reported");
+  web.stopManual();
+  // The sections below start manual runs and expect heat, which needs airflow:
+  // stopping the roast above took the fan to 0 %.
   web.setFanSpeed(80);
   runLoops(2);
 

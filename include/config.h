@@ -477,7 +477,19 @@
 // `roRorCorrection` in /api/status is still the field name, but its unit is C
 // now, not duty percent. Control behaviour differs on the same profile, so a new
 // release.
-#define FW_VERSION "0.16.0"
+// 0.17.0 = the status API names the programme. Measured mid-roast 2026-11-07
+// (guji-natural): /api/status carried roastActive true, elapsed 303 s and
+// heaterDuty 82 % and nothing that identified the profile, so a monitor could not
+// tell a run on a curve from a run heating on its own. /api/status now reports
+// `profile` ("" when none), `programLoaded`, `profileStep` (-1 when none) and
+// `targetTemp` (null when none), always present so "no programme" and "field
+// missing" are different answers. A run with roastActive true and no profile
+// behind it is reported as safetyFault with safetyReason "no profile loaded"; the
+// name is cleared when the run stops instead of lingering. No control law
+// changed - but the API gained four fields and changed the meaning of `profile`
+// (and of the MQTT `profile` sensor) from "last selected" to "what this run
+// follows", so a new release.
+#define FW_VERSION "0.17.0"
 
 // ---- Build identity (FW_BUILD_SHA / FW_BUILD_TIME) ----
 // FW_VERSION says which release this is; it cannot say WHICH build of it is

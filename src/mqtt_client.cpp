@@ -243,6 +243,9 @@ void mqtt_publish_status() {
     doc["heater"] = cb.getHeaterDuty();
     doc["fan"] = cb.getFanSpeed();
     doc["mode"] = cb.getMode();
+    // The profile the run is following, "" when no profile run is active: the
+    // name is cleared on stop and on a safety abort (src/main.cpp), so an idle
+    // machine cannot report the last roast's profile as if one were loaded.
     doc["profile"] = cb.getProfileName();
     doc["elapsed"] = cb.getElapsedSeconds();
     doc["roastActive"] = cb.getRoastActive();

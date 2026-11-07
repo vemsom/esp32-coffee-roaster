@@ -16,7 +16,7 @@ struct MqttCallbacks {
   float (*getHeaterDuty)();
   int   (*getFanSpeed)();
   const char *(*getMode)();          // "idle" | "manual" | "profile" | "cool"
-  const char *(*getProfileName)();   // currently selected profile, "" if none
+  const char *(*getProfileName)();   // profile the RUN follows, "" when none
   unsigned long (*getElapsedSeconds)();
   bool  (*getSafetyFault)();
   const char *(*getSafetyReason)();

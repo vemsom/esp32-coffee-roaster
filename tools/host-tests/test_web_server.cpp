@@ -58,6 +58,17 @@ static int g_stopCoolSpeed = -1;
 static unsigned long g_stopCoolSeconds = 0;
 static bool g_stopCoolAccept = true;
 
+// The profile identity the status dispatch reports, mutable so one test can pin
+// the idle sentinels and the next can pin values from a running programme. The
+// fault logic behind them (a run with no profile behind it) lives in main.cpp
+// and is tested end-to-end in test_control; this file proves the fields are
+// present and carry what the callbacks say.
+static const char *g_statusProfile = "";
+static bool g_statusProgramLoaded = false;
+static int g_statusProfileStep = -1;
+static float g_statusTargetTemp = NAN;
+static bool g_statusRoastActive = false;
+
 static void check(bool cond, const char *what) {
   checks++;
   if (cond) {
@@ -153,9 +164,13 @@ int main() {
   callbacks.getHeaterDuty = []() { return 0.0f; };
   callbacks.getFanSpeed = []() { return 0; };
   callbacks.getFanActual = []() { return 0.0f; };
-  callbacks.getRoastActive = []() { return false; };
+  callbacks.getRoastActive = []() { return g_statusRoastActive; };
   callbacks.getElapsedSeconds = []() { return 0UL; };
   callbacks.getRoastPaused = []() { return false; };
+  callbacks.getProfileName = []() { return g_statusProfile; };
+  callbacks.getProgramLoaded = []() { return g_statusProgramLoaded; };
+  callbacks.getProfileStep = []() { return g_statusProfileStep; };
+  callbacks.getProfileTargetTemp = []() { return g_statusTargetTemp; };
   callbacks.getManualActive = []() { return false; };
   callbacks.getManualTargetTemp = []() { return 0.0f; };
   callbacks.getManualRemainingSeconds = []() { return 0UL; };
@@ -552,6 +567,47 @@ int main() {
       // would keep believing a cap exists, so this pins its absence.
       check(body.find("\"dutyCeiling\"") == std::string::npos,
             "status no longer reports a dutyCeiling: the bean-weight cap is gone");
+
+      // -------------------------------------- the programme in /api/status ----
+      // Measured 2026-11-07 during an active roast: the status payload said
+      // roastActive true, elapsed 303 s and heaterDuty 82 %, and nothing that
+      // identified the profile - so a monitor could not tell a run on a curve
+      // from a run heating on its own. These four fields answer it, and they are
+      // always present: "" / -1 / null is "no programme", which is a different
+      // answer from "this firmware does not report programmes".
+      check(body.find("\"profile\":\"\"") != std::string::npos,
+            "status reports an empty profile name when no programme is running");
+      check(body.find("\"programLoaded\":false") != std::string::npos,
+            "status reports programLoaded false when no programme is loaded");
+      check(body.find("\"profileStep\":-1") != std::string::npos,
+            "status reports profileStep -1 when no step is active");
+      check(body.find("\"targetTemp\":null") != std::string::npos,
+            "status reports targetTemp null when there is no curve to follow");
+
+      // The values, from a programme that IS running: each field has to carry
+      // the callback's number, not a neighbour's.
+      g_statusRoastActive = true;
+      g_statusProfile = "guji-natural";
+      g_statusProgramLoaded = true;
+      g_statusProfileStep = 2;
+      g_statusTargetTemp = 185.5f;
+      AsyncWebServerRequest r2;
+      status->onRequest(&r2);
+      const std::string running = r2.responseBody().c_str();
+      check(running.find("\"profile\":\"guji-natural\"") != std::string::npos,
+            "a running programme is named in status.profile");
+      check(running.find("\"programLoaded\":true") != std::string::npos,
+            "programLoaded is true while a profile is behind the run");
+      check(running.find("\"profileStep\":2") != std::string::npos,
+            "profileStep is the active step index");
+      check(running.find("\"targetTemp\":185.5") != std::string::npos,
+            "targetTemp is the curve's target right now");
+      // Back to the idle values: nothing after this block should see the run.
+      g_statusRoastActive = false;
+      g_statusProfile = "";
+      g_statusProgramLoaded = false;
+      g_statusProfileStep = -1;
+      g_statusTargetTemp = NAN;
     }
   }
 

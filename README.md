@@ -300,6 +300,16 @@ Separately, and without latching, the fan interlock holds the element off unless
 the fan runs at least 10 % - in manual and profile mode alike. Details in
 `docs/firmware-notes.md`.
 
+**What is heating, and on what?** `/api/status` answers it since 0.17.0:
+`profile` (name, `""` when none), `programLoaded` (a loaded profile is behind the
+run), `profileStep` (active step, `-1` when none) and `targetTemp` (the curve's
+target right now, `null` when none). `roastActive` on its own only says a profile
+run is going. A manual run is the one path that heats without a programme, and it
+carries an explicit duration, reported as `manualRemainingSeconds`. A run that
+claims `roastActive` with no profile behind it (an empty profile file loads
+fine) is reported as `safetyFault: true` with `safetyReason: "no profile loaded"`
+instead of looking like a normal roast. See [SAFETY.md](SAFETY.md).
+
 Do not skip the wiring notes in `docs/hardware.md`. This is mains-voltage
 hardware.
 

@@ -18,6 +18,17 @@ struct WebServerCallbacks {
   bool  (*getRoastActive)();
   unsigned long (*getElapsedSeconds)();
   bool  (*getRoastPaused)();
+  // Identity of the PROGRAM behind a run - "is this machine heating according
+  // to a profile, or on its own?". These are separate from getRoastActive on
+  // purpose: getRoastActive says profile mode is running, the four below say
+  // which profile, where in it, what it is asking for, and whether there is a
+  // program behind the run at all. programLoaded is false whenever the run is
+  // manual - manual heat is the one path that runs without a profile, and it is
+  // bounded by manualRemainingSeconds instead (see SAFETY.md).
+  const char *(*getProfileName)();  // the running profile's name, "" when none
+  bool  (*getProgramLoaded)();      // true only with a loaded profile behind the run
+  int   (*getProfileStep)();        // index of the active step, -1 when none
+  float (*getProfileTargetTemp)();  // the curve's target right now, NAN when none
   bool  (*getManualActive)();
   float (*getManualTargetTemp)();
   unsigned long (*getManualRemainingSeconds)();

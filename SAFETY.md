@@ -43,6 +43,45 @@ both: `fanSpeed` is the request, `fanActual` the reached speed.)
 These are the last line of defence, not the first. Software cannot see a loose
 mains conductor, a missing heatsink or a wrong wiring diagram.
 
+## Heating without a programme
+
+The machine heats in one of two ways, and only one of them follows a programme:
+
+- **A profile run** (`roastActive` true, `programLoaded` true): the setpoint is
+  the profile's curve. `/api/status` names it (`profile`), says which step is
+  active (`profileStep`, -1 when none) and what the curve asks for right now
+  (`targetTemp`, before the RoR trim).
+- **A manual run** (`manualActive` true, `programLoaded` false): the setpoint is
+  one temperature typed by the operator, and the run carries an explicit
+  duration. When that duration runs out the element is set to 0 % and the run
+  ends by itself (`updateControl()` in `src/main.cpp`), and the time left is
+  reported as `manualRemainingSeconds` so the bound is visible from outside. The
+  firmware does not cap the duration - the web UI offers 0.5-120 min - so the
+  bound is only as good as the number that was typed in.
+
+Manual mode is therefore **the only way this machine heats without a programme**,
+and it is the mode to look at twice from a monitor.
+
+**A run with no programme behind it is reported as a fault.** A profile file that
+parses to zero steps still loads (`RoastProfile::loadFromFile()` only fails when
+the file cannot be opened), so profile mode can be entered with no curve to
+follow. `targetAt()` is NaN for such a profile, so the element is never commanded
+from it - but every other field read like a normal roast, which is why the status
+API had no answer at all before 0.17.0. In that state `/api/status` reports
+`safetyFault: true` with `safetyReason: "no profile loaded"`, next to
+`roastActive: true` and `programLoaded: false`.
+
+That combination is unambiguous: a real safety trip aborts the run
+(`abortRunForSafety()` sets the mode to idle), so `safetyFault` and `roastActive`
+can only be true together in this one state. The fault is **reported, not
+latched**: it disappears with the run and it changes no control law.
+
+**For a monitor** (Home Assistant automation, cron, a person reading the API):
+`roastActive: true` alone does not say what is heating. Gate on `programLoaded`
+(and compare `profile` with the name you expect) for a run on a curve, or on
+`manualActive` plus `manualRemainingSeconds` for the bounded manual run. Anything
+else that is heating is the fault above.
+
 ## BT-only builds (a missing ET channel)
 
 The firmware can be built with the environment probe switched off entirely:
